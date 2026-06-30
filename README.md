@@ -62,34 +62,86 @@ cliproxy-dashboard/
 
 ### Prerequisites
 * **Node.js**: `v20` or higher
-* **Go CLI Proxy**: The `/Users/phamtuan/.local/bin/cli-proxy-api` binary should be installed and accessible.
+* **Go CLI Proxy**: Install `cli-proxy-api.exe` and pass it with `--cli-proxy-bin`, or set `CLI_PROXY_API_BIN`.
+
+Windows migration paths:
+
+```text
+C:\Tools\cli-proxy-api\cli-proxy-api.exe
+%USERPROFILE%\.config\cli-proxy-api\config.yaml
+%USERPROFILE%\.cli-proxy-api
+%USERPROFILE%\.cli-proxy-api-backups\cliproxy-dashboard
+```
 
 ### Installation
 Clone the repository and install dependencies:
-```bash
-git clone https://github.com/tuanpham21/cliproxy-dashboard.git
-cd cliproxy-dashboard
-npm install
+```powershell
+cd "$env:USERPROFILE\Workspace\personal\cliproxy-dashboard"
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run build
 ```
 
 ### Scripts
 
 * **Start in Development Mode**:
-  ```bash
-  npm run dev
+  ```powershell
+  pnpm run dev
   ```
 * **Build the Codebase**:
-  ```bash
-  npm run build
+  ```powershell
+  pnpm run build
   ```
 * **Run the Test Suite**:
-  ```bash
-  npm run test
+  ```powershell
+  pnpm run test
   ```
 * **Start Server**:
-  ```bash
-  npm run start
+  ```powershell
+  pnpm run start
   ```
+
+### Windows Loopback Run
+
+Use explicit Windows paths and keep the dashboard on loopback:
+
+```powershell
+$CliProxyBin = "C:\Tools\cli-proxy-api\cli-proxy-api.exe"
+if (!(Test-Path $CliProxyBin)) {
+  throw "Missing cli-proxy-api.exe at $CliProxyBin"
+}
+
+pnpm run start -- `
+  --host 127.0.0.1 `
+  --port 60948 `
+  --cli-proxy-bin $CliProxyBin `
+  --config "$env:USERPROFILE\.config\cli-proxy-api\config.yaml" `
+  --auth-dir "$env:USERPROFILE\.cli-proxy-api" `
+  --backup-root "$env:USERPROFILE\.cli-proxy-api-backups\cliproxy-dashboard"
+```
+
+`CLI_PROXY_API_BIN` may be used instead of `--cli-proxy-bin`:
+
+```powershell
+$env:CLI_PROXY_API_BIN = "C:\Tools\cli-proxy-api\cli-proxy-api.exe"
+```
+
+Do not import provider account JSONs or start provider OAuth until the Phase F
+provider-auth gate.
+
+### Retained Quota Snapshots
+
+The dashboard persists latest known Proxy Account quota evidence in
+`<auth-dir>/cliproxy-dashboard/quota-snapshots.json` by default. A trusted local
+run may pass `--state-file <path>`, but the path must resolve inside the same
+dashboard-owned state directory and API requests cannot select it.
+
+Proxy Account Keys are derived by stripping a `.disabled` suffix from the local
+auth filename and applying a dashboard-local HMAC secret stored outside snapshot
+entries. Persisted snapshot entries contain only the opaque key plus allowlisted
+`primary5h` and `weekly` evidence. Passed reset times are shown as
+`refresh-needed` latest-known evidence until newer identity-bound response
+headers arrive. Account-Scoped Quota Refresh remains future discovery.
 
 ---
 
@@ -115,7 +167,7 @@ To ensure the dashboard runs continuously in the background, you can run it as a
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/phamtuan/Workspace/personal/services-portal/cliproxy-dashboard</string>
+  <string>/Users/phamtuan/Workspace/personal/cliproxy-dashboard</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -126,7 +178,9 @@ To ensure the dashboard runs continuously in the background, you can run it as a
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/phamtuan/Library/pnpm:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/Users/phamtuan/.local/bin:/Users/phamtuan/Library/pnpm:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>CLI_PROXY_API_BIN</key>
+    <string>/Users/phamtuan/.local/bin/cli-proxy-api</string>
   </dict>
 
   <key>StandardOutPath</key>
@@ -138,14 +192,17 @@ To ensure the dashboard runs continuously in the background, you can run it as a
 </plist>
 ```
 
-2. Load and start the launch agent:
+2. Bootstrap and start the launch agent:
 ```bash
-launchctl load ~/Library/LaunchAgents/com.user.cliproxy-dashboard.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.cliproxy-dashboard.plist
+launchctl kickstart -k gui/$(id -u)/com.user.cliproxy-dashboard
 ```
 
 3. Restarting the service after updates:
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.user.cliproxy-dashboard.plist && launchctl load ~/Library/LaunchAgents/com.user.cliproxy-dashboard.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.user.cliproxy-dashboard.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.cliproxy-dashboard.plist
+launchctl kickstart -k gui/$(id -u)/com.user.cliproxy-dashboard
 ```
 
 ---

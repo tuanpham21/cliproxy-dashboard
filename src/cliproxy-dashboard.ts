@@ -1,11 +1,15 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   access,
+  chmod,
   mkdir,
+  lstat,
   open,
   readdir,
   readFile,
+  realpath,
   stat,
   writeFile,
   copyFile,
@@ -20,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_DASHBOARD_PORT = 0;
+const DEFAULT_DASHBOARD_PORT = 60948;
 const DEFAULT_PROXY_PORT = 8317;
 const DEFAULT_PRIORITY = 100;
 const DEFAULT_BACKUP_PRIORITY = 10;
@@ -32,6 +36,11 @@ const DEFAULT_LOG_BYTES = 512_000;
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), ".config/cli-proxy-api/config.yaml");
 const DEFAULT_AUTH_DIR = path.join(os.homedir(), ".cli-proxy-api");
 const DEFAULT_BACKUP_ROOT = path.join(os.homedir(), ".cli-proxy-api-backups", "cliproxy-dashboard");
+const WINDOWS_CLI_PROXY_BIN = "C:\\Tools\\cli-proxy-api\\cli-proxy-api.exe";
+const DASHBOARD_STATE_DIR_NAME = "cliproxy-dashboard";
+const QUOTA_SNAPSHOT_STATE_FILE_NAME = "quota-snapshots.json";
+const QUOTA_SNAPSHOT_SCHEMA_VERSION = 1;
+const DASHBOARD_OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";
 
 type DashboardPaths = {
   configPath: string;
@@ -39,9 +48,14 @@ type DashboardPaths = {
   backupRoot: string;
   logsDir: string;
   mainLogPath: string;
+  quotaSnapshotStatePath: string;
   proxyUrl: string;
   proxyPort: number;
   inboundKey: string | null;
+};
+
+type PublicDashboardPaths = Omit<DashboardPaths, "inboundKey"> & {
+  inboundKeyConfigured: boolean;
 };
 
 type ProxyConfig = {
@@ -54,7 +68,48 @@ type ProxyConfig = {
   apiKeys: string[];
 };
 
-type PublicProxyConfig = Omit<ProxyConfig, "raw">;
+type PublicProxyConfig = Omit<ProxyConfig, "raw" | "apiKeys"> & {
+  apiKeysConfigured: boolean;
+  apiKeyCount: number;
+};
+
+type QuotaWindowName = "primary5h" | "weekly";
+type QuotaEvidenceSource = "response-header" | "identity-bound-read";
+type PublicQuotaStatus = "unknown" | "current" | "stale" | "refresh-needed" | "blocked";
+
+type PersistedQuotaWindowEvidence = {
+  usedPercent?: number;
+  resetAt?: string;
+  observedAt: string;
+  source: QuotaEvidenceSource;
+  debugStatus?: string;
+};
+
+type PersistedQuotaSnapshot = {
+  proxyAccountKey: string;
+  primary5h?: PersistedQuotaWindowEvidence;
+  weekly?: PersistedQuotaWindowEvidence;
+};
+
+type PersistedQuotaSnapshotStore = {
+  schemaVersion: typeof QUOTA_SNAPSHOT_SCHEMA_VERSION;
+  keyDerivation: {
+    algorithm: "hmac-sha256";
+    secret: string;
+    keyPrefix: "pak_v1";
+  };
+  snapshots: PersistedQuotaSnapshot[];
+};
+
+type PublicQuotaWindow = {
+  status: PublicQuotaStatus;
+  usedPercent?: number;
+  resetAt?: string;
+  observedAt?: string;
+  source?: QuotaEvidenceSource;
+};
+
+type PublicQuotaSnapshot = Record<QuotaWindowName, PublicQuotaWindow>;
 
 type AccountView = {
   fileName: string;
@@ -72,10 +127,15 @@ type AccountView = {
   lastRefresh: string;
   validityStatus?: "valid" | "invalid" | "unverified";
   validationError?: string;
+  subscriptionPlan?: string;
+  subscriptionActiveUntil?: string;
+  subscriptionLastChecked?: string;
   raw: Record<string, unknown>;
 };
 
-type PublicAccountView = Omit<AccountView, "raw">;
+type PublicAccountView = Omit<AccountView, "raw"> & {
+  quota: PublicQuotaSnapshot;
+};
 
 type SelectorLogLine = {
   timestamp: string;
@@ -127,7 +187,7 @@ type LogSummary = {
 };
 
 type DashboardState = {
-  paths: DashboardPaths;
+  paths: PublicDashboardPaths;
   config: PublicProxyConfig | null;
   accounts: PublicAccountView[];
   selectedAccount: PublicAccountView | null;
@@ -142,10 +202,15 @@ type DashboardOptions = {
   authDir?: string;
   backupRoot?: string;
   mainLogPath?: string;
+  quotaSnapshotStatePath?: string;
   proxyPort?: number;
   proxyUrl?: string;
   inboundKey?: string | null;
   host?: string;
+  cliProxyBin?: string;
+  codexBin?: string;
+  operatorToken?: string;
+  beforeQuotaSnapshotStateWrite?: () => Promise<void> | void;
 };
 
 type TestRequestOptions = {
@@ -177,6 +242,298 @@ function parseOptionalInteger(value: unknown, fallback: number): number {
     }
   }
   return fallback;
+}
+
+function asHeaderValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+  return value ?? "";
+}
+
+function normalizeProxyAccountLocalIdentity(value: string): string {
+  return path.basename(value).replace(/\.disabled$/, "");
+}
+
+function emptyPublicQuotaSnapshot(): PublicQuotaSnapshot {
+  return {
+    primary5h: { status: "unknown" },
+    weekly: { status: "unknown" },
+  };
+}
+
+function normalizeUsedPercent(value: number): number | undefined {
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+  const rounded = Math.round(value);
+  if (rounded < 0 || rounded > 100) {
+    return undefined;
+  }
+  return rounded;
+}
+
+function observedMsFromIso(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function evidenceIsNewer(
+  next: PersistedQuotaWindowEvidence,
+  current: PersistedQuotaWindowEvidence | undefined,
+): boolean {
+  if (!current) {
+    return true;
+  }
+  return observedMsFromIso(next.observedAt) > observedMsFromIso(current.observedAt);
+}
+
+function publicQuotaWindow(
+  evidence: PersistedQuotaWindowEvidence | undefined,
+  nowMs = Date.now(),
+): PublicQuotaWindow {
+  if (!evidence) {
+    return { status: "unknown" };
+  }
+  const resetMs = evidence.resetAt ? Date.parse(evidence.resetAt) : NaN;
+  const status: PublicQuotaStatus =
+    Number.isFinite(resetMs) && resetMs > nowMs ? "current" : "refresh-needed";
+  return {
+    status,
+    usedPercent: evidence.usedPercent,
+    resetAt: evidence.resetAt,
+    observedAt: evidence.observedAt,
+    source: evidence.source,
+  };
+}
+
+function toPublicQuotaSnapshot(
+  snapshot: PersistedQuotaSnapshot | undefined,
+  nowMs = Date.now(),
+): PublicQuotaSnapshot {
+  if (!snapshot) {
+    return emptyPublicQuotaSnapshot();
+  }
+  return {
+    primary5h: publicQuotaWindow(snapshot.primary5h, nowMs),
+    weekly: publicQuotaWindow(snapshot.weekly, nowMs),
+  };
+}
+
+function defaultCliProxyBin(platform = process.platform): string {
+  return platform === "win32" ? WINDOWS_CLI_PROXY_BIN : "cli-proxy-api";
+}
+
+function resolveCliProxyBin(options: Pick<DashboardOptions, "cliProxyBin"> = {}): string {
+  return options.cliProxyBin ?? process.env.CLI_PROXY_API_BIN ?? defaultCliProxyBin();
+}
+
+function resolveCodexBin(options: Pick<DashboardOptions, "codexBin"> = {}): string {
+  if (options.codexBin) return options.codexBin;
+  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
+  const localBin = path.join(path.dirname(process.execPath), process.platform === "win32" ? "codex.exe" : "codex");
+  if (existsSync(localBin)) {
+    return localBin;
+  }
+  return "codex";
+}
+
+async function queryCodexAppServer(
+  codexBin: string,
+  method: string,
+  params: unknown,
+  timeoutMs = 5000,
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(codexBin, ["app-server", "--stdio"]);
+
+    let stdoutText = "";
+    let stderrText = "";
+    let isFinished = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      child.stdout.removeAllListeners();
+      child.stderr.removeAllListeners();
+      child.removeAllListeners();
+      if (!child.killed) {
+        child.kill();
+      }
+    };
+
+    const finish = (error: Error | null, result?: unknown) => {
+      if (isFinished) return;
+      isFinished = true;
+      cleanup();
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    };
+
+    timer = setTimeout(() => {
+      finish(new Error("Timeout waiting for app-server response on method " + method));
+    }, timeoutMs);
+
+    child.on("error", (err) => {
+      finish(err);
+    });
+
+    child.on("exit", (code) => {
+      if (!isFinished) {
+        finish(
+          new Error(
+            "codex app-server process exited early with code " + code + ". Stderr: " + stderrText.trim()
+          )
+        );
+      }
+    });
+
+    let buffer = "";
+    const processBuffer = () => {
+      let lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const msg = JSON.parse(trimmed);
+          handleMessage(msg);
+        } catch {}
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      processBuffer();
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrText += chunk.toString("utf8");
+    });
+
+    // Step 1: Write initialize request
+    const initReq = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        clientInfo: {
+          name: "cliproxy-dashboard",
+          title: "Cliproxy Dashboard",
+          version: "1.0.0",
+        },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+        },
+      },
+    };
+    child.stdin.write(JSON.stringify(initReq) + "\n");
+
+    let step = "initializing";
+
+    function handleMessage(msg: any) {
+      if (step === "initializing") {
+        if (msg.id === 1) {
+          if (msg.error) {
+            finish(new Error("Initialization failed: " + (msg.error.message || JSON.stringify(msg.error))));
+            return;
+          }
+          // Initialized successfully!
+          step = "initialized";
+          // Send initialized notification
+          const initializedNotif = {
+            jsonrpc: "2.0",
+            method: "initialized",
+          };
+          child.stdin.write(JSON.stringify(initializedNotif) + "\n");
+
+          // Now send the actual request
+          const actualReq = {
+            jsonrpc: "2.0",
+            id: 2,
+            method,
+            params,
+          };
+          child.stdin.write(JSON.stringify(actualReq) + "\n");
+        }
+      } else if (step === "initialized") {
+        if (msg.id === 2) {
+          if (msg.error) {
+            const errMsg = msg.error.message || "Unknown JSON-RPC error";
+            const err = new Error(errMsg);
+            (err as any).code = msg.error.code;
+            finish(err);
+          } else {
+            finish(null, msg.result);
+          }
+        }
+      }
+    }
+  });
+}
+
+function buildOpenUrlCommand(
+  url: string,
+  platform = process.platform,
+): { command: string; args: string[] } {
+  if (platform === "darwin") {
+    return { command: "open", args: [url] };
+  }
+  if (platform === "win32") {
+    return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] };
+  }
+  return { command: "xdg-open", args: [url] };
+}
+
+function buildStuckOauthCleanupCommand(
+  platform = process.platform,
+): { command: string; args: string[] } {
+  if (platform === "win32") {
+    const script = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      "$self = $PID",
+      "Get-CimInstance Win32_Process",
+      "  | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -match 'cli-proxy-api' -and $_.CommandLine -match '-codex-login' }",
+      "  | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+    ].join("; ");
+    return {
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+    };
+  }
+  return { command: "pkill", args: ["-f", "cli-proxy-api.*-codex-login"] };
+}
+
+async function cleanupStuckOauthLogins(): Promise<void> {
+  const cleanup = buildStuckOauthCleanupCommand();
+  const child = spawn(cleanup.command, cleanup.args, {
+    detached: false,
+    stdio: "ignore",
+  });
+  await new Promise<void>((resolve) => {
+    child.on("close", () => resolve());
+    child.on("error", () => resolve());
+  });
+}
+
+function openExternalUrl(url: string): void {
+  const opener = buildOpenUrlCommand(url);
+  const child = spawn(opener.command, opener.args, {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.on("error", () => {});
+  child.unref();
 }
 
 function safeBasename(value: string): string {
@@ -245,8 +602,371 @@ function publicConfig(config: ProxyConfig | null): PublicProxyConfig | null {
   if (!config) {
     return null;
   }
-  const { raw: _raw, ...publicConfigValue } = config;
-  return publicConfigValue;
+  const { raw: _raw, apiKeys, ...publicConfigValue } = config;
+  return {
+    ...publicConfigValue,
+    apiKeysConfigured: apiKeys.length > 0,
+    apiKeyCount: apiKeys.length,
+  };
+}
+
+function publicDashboardPaths(paths: DashboardPaths): PublicDashboardPaths {
+  const { inboundKey: _inboundKey, ...publicPaths } = paths;
+  return {
+    ...publicPaths,
+    inboundKeyConfigured: Boolean(paths.inboundKey),
+  };
+}
+
+function defaultQuotaSnapshotStatePath(authDir: string): string {
+  return path.join(authDir, DASHBOARD_STATE_DIR_NAME, QUOTA_SNAPSHOT_STATE_FILE_NAME);
+}
+
+function resolveQuotaSnapshotStatePath(authDir: string, overridePath?: string): string {
+  return path.resolve(overridePath ?? defaultQuotaSnapshotStatePath(authDir));
+}
+
+function isCodexCredentialFileName(fileName: string): boolean {
+  return /^codex-.*\.json(?:\.disabled)?$/.test(fileName);
+}
+
+function isEnoent(error: unknown): boolean {
+  return isRecord(error) && error.code === "ENOENT";
+}
+
+async function ensureOwnerOnlyDirectory(dirPath: string): Promise<void> {
+  await mkdir(dirPath, { recursive: true, mode: 0o700 });
+  const dirStat = await lstat(dirPath);
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+    throw new Error("Quota snapshot state directory must be a regular directory");
+  }
+  try {
+    await chmod(dirPath, 0o700);
+  } catch {
+    // chmod is best-effort on platforms that do not support POSIX modes.
+  }
+}
+
+async function validateQuotaSnapshotStatePath(
+  stateFilePath: string,
+  authDir: string,
+  configPath: string,
+): Promise<void> {
+  const resolvedFilePath = path.resolve(stateFilePath);
+  const stateRoot = path.resolve(authDir, DASHBOARD_STATE_DIR_NAME);
+  const stateDir = path.dirname(resolvedFilePath);
+  const fileName = path.basename(resolvedFilePath);
+  if (!fileName || fileName === "." || fileName === "..") {
+    throw new Error("Quota snapshot state path must name a file");
+  }
+  const rootRelativePath = path.relative(stateRoot, resolvedFilePath);
+  if (rootRelativePath.startsWith("..") || path.isAbsolute(rootRelativePath)) {
+    throw new Error("Quota snapshot state path escapes the dashboard state directory");
+  }
+  if (path.resolve(stateDir) !== stateRoot) {
+    throw new Error("Quota snapshot state path must be directly inside the dashboard state directory");
+  }
+
+  const resolvedConfigPath = path.resolve(configPath);
+  if (resolvedFilePath === resolvedConfigPath) {
+    throw new Error("Quota snapshot state path must not be the proxy config file");
+  }
+  if (path.dirname(resolvedFilePath) === path.resolve(authDir) && isCodexCredentialFileName(fileName)) {
+    throw new Error("Quota snapshot state path must not be a Proxy Account credential file");
+  }
+
+  await ensureOwnerOnlyDirectory(stateRoot);
+  const stateDirRealPath = await realpath(stateRoot);
+  const expectedFilePath = path.join(stateDirRealPath, fileName);
+
+  try {
+    const fileStat = await lstat(resolvedFilePath);
+    if (fileStat.isSymbolicLink()) {
+      throw new Error("Quota snapshot state path must not be a symlink");
+    }
+    if (!fileStat.isFile()) {
+      throw new Error("Quota snapshot state path must be a regular file");
+    }
+    const fileRealPath = await realpath(resolvedFilePath);
+    const relative = path.relative(stateDirRealPath, fileRealPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("Quota snapshot state path escapes the dashboard state directory");
+    }
+  } catch (error) {
+    if (!isEnoent(error)) {
+      throw error;
+    }
+    const relative = path.relative(stateDirRealPath, expectedFilePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("Quota snapshot state path escapes the dashboard state directory");
+    }
+  }
+}
+
+function createEmptyQuotaSnapshotStore(): PersistedQuotaSnapshotStore {
+  return {
+    schemaVersion: QUOTA_SNAPSHOT_SCHEMA_VERSION,
+    keyDerivation: {
+      algorithm: "hmac-sha256",
+      secret: randomBytes(32).toString("base64url"),
+      keyPrefix: "pak_v1",
+    },
+    snapshots: [],
+  };
+}
+
+function normalizeQuotaEvidence(raw: unknown): PersistedQuotaWindowEvidence | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  const source = raw.source === "identity-bound-read" ? "identity-bound-read" : raw.source === "response-header" ? "response-header" : undefined;
+  const observedAt = typeof raw.observedAt === "string" && Number.isFinite(Date.parse(raw.observedAt))
+    ? new Date(Date.parse(raw.observedAt)).toISOString()
+    : "";
+  if (!source || !observedAt) {
+    return undefined;
+  }
+  const usedPercent =
+    typeof raw.usedPercent === "number" ? normalizeUsedPercent(raw.usedPercent) : undefined;
+  const resetAt =
+    typeof raw.resetAt === "string" && Number.isFinite(Date.parse(raw.resetAt))
+      ? new Date(Date.parse(raw.resetAt)).toISOString()
+      : undefined;
+  const debugStatus =
+    typeof raw.debugStatus === "string" && raw.debugStatus.length <= 80 ? raw.debugStatus : undefined;
+  return {
+    ...(usedPercent === undefined ? {} : { usedPercent }),
+    ...(resetAt === undefined ? {} : { resetAt }),
+    observedAt,
+    source,
+    ...(debugStatus === undefined ? {} : { debugStatus }),
+  };
+}
+
+function quotaEvidenceWasSanitized(
+  raw: unknown,
+  normalized: PersistedQuotaWindowEvidence | undefined,
+): boolean {
+  if (!isRecord(raw)) {
+    return normalized !== undefined;
+  }
+  const allowedEvidenceKeys = new Set(["usedPercent", "resetAt", "observedAt", "source", "debugStatus"]);
+  for (const key of Object.keys(raw)) {
+    if (!allowedEvidenceKeys.has(key)) {
+      return true;
+    }
+  }
+  if (!normalized) {
+    return true;
+  }
+  if ("usedPercent" in raw) {
+    if (typeof raw.usedPercent !== "number") {
+      return true;
+    }
+    if (normalizeUsedPercent(raw.usedPercent) !== normalized.usedPercent) {
+      return true;
+    }
+  }
+  if ("resetAt" in raw && typeof raw.resetAt !== "string") {
+    return true;
+  }
+  if (typeof raw.resetAt === "string") {
+    const parsedResetAt = Date.parse(raw.resetAt);
+    const canonicalResetAt = Number.isFinite(parsedResetAt) ? new Date(parsedResetAt).toISOString() : undefined;
+    if (canonicalResetAt !== normalized.resetAt) {
+      return true;
+    }
+  }
+  const parsedObservedAt = typeof raw.observedAt === "string" ? Date.parse(raw.observedAt) : NaN;
+  if (!Number.isFinite(parsedObservedAt) || new Date(parsedObservedAt).toISOString() !== normalized.observedAt) {
+    return true;
+  }
+  if (raw.source !== normalized.source) {
+    return true;
+  }
+  if (typeof raw.debugStatus === "string" && raw.debugStatus.length <= 80) {
+    return raw.debugStatus !== normalized.debugStatus;
+  }
+  return raw.debugStatus !== undefined;
+}
+
+function normalizePersistedQuotaSnapshotStore(
+  raw: unknown,
+): { store: PersistedQuotaSnapshotStore; dirty: boolean } | null {
+  if (!isRecord(raw) || raw.schemaVersion !== QUOTA_SNAPSHOT_SCHEMA_VERSION) {
+    return null;
+  }
+  let dirty = false;
+  const allowedRootKeys = new Set(["schemaVersion", "keyDerivation", "snapshots"]);
+  for (const key of Object.keys(raw)) {
+    if (!allowedRootKeys.has(key)) {
+      dirty = true;
+    }
+  }
+  const keyDerivation = isRecord(raw.keyDerivation) ? raw.keyDerivation : null;
+  const secret = typeof keyDerivation?.secret === "string" ? keyDerivation.secret : "";
+  if (keyDerivation) {
+    const allowedKeyDerivationKeys = new Set(["algorithm", "secret", "keyPrefix"]);
+    for (const key of Object.keys(keyDerivation)) {
+      if (!allowedKeyDerivationKeys.has(key)) {
+        dirty = true;
+      }
+    }
+  }
+  if (
+    keyDerivation?.algorithm !== "hmac-sha256" ||
+    keyDerivation?.keyPrefix !== "pak_v1" ||
+    !/^[A-Za-z0-9_-]{32,}$/.test(secret)
+  ) {
+    return null;
+  }
+
+  const snapshots: PersistedQuotaSnapshot[] = [];
+  const rawSnapshots = Array.isArray(raw.snapshots) ? raw.snapshots : [];
+  for (const rawSnapshot of rawSnapshots) {
+    if (!isRecord(rawSnapshot) || typeof rawSnapshot.proxyAccountKey !== "string") {
+      dirty = true;
+      continue;
+    }
+    const allowedSnapshotKeys = new Set(["proxyAccountKey", "primary5h", "weekly"]);
+    for (const key of Object.keys(rawSnapshot)) {
+      if (!allowedSnapshotKeys.has(key)) {
+        dirty = true;
+      }
+    }
+    if (!/^pak_v1_[A-Za-z0-9_-]{32,}$/.test(rawSnapshot.proxyAccountKey)) {
+      dirty = true;
+      continue;
+    }
+    const primary5h = normalizeQuotaEvidence(rawSnapshot.primary5h);
+    const weekly = normalizeQuotaEvidence(rawSnapshot.weekly);
+    if (!primary5h && !weekly) {
+      dirty = true;
+      continue;
+    }
+    if (rawSnapshot.primary5h !== undefined) {
+      dirty = quotaEvidenceWasSanitized(rawSnapshot.primary5h, primary5h) || dirty;
+    }
+    if (rawSnapshot.weekly !== undefined) {
+      dirty = quotaEvidenceWasSanitized(rawSnapshot.weekly, weekly) || dirty;
+    }
+    snapshots.push({
+      proxyAccountKey: rawSnapshot.proxyAccountKey,
+      ...(primary5h ? { primary5h } : {}),
+      ...(weekly ? { weekly } : {}),
+    });
+  }
+
+  return {
+    store: {
+      schemaVersion: QUOTA_SNAPSHOT_SCHEMA_VERSION,
+      keyDerivation: {
+        algorithm: "hmac-sha256",
+        secret,
+        keyPrefix: "pak_v1",
+      },
+      snapshots,
+    },
+    dirty,
+  };
+}
+
+async function readQuotaSnapshotStoreFile(
+  stateFilePath: string,
+): Promise<{ store: PersistedQuotaSnapshotStore; error?: string; dirty: boolean }> {
+  try {
+    const text = await readFile(stateFilePath, "utf8");
+    const parsed = JSON.parse(text) as unknown;
+    const normalized = normalizePersistedQuotaSnapshotStore(parsed);
+    if (!normalized) {
+      return {
+        store: createEmptyQuotaSnapshotStore(),
+        error: "Quota snapshot state file was invalid and was reinitialized",
+        dirty: true,
+      };
+    }
+    return { store: normalized.store, dirty: normalized.dirty };
+  } catch (error) {
+    if (isEnoent(error)) {
+      return { store: createEmptyQuotaSnapshotStore(), dirty: true };
+    }
+    return {
+      store: createEmptyQuotaSnapshotStore(),
+      error: "Quota snapshot state file could not be read and was reinitialized",
+      dirty: true,
+    };
+  }
+}
+
+async function atomicWriteOwnerOnlyJson(filePath: string, value: unknown): Promise<void> {
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${randomUUID()}.tmp`,
+  );
+  const text = `${JSON.stringify(value, null, 2)}\n`;
+  try {
+    await writeFile(tempPath, text, { encoding: "utf8", mode: 0o600 });
+    try {
+      await chmod(tempPath, 0o600);
+    } catch {}
+    await rename(tempPath, filePath);
+    try {
+      await chmod(filePath, 0o600);
+    } catch {}
+  } catch (error) {
+    try {
+      await unlink(tempPath);
+    } catch {}
+    throw error;
+  }
+}
+
+const quotaSnapshotStateLocks = new Map<string, Promise<void>>();
+
+async function withQuotaSnapshotStateLock<T>(stateFilePath: string, task: () => Promise<T>): Promise<T> {
+  const key = path.resolve(stateFilePath);
+  const previous = quotaSnapshotStateLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  const next = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  quotaSnapshotStateLocks.set(key, next);
+  try {
+    return await current;
+  } finally {
+    if (quotaSnapshotStateLocks.get(key) === next) {
+      quotaSnapshotStateLocks.delete(key);
+    }
+  }
+}
+
+function deriveProxyAccountKey(store: PersistedQuotaSnapshotStore, canonicalLocalIdentity: string): string {
+  const digest = createHmac("sha256", Buffer.from(store.keyDerivation.secret, "base64url"))
+    .update("cliproxy-dashboard proxy-account-key v1\0")
+    .update(canonicalLocalIdentity, "utf8")
+    .digest("base64url");
+  return `${store.keyDerivation.keyPrefix}_${digest}`;
+}
+
+function mergeQuotaWindowEvidence(
+  snapshot: PersistedQuotaSnapshot,
+  windowName: QuotaWindowName,
+  evidence: PersistedQuotaWindowEvidence | undefined,
+): boolean {
+  if (!evidence) {
+    return false;
+  }
+  const current = snapshot[windowName];
+  if (!evidenceIsNewer(evidence, current)) {
+    return false;
+  }
+  snapshot[windowName] = evidence;
+  return true;
+}
+
+function hasQuotaEvidence(snapshot: PersistedQuotaSnapshot): boolean {
+  return Boolean(snapshot.primary5h || snapshot.weekly);
 }
 
 async function readConfig(configPath: string): Promise<ProxyConfig | null> {
@@ -267,6 +987,7 @@ async function resolveDashboardPaths(options: DashboardOptions = {}): Promise<Da
   const proxyUrl = options.proxyUrl ?? `http://${DEFAULT_HOST}:${proxyPort}`;
   const logsDir = path.join(authDir, "logs");
   const mainLogPath = options.mainLogPath ?? path.join(authDir, "logs", "main.log");
+  const quotaSnapshotStatePath = resolveQuotaSnapshotStatePath(authDir, options.quotaSnapshotStatePath);
   const backupRoot = options.backupRoot ?? DEFAULT_BACKUP_ROOT;
   const inboundKey = options.inboundKey ?? chooseInboundKey(config?.raw ?? null);
   return {
@@ -275,6 +996,7 @@ async function resolveDashboardPaths(options: DashboardOptions = {}): Promise<Da
     backupRoot,
     logsDir,
     mainLogPath,
+    quotaSnapshotStatePath,
     proxyUrl,
     proxyPort,
     inboundKey,
@@ -302,6 +1024,29 @@ function normalizeAccount(filePath: string, raw: Record<string, unknown>): Accou
   const accountId = asString(raw.account_id, "");
   const validityStatusRaw = asString(raw.validity_status, "unverified");
   const validityStatus = (validityStatusRaw === "valid" || validityStatusRaw === "invalid" ? validityStatusRaw : "unverified") as "valid" | "invalid" | "unverified";
+
+    let subscriptionPlan: string | undefined;
+    let subscriptionActiveUntil: string | undefined;
+    let subscriptionLastChecked: string | undefined;
+
+  const idToken = asString(raw.id_token, "");
+  if (idToken) {
+    try {
+      const parts = idToken.split(".");
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+        if (isRecord(payload)) {
+            const openAiAuth = payload["https://api.openai.com/auth"];
+            if (isRecord(openAiAuth)) {
+              subscriptionPlan = asString(openAiAuth.chatgpt_plan_type, "") || undefined;
+              subscriptionActiveUntil = asString(openAiAuth.chatgpt_subscription_active_until, "") || undefined;
+              subscriptionLastChecked = asString(openAiAuth.chatgpt_subscription_last_checked, "") || undefined;
+            }
+          }
+        }
+    } catch {}
+  }
+
   return {
     fileName,
     path: filePath,
@@ -316,15 +1061,21 @@ function normalizeAccount(filePath: string, raw: Record<string, unknown>): Accou
     plan: inferPlanFromFileName(fileName),
     expired: asString(raw.expired, ""),
     lastRefresh: asString(raw.last_refresh, ""),
-    validityStatus,
-    validationError: asString(raw.validation_error, ""),
-    raw,
-  };
-}
+      validityStatus,
+      validationError: asString(raw.validation_error, ""),
+      subscriptionPlan,
+      subscriptionActiveUntil,
+      subscriptionLastChecked,
+      raw,
+    };
+  }
 
-function publicAccount(account: AccountView): PublicAccountView {
+function publicAccount(account: AccountView, quota = emptyPublicQuotaSnapshot()): PublicAccountView {
   const { raw: _raw, ...publicAccountValue } = account;
-  return publicAccountValue;
+  return {
+    ...publicAccountValue,
+    quota,
+  };
 }
 
 function normalizeModel(raw: unknown): ProxyModelView | null {
@@ -606,6 +1357,219 @@ async function readLogSummary(logPath: string): Promise<LogSummary> {
   };
 }
 
+type QuotaSnapshotUpdate = {
+  canonicalLocalIdentity: string;
+  primary5h?: PersistedQuotaWindowEvidence;
+  weekly?: PersistedQuotaWindowEvidence;
+};
+
+function parseResponseTimestampMs(lines: string[], fallbackMs: number): number {
+  const timestampLine = lines.find((line) => responseTimestampPattern.test(line.trim()));
+  const timestamp = timestampLine?.trim().match(responseTimestampPattern)?.groups?.timestamp ?? "";
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : fallbackMs;
+}
+
+function getResponseHeaderNumber(lines: string[], name: string): number | undefined {
+  const lowerName = name.toLowerCase();
+  const line = lines.find((candidate) => candidate.toLowerCase().startsWith(`${lowerName}:`));
+  if (!line) {
+    return undefined;
+  }
+  const value = Number(line.slice(line.indexOf(":") + 1).trim());
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function epochHeaderToIso(value: number | undefined): string | undefined {
+  if (value === undefined || value < 0) {
+    return undefined;
+  }
+  const epochMs = value > 1_000_000_000_000 ? value : value * 1000;
+  return new Date(epochMs).toISOString();
+}
+
+function quotaWindowEvidenceFromHeaders(
+  lines: string[],
+  observedMs: number,
+  usedHeader: string,
+  resetAfterHeader: string,
+  resetAtHeader: string,
+): PersistedQuotaWindowEvidence | undefined {
+  const usedPercent = normalizeUsedPercent(getResponseHeaderNumber(lines, usedHeader) ?? NaN);
+  if (usedPercent === undefined) {
+    return undefined;
+  }
+  const resetAtRaw = getResponseHeaderNumber(lines, resetAtHeader);
+  const resetAfterSeconds = getResponseHeaderNumber(lines, resetAfterHeader);
+  const resetAt =
+    epochHeaderToIso(resetAtRaw) ??
+    (resetAfterSeconds === undefined ? undefined : new Date(observedMs + resetAfterSeconds * 1000).toISOString());
+  return {
+    usedPercent,
+    ...(resetAt ? { resetAt } : {}),
+    observedAt: new Date(observedMs).toISOString(),
+    source: "response-header",
+  };
+}
+
+async function readResponseHeaderQuotaUpdates(
+  logsDir: string,
+): Promise<QuotaSnapshotUpdate[]> {
+  const updates: QuotaSnapshotUpdate[] = [];
+  try {
+    await access(logsDir);
+  } catch {
+    return updates;
+  }
+
+  const entries = await readdir(logsDir, { withFileTypes: true });
+  const now = Date.now();
+  const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+
+  const filesToParse = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && responseLogFilePattern.test(entry.name))
+      .map(async (entry) => {
+        const filePath = path.join(logsDir, entry.name);
+        try {
+          const stats = await stat(filePath);
+          const ageMs = now - stats.mtimeMs;
+          if (ageMs <= oneWeekMs) {
+            return { name: entry.name, filePath, mtimeMs: stats.mtimeMs };
+          }
+        } catch {}
+        return null;
+      }),
+  );
+
+  const activeFiles = filesToParse.filter(
+    (f): f is { name: string; filePath: string; mtimeMs: number } => f !== null,
+  );
+
+  activeFiles.sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name));
+
+  for (const file of activeFiles) {
+    try {
+      const text = await readFile(file.filePath, "utf8");
+      const lines = text.split(/\r?\n/);
+      const authLine = lines.find((line) => line.trimStart().startsWith("Auth: provider=codex,"));
+      if (!authLine) {
+        continue;
+      }
+      const match = responseAuthPattern.exec(authLine.trim());
+      if (!match?.groups) {
+        continue;
+      }
+      const observedMs = parseResponseTimestampMs(lines, file.mtimeMs);
+      const primary5h = quotaWindowEvidenceFromHeaders(
+        lines,
+        observedMs,
+        "X-Codex-Primary-Used-Percent",
+        "X-Codex-Primary-Reset-After-Seconds",
+        "X-Codex-Primary-Reset-At",
+      );
+      const weekly = quotaWindowEvidenceFromHeaders(
+        lines,
+        observedMs,
+        "X-Codex-Secondary-Used-Percent",
+        "X-Codex-Secondary-Reset-After-Seconds",
+        "X-Codex-Secondary-Reset-At",
+      );
+      if (!primary5h && !weekly) {
+        continue;
+      }
+      updates.push({
+        canonicalLocalIdentity: normalizeProxyAccountLocalIdentity(match.groups.auth),
+        ...(primary5h ? { primary5h } : {}),
+        ...(weekly ? { weekly } : {}),
+      });
+    } catch {}
+  }
+
+  return updates;
+}
+
+function mergeQuotaSnapshotUpdates(
+  store: PersistedQuotaSnapshotStore,
+  accounts: AccountView[],
+  updates: QuotaSnapshotUpdate[],
+): { snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; changed: boolean } {
+  let changed = false;
+  const snapshotsByKey = new Map<string, PersistedQuotaSnapshot>();
+  for (const snapshot of store.snapshots) {
+    snapshotsByKey.set(snapshot.proxyAccountKey, snapshot);
+  }
+
+  const keyByCanonicalIdentity = new Map<string, string>();
+  for (const account of accounts) {
+    const canonicalIdentity = normalizeProxyAccountLocalIdentity(account.fileName);
+    if (!keyByCanonicalIdentity.has(canonicalIdentity)) {
+      keyByCanonicalIdentity.set(canonicalIdentity, deriveProxyAccountKey(store, canonicalIdentity));
+    }
+  }
+
+  for (const update of updates) {
+    const proxyAccountKey = keyByCanonicalIdentity.get(update.canonicalLocalIdentity);
+    if (!proxyAccountKey) {
+      continue;
+    }
+    let snapshot = snapshotsByKey.get(proxyAccountKey);
+    if (!snapshot) {
+      snapshot = { proxyAccountKey };
+      snapshotsByKey.set(proxyAccountKey, snapshot);
+      changed = true;
+    }
+    changed = mergeQuotaWindowEvidence(snapshot, "primary5h", update.primary5h) || changed;
+    changed = mergeQuotaWindowEvidence(snapshot, "weekly", update.weekly) || changed;
+  }
+
+  store.snapshots = [...snapshotsByKey.values()]
+    .filter(hasQuotaEvidence)
+    .sort((left, right) => left.proxyAccountKey.localeCompare(right.proxyAccountKey));
+
+  const snapshotsByCanonicalIdentity = new Map<string, PersistedQuotaSnapshot>();
+  for (const [canonicalIdentity, proxyAccountKey] of keyByCanonicalIdentity) {
+    const snapshot = snapshotsByKey.get(proxyAccountKey);
+    if (snapshot && hasQuotaEvidence(snapshot)) {
+      snapshotsByCanonicalIdentity.set(canonicalIdentity, snapshot);
+    }
+  }
+  return { snapshotsByCanonicalIdentity, changed };
+}
+
+async function readMergedQuotaSnapshots(
+  paths: DashboardPaths,
+  accounts: AccountView[],
+  beforeWrite?: () => Promise<void> | void,
+): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; errors: string[] }> {
+  const updates = await readResponseHeaderQuotaUpdates(paths.logsDir);
+  const stateFilePath = paths.quotaSnapshotStatePath;
+
+  try {
+    return await withQuotaSnapshotStateLock(stateFilePath, async () => {
+      await validateQuotaSnapshotStatePath(stateFilePath, paths.authDir, paths.configPath);
+      const { store, error, dirty } = await readQuotaSnapshotStoreFile(stateFilePath);
+      const merged = mergeQuotaSnapshotUpdates(store, accounts, updates);
+      if (dirty || merged.changed) {
+        await beforeWrite?.();
+        await atomicWriteOwnerOnlyJson(stateFilePath, store);
+      }
+      return {
+        snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
+        errors: error ? [error] : [],
+      };
+    });
+  } catch (error) {
+    const store = createEmptyQuotaSnapshotStore();
+    const merged = mergeQuotaSnapshotUpdates(store, accounts, updates);
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
+      errors: [`Quota snapshot state store unavailable: ${message}`],
+    };
+  }
+}
+
 async function readDashboardState(options: DashboardOptions = {}): Promise<DashboardState> {
   const paths = await resolveDashboardPaths(options);
   const [config, accountsResult, modelsResult, logSummary, latestCodexSelectionFromLogs] =
@@ -616,6 +1580,11 @@ async function readDashboardState(options: DashboardOptions = {}): Promise<Dashb
       readLogSummary(paths.mainLogPath),
       readLatestCodexSelection(paths.logsDir),
     ]);
+  const quotaSnapshots = await readMergedQuotaSnapshots(
+    paths,
+    accountsResult.accounts,
+    options.beforeQuotaSnapshotStateWrite,
+  );
   const latestCodexSelection =
     latestCodexSelectionFromLogs ??
     (logSummary.latestSelection?.auth?.startsWith("codex-")
@@ -631,26 +1600,53 @@ async function readDashboardState(options: DashboardOptions = {}): Promise<Dashb
       : null);
   const selectedAccount = latestCodexSelection
     ? (accountsResult.accounts.find(
-        (account) => account.fileName === path.basename(latestCodexSelection.auth),
+        (account) =>
+          normalizeProxyAccountLocalIdentity(account.fileName) ===
+          normalizeProxyAccountLocalIdentity(path.basename(latestCodexSelection.auth)),
       ) ?? null)
     : null;
+
+  const accountsMapped = accountsResult.accounts.map((account) => {
+    return {
+      ...publicAccount(
+        account,
+        toPublicQuotaSnapshot(
+          quotaSnapshots.snapshotsByCanonicalIdentity.get(
+            normalizeProxyAccountLocalIdentity(account.fileName),
+          ),
+        ),
+      ),
+    };
+  });
+  const selectedAccountMapped = selectedAccount
+    ? publicAccount(
+        selectedAccount,
+        toPublicQuotaSnapshot(
+          quotaSnapshots.snapshotsByCanonicalIdentity.get(
+            normalizeProxyAccountLocalIdentity(selectedAccount.fileName),
+          ),
+        ),
+      )
+    : null;
+
   return {
-    paths,
+    paths: publicDashboardPaths(paths),
     config: publicConfig(config),
-    accounts: accountsResult.accounts.map(publicAccount),
-    selectedAccount: selectedAccount ? publicAccount(selectedAccount) : null,
+    accounts: accountsMapped,
+    selectedAccount: selectedAccountMapped,
     models: modelsResult.models,
     logSummary: {
       ...logSummary,
       latestCodexSelection,
     },
     errors: [
-      ...(config ? [] : [`Could not read proxy config at ${paths.configPath}`]),
-      ...accountsResult.errors,
-      ...modelsResult.errors,
-      ...(logSummary.latestRequest || logSummary.latestSelection || latestCodexSelection
-        ? []
-        : [`No recent proxy logs found at ${paths.mainLogPath}`]),
+        ...(config ? [] : [`Could not read proxy config at ${paths.configPath}`]),
+        ...accountsResult.errors,
+        ...modelsResult.errors,
+        ...quotaSnapshots.errors,
+        ...(logSummary.latestRequest || logSummary.latestSelection || latestCodexSelection
+          ? []
+          : [`No recent proxy logs found at ${paths.mainLogPath}`]),
     ],
     lastRefreshedAt: new Date().toISOString(),
   };
@@ -785,8 +1781,8 @@ async function setRoutingConfig(
   return normalizeConfig(raw, configPath);
 }
 
-async function startOauthLogin(configPath: string, email?: string): Promise<string> {
-  const execPath = "/Users/phamtuan/.local/bin/cli-proxy-api";
+async function startOauthLogin(configPath: string, email?: string, cliProxyBin?: string): Promise<string> {
+  const execPath = cliProxyBin ?? resolveCliProxyBin();
   const args = ["--config", configPath, "-codex-login", "-no-browser"];
 
   const child = spawn(execPath, args, {
@@ -927,7 +1923,38 @@ function textResponse(
   res.end(text);
 }
 
-function htmlPage(): string {
+function isSameOriginRequest(req: IncomingMessage): boolean {
+  const headers = req.headers ?? {};
+  const fetchSite = asHeaderValue(headers["sec-fetch-site"]).toLowerCase();
+  const origin = asHeaderValue(headers.origin).trim();
+  const host = asHeaderValue(headers.host).trim();
+  if (origin) {
+    if (!host || origin !== `http://${host}`) {
+      return false;
+    }
+  }
+  if (fetchSite) {
+    return fetchSite === "same-origin" || fetchSite === "none";
+  }
+  return Boolean(origin);
+}
+
+function requiresOperatorToken(method: string, pathname: string): boolean {
+  if (!pathname.startsWith("/api/")) {
+    return false;
+  }
+  return !(method === "GET" && pathname === "/api/state");
+}
+
+function hasValidOperatorToken(req: IncomingMessage, options: DashboardOptions): boolean {
+  const expected = options.operatorToken;
+  if (!expected) {
+    return false;
+  }
+  return asHeaderValue(req.headers?.[DASHBOARD_OPERATOR_TOKEN_HEADER]).trim() === expected;
+}
+
+function htmlPage(operatorToken: string): string {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -1533,6 +2560,20 @@ function htmlPage(): string {
         </div>
       </section>
 
+      <section id="rate-limits-section" style="display: none;">
+        <div class="section-title">
+          <h2>Rate Limit Resets</h2>
+          <div class="meta" id="rate-limits-meta"></div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px; border: 1px solid var(--warn); border-radius: 12px; background: var(--warn-soft);">
+          <div>
+            <div style="font-weight: 600; font-size: 16px; color: var(--warn);">Rate limit reset is available!</div>
+            <div style="font-size: 14px; color: var(--muted); margin-top: 4px;">You have <span id="reset-credits-count" style="font-weight: 700;">0</span> rate limit reset(s) banked in your Codex account.</div>
+          </div>
+            <button type="button" id="redeem-reset-btn" class="primary" disabled title="Reset-credit redemption is outside the retained snapshot story." style="background: var(--warn); border-color: var(--warn); color: #000; font-weight: 600; padding: 10px 20px; opacity: .55; cursor: not-allowed;">Redemption disabled</button>
+        </div>
+      </section>
+
       <section>
         <div class="section-title">
           <h2>Overview</h2>
@@ -1685,11 +2726,13 @@ function htmlPage(): string {
         </div>
         <ul class="error-list" id="errors"></ul>
       </section>
-    </main>
-
-    <script type="module">
-      const state = {
-        data: null,
+      </main>
+  
+      <script type="module">
+        const OPERATOR_TOKEN = ${JSON.stringify(operatorToken)};
+        const state = {
+          data: null,
+          rateLimits: null,
         busy: false,
         refreshTimer: null,
       };
@@ -1736,6 +2779,55 @@ function htmlPage(): string {
 
       function formatValue(value, fallback = "—") {
         return value === null || value === undefined || value === "" ? fallback : value;
+      }
+
+      function formatToGmt7(dateInput) {
+        if (!dateInput || dateInput === "—" || dateInput === "\u2014") return "—";
+        try {
+          const d = new Date(dateInput);
+          if (isNaN(d.getTime())) return String(dateInput);
+          const formatter = new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Bangkok",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+          });
+          const parts = formatter.formatToParts(d);
+          const year = parts.find(p => p.type === 'year')?.value;
+          const month = parts.find(p => p.type === 'month')?.value;
+          const day = parts.find(p => p.type === 'day')?.value;
+          const hour = parts.find(p => p.type === 'hour')?.value;
+          const minute = parts.find(p => p.type === 'minute')?.value;
+          const second = parts.find(p => p.type === 'second')?.value;
+          return \`\${year}-\${month}-\${day} \${hour}:\${minute}:\${second}\`;
+        } catch {
+          return String(dateInput);
+        }
+      }
+
+      function formatDateGmt7(dateInput) {
+        if (!dateInput || dateInput === "—" || dateInput === "\u2014") return "—";
+        try {
+          const d = new Date(dateInput);
+          if (isNaN(d.getTime())) return String(dateInput);
+          const formatter = new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Bangkok",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit"
+          });
+          const parts = formatter.formatToParts(d);
+          const year = parts.find(p => p.type === 'year')?.value;
+          const month = parts.find(p => p.type === 'month')?.value;
+          const day = parts.find(p => p.type === 'day')?.value;
+          return \`\${year}-\${month}-\${day}\`;
+        } catch {
+          return String(dateInput);
+        }
       }
 
       function selectedAuthName() {
@@ -1816,7 +2908,7 @@ function htmlPage(): string {
             \`,
           )
           .join("");
-        els.refreshMeta.textContent = \`last refresh \${data.lastRefreshedAt}\`;
+        els.refreshMeta.textContent = "last refresh " + formatToGmt7(data.lastRefreshedAt);
         els.configPath.textContent = data.paths.configPath;
         if (config) {
           els.routingStrategy.value = config.routingStrategy;
@@ -1843,23 +2935,93 @@ function htmlPage(): string {
               statusBadge = '<div class="status-pulse-container" style="margin-top: 6px;"><span class="status-pulse good"></span><div class="badge good">Valid</div></div>';
             } else if (account.validityStatus === "invalid") {
               const tooltip = escapeHtml(account.validationError || "Session has ended");
-              statusBadge = \`<div class="status-pulse-container" style="margin-top: 6px;"><span class="status-pulse bad"></span><div class="badge bad" title="\\\${tooltip}">Session ended</div></div>\`;
+              statusBadge = '<div class="status-pulse-container" style="margin-top: 6px;"><span class="status-pulse bad"></span><div class="badge bad" title="' + tooltip + '">Session ended</div></div>';
             }
 
+              const quota = account.quota || {};
+              const primary5h = quota.primary5h || { status: "unknown" };
+              const weekly = quota.weekly || { status: "unknown" };
+              const nowMs = Date.now();
+
+              const barColor = (pct) => pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--good)";
+              const statusColor = (status) => {
+                if (status === "current") return "var(--good)";
+                if (status === "blocked") return "var(--bad)";
+                if (status === "unknown") return "var(--fg-muted,#888)";
+                return "var(--warn)";
+              };
+              const fmtReset = (resetAt) => {
+                const resetMs = resetAt ? Date.parse(resetAt) : NaN;
+                if (!Number.isFinite(resetMs)) return "";
+                if (nowMs > resetMs) return "Reset passed";
+                const d = new Date(resetMs);
+                return "Resets " + d.toLocaleString("en-US", { timeZone: "Asia/Bangkok", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+              };
+            const fmtAge = (ms) => {
+              if (ms < 0) return "";
+              const mins = Math.round((nowMs - ms) / 60000);
+              if (mins < 1) return "just now";
+              if (mins < 60) return mins + "m ago";
+              const hrs = Math.round(mins / 60);
+                if (hrs < 24) return hrs + "h ago";
+                return Math.round(hrs / 24) + "d ago";
+              };
+              const mkBar = (label, windowQuota) => {
+                const pct = typeof windowQuota.usedPercent === "number" ? windowQuota.usedPercent : -1;
+                const status = windowQuota.status || "unknown";
+                if (pct < 0) {
+                  return '<div style="min-width:130px;"><div style="font-size:10px;color:var(--fg-muted,#888);margin-bottom:2px;">' + label + '</div><div style="color:#555;font-size:12px;">Unknown</div><div style="font-size:10px;color:' + statusColor(status) + ';">' + escapeHtml(status) + '</div></div>';
+                }
+                const rem = (100 - pct) + "%";
+                const color = barColor(pct);
+                const fillPct = Math.max(0, 100 - pct);
+                const resetStr = fmtReset(windowQuota.resetAt);
+                const observedMs = windowQuota.observedAt ? Date.parse(windowQuota.observedAt) : NaN;
+                const observedStr = Number.isFinite(observedMs) ? "Observed " + fmtAge(observedMs) : "";
+                const remainingLabel = status === "current" ? rem + " remaining" : rem + " latest known";
+                return '<div style="min-width:130px;">' +
+                  '<div style="font-size:10px;color:var(--fg-muted,#888);margin-bottom:2px;">' + label + '</div>' +
+                  '<div style="font-weight:700;font-size:13px;color:' + color + ';">' + remainingLabel + '</div>' +
+                  '<div style="margin:4px 0;height:5px;border-radius:3px;background:rgba(255,255,255,0.08);overflow:hidden;">' +
+                    '<div style="height:100%;width:' + fillPct + '%;background:' + color + ';border-radius:3px;transition:width .3s;"></div>' +
+                  '</div>' +
+                  '<div style="font-size:10px;color:' + statusColor(status) + ';">' + escapeHtml(status) + '</div>' +
+                  (resetStr ? '<div style="font-size:10px;color:var(--fg-muted,#888);">' + resetStr + '</div>' : "") +
+                  (observedStr ? '<div style="font-size:10px;color:var(--fg-muted,#888);">' + observedStr + '</div>' : "") +
+                '</div>';
+              };
+              const quotaCell = '<div style="display:flex;flex-direction:column;gap:10px;">' +
+                  mkBar("5 hour usage limit", primary5h) +
+                  mkBar("Weekly usage limit", weekly) +
+                '</div>';
+
             const showReauth = account.validityStatus === "invalid";
-            const reauthBtn = showReauth ? \`<button type="button" data-action="reauth" style="background: var(--warn-soft); border-color: rgba(245, 158, 11, 0.2); color: var(--warn);">Reauth</button>\` : "";
+            const reauthBtn = showReauth ? '<button type="button" data-action="reauth" style="flex:1;font-size:11px;padding:4px 6px;background:var(--warn-soft);border-color:rgba(245,158,11,0.2);color:var(--warn);">⟳ Reauth</button>' : "";
 
             const isExpired = account.expired ? new Date(account.expired) < new Date() : false;
             const expiryStyle = isExpired ? "color: var(--bad); font-weight: bold;" : "";
-            const expiryText = isExpired ? \`\${escapeHtml(account.expired)} (Expired)\` : escapeHtml(account.expired || "—");
+            const expiryText = isExpired
+              ? escapeHtml(formatToGmt7(account.expired)) + " (Expired)"
+              : escapeHtml(account.expired ? formatToGmt7(account.expired) : "—");
+
+              const planDisplay = account.subscriptionPlan || account.plan || "free";
+            const planBadge = planDisplay.toLowerCase() === "plus"
+              ? '<span class="badge warn" style="margin-left: 6px; font-size: 10px; padding: 2px 6px; background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(249, 115, 22, 0.2)); border-color: rgba(245, 158, 11, 0.4); color: var(--warn); font-weight: 600; text-transform: uppercase;">Plus</span>'
+              : '<span class="badge neutral" style="margin-left: 6px; font-size: 10px; padding: 2px 6px; text-transform: uppercase;">Free</span>';
+
+              const isSubExpired = account.subscriptionActiveUntil ? new Date(account.subscriptionActiveUntil) < new Date() : false;
+              const subExpiryStyle = isSubExpired ? "color: var(--bad); font-weight: bold;" : "";
+              const subExpiryText = isSubExpired
+                ? escapeHtml(formatDateGmt7(account.subscriptionActiveUntil)) + " (Expired)"
+                : (account.subscriptionActiveUntil ? escapeHtml(formatDateGmt7(account.subscriptionActiveUntil)) : "—");
 
             return \`
               <tr class="\${selected ? "row-active" : ""}" data-file="\${escapeHtml(account.fileName)}">
                 <td class="mono tabular-nums">\${index + 1}</td>
                 <td>
-                  <div><strong>\${escapeHtml(account.email)}</strong></div>
+                  <div style="display: flex; align-items: center; gap: 4px;"><strong>\${escapeHtml(account.email)}</strong>\${planBadge}</div>
                   <div class="muted mono">\${escapeHtml(account.fileName)}</div>
-                  <div class="muted small mono">\${escapeHtml(account.accountIdShort || "—")} \${escapeHtml(account.type || "")} \${escapeHtml(account.plan || "")}</div>
+                  <div class="muted small mono">\${escapeHtml(account.accountIdShort || "—")} \${escapeHtml(account.type || "")}</div>
                 </td>
                 <td style="min-width: 120px;">
                   <input class="field inline mono tabular-nums" data-field="priority" value="\${escapeHtml(priorityValue)}" placeholder="\${account.priority}" />
@@ -1872,19 +3034,32 @@ function htmlPage(): string {
                   <label class="small"><input type="checkbox" data-field="disabled" \${account.disabled ? "checked" : ""} /> disabled</label>
                   \${statusBadge}
                 </td>
+                <td style="min-width: 90px;">
+                  \${quotaCell}
+                </td>
                 <td class="mono small tabular-nums">
-                  <div title="Last refresh"><span class="muted">Ref:</span> \${escapeHtml(account.lastRefresh || "—")}</div>
-                  <div title="Expires at" style="\${expiryStyle}"><span class="muted">Exp:</span> \${expiryText}</div>
+                  <div title="Last refresh"><span class="muted">Ref:</span> \${escapeHtml(account.lastRefresh ? formatToGmt7(account.lastRefresh) : "\u2014")}</div>
+                  <div title="OAuth Session Expires at" style="\${expiryStyle}"><span class="muted">Exp:</span> \${expiryText}</div>
+                  <div title="ChatGPT Subscription active until" style="\${subExpiryStyle}"><span class="muted">Sub:</span> \${subExpiryText}</div>
                 </td>
                 <td>
-                  <div class="actions">
-                    <button type="button" data-action="verify" style="background: var(--accent-soft); border-color: rgba(99, 102, 241, 0.15); color: var(--accent);">Verify</button>
-                    \${reauthBtn}
-                    <button type="button" data-action="save">Save</button>
-                    <button type="button" data-action="primary" class="primary">Primary</button>
-                    <button type="button" data-action="backup">Backup</button>
-                    <button type="button" data-action="clear">Clear priority</button>
-                    <button type="button" data-action="toggle" class="\${account.disabled ? "primary" : ""}">\${account.disabled ? "Enable" : "Disable"}</button>
+                  <div style="display:flex;flex-direction:column;gap:5px;min-width:130px;">
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                      <button type="button" data-action="verify" title="Verify token" style="flex:1;min-width:52px;background:rgba(99,102,241,0.12);border-color:rgba(99,102,241,0.25);color:var(--accent);font-size:11px;padding:4px 6px;">✓ Verify</button>
+                      <button type="button" data-action="primary" title="Set as primary" style="flex:1;min-width:52px;font-size:11px;padding:4px 6px;background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.3);color:var(--warn);font-weight:600;">★ Primary</button>
+                    </div>
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                      <button type="button" data-action="save" title="Save priority/note changes" style="flex:1;min-width:40px;font-size:11px;padding:4px 6px;">Save</button>
+                      <button type="button" data-action="toggle" title="\${account.disabled ? 'Enable this account' : 'Disable this account'}" style="flex:1;min-width:40px;font-size:11px;padding:4px 6px;\${account.disabled ? 'background:rgba(99,102,241,0.15);color:var(--accent);' : ''}">\${account.disabled ? "Enable" : "Disable"}</button>
+                    </div>
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                      \${reauthBtn}
+                      <button type="button" data-action="backup" title="Set as low-priority backup" style="flex:1;font-size:11px;padding:4px 6px;">Backup</button>
+                      <button type="button" data-action="clear" title="Remove explicit priority" style="flex:1;font-size:11px;padding:4px 6px;">Clear ★</button>
+                    </div>
+                    <div style="display:flex;gap:4px;margin-top:2px;border-top:1px solid rgba(255,255,255,0.06);padding-top:5px;">
+                      <button type="button" data-action="delete" title="Permanently delete this profile" style="flex:1;font-size:11px;padding:4px 6px;background:rgba(239,68,68,0.1);border-color:rgba(239,68,68,0.25);color:#f87171;">🗑 Delete</button>
+                    </div>
                   </div>
                 </td>
               </tr>
@@ -1915,11 +3090,23 @@ function htmlPage(): string {
           : '<div class="muted">No request lines found in the tail of main.log.</div>';
       }
 
+      function renderRateLimits() {
+        const rl = state.rateLimits;
+        const section = document.getElementById("rate-limits-section");
+        if (!rl || !rl.ok || rl.availableCount <= 0) {
+          section.style.display = "none";
+          return;
+        }
+        section.style.display = "block";
+        document.getElementById("reset-credits-count").textContent = rl.availableCount;
+      }
+
       function render() {
         renderSummary();
         renderAccounts();
         renderModels();
         renderLogs();
+        renderRateLimits();
       }
 
       function setTestStatus(kind, message) {
@@ -1945,6 +3132,21 @@ function htmlPage(): string {
             throw new Error(\`state request failed: \${response.status}\`);
           }
           state.data = await response.json();
+
+          try {
+              const rlResponse = await fetch("/api/codex/rate-limits", {
+                cache: "no-store",
+                headers: { "${DASHBOARD_OPERATOR_TOKEN_HEADER}": OPERATOR_TOKEN },
+              });
+            if (rlResponse.ok) {
+              state.rateLimits = await rlResponse.json();
+            } else {
+              state.rateLimits = null;
+            }
+          } catch (rlErr) {
+            state.rateLimits = null;
+          }
+
           render();
         } catch (error) {
           setTestStatus("bad", error instanceof Error ? error.message : String(error));
@@ -1954,11 +3156,14 @@ function htmlPage(): string {
       }
 
       async function postJson(url, payload) {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "${DASHBOARD_OPERATOR_TOKEN_HEADER}": OPERATOR_TOKEN,
+            },
+            body: JSON.stringify(payload),
+          });
         const text = await response.text();
         let parsed;
         try {
@@ -2022,6 +3227,24 @@ function htmlPage(): string {
             await postJson(\`/api/accounts/\${encodeURIComponent(fileName)}\`, {
               disabled: !(disabledField && disabledField.checked),
             });
+          } else if (action === "delete") {
+            const email = row.querySelector("strong")?.textContent || fileName;
+            const confirmed = window.confirm(\`Delete "\${email}"?\\n\\nThe file will be backed up before removal. This cannot be undone from the dashboard.\`);
+            if (!confirmed) {
+              return;
+            }
+            setTestStatus("neutral", \`Deleting \${fileName}…\`);
+              const response = await fetch(\`/api/accounts/\${encodeURIComponent(fileName)}\`, {
+                method: "DELETE",
+                headers: { "${DASHBOARD_OPERATOR_TOKEN_HEADER}": OPERATOR_TOKEN },
+              });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(result.error || \`Delete failed: \${response.status}\`);
+            }
+            setTestStatus("good", \`\${email} deleted successfully\`);
+            await refresh();
+            return;
           }
           await refresh();
           if (action !== "verify" && action !== "reauth") {
@@ -2175,6 +3398,10 @@ function htmlPage(): string {
         }
       });
 
+        document.getElementById("redeem-reset-btn").addEventListener("click", () => {
+          setTestStatus("warn", "Reset-credit redemption is outside this retained snapshot story.");
+        });
+
       // Theme toggling logic
       const themeToggle = document.getElementById("theme-toggle");
       function getTheme() {
@@ -2199,7 +3426,7 @@ function htmlPage(): string {
       updateThemeIcon(getTheme());
 
       refresh();
-      state.refreshTimer = window.setInterval(refresh, 3000);
+      state.refreshTimer = window.setInterval(refresh, 60000);
     </script>
   </body>
 </html>`;
@@ -2214,8 +3441,46 @@ async function handleApi(
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const segments = url.pathname.split("/").filter(Boolean);
 
+  if (segments[0] === "api" && !isSameOriginRequest(req)) {
+    jsonResponse(res, 403, { error: "same-origin dashboard request required" });
+    return true;
+  }
+  if (requiresOperatorToken(method, url.pathname) && !hasValidOperatorToken(req, options)) {
+    jsonResponse(res, 403, { error: "valid dashboard operator token required" });
+    return true;
+  }
+
   if (method === "GET" && url.pathname === "/api/state") {
     jsonResponse(res, 200, await readDashboardState(options));
+    return true;
+  }
+
+  if (method === "GET" && url.pathname === "/api/codex/rate-limits") {
+    const codexBin = resolveCodexBin(options);
+    try {
+      const result = await queryCodexAppServer(codexBin, "account/rateLimits/read", {});
+      const rawResult = result as any;
+      const availableCount =
+        typeof rawResult?.rateLimitResetCredits?.availableCount === "number" ||
+        typeof rawResult?.rateLimitResetCredits?.availableCount === "bigint"
+          ? Number(rawResult.rateLimitResetCredits.availableCount)
+          : 0;
+      jsonResponse(res, 200, { ok: true, availableCount });
+    } catch (err: any) {
+      if (err.message && err.message.includes("authentication required")) {
+        jsonResponse(res, 200, { ok: false, error: err.message, authRequired: true, availableCount: 0 });
+      } else {
+        jsonResponse(res, 500, { error: err.message || String(err) });
+      }
+    }
+    return true;
+  }
+
+  if (method === "POST" && url.pathname === "/api/codex/consume-reset") {
+    jsonResponse(res, 403, {
+      ok: false,
+      error: "Reset-credit redemption is outside the retained quota snapshot story",
+    });
     return true;
   }
 
@@ -2251,14 +3516,9 @@ async function handleApi(
     const email = typeof body.email === "string" ? body.email.trim() : "";
     const resolved = await resolveDashboardPaths(options);
 
-    // Clean up any existing stuck login processes first
     try {
-      const pkill = spawn("pkill", ["-f", "cli-proxy-api.*-codex-login"]);
-      await new Promise((resolve) => pkill.on("close", resolve));
-    } catch {}
-
-    try {
-      const url = await startOauthLogin(resolved.configPath, email);
+      await cleanupStuckOauthLogins();
+      const url = await startOauthLogin(resolved.configPath, email, resolveCliProxyBin(options));
       jsonResponse(res, 200, { ok: true, url, message: "OAuth login URL generated" });
     } catch (error) {
       jsonResponse(res, 500, { error: error instanceof Error ? error.message : String(error) });
@@ -2394,6 +3654,27 @@ async function handleApi(
         priority: null,
       });
       jsonResponse(res, 200, { ok: true, account: publicAccount(account) });
+      return true;
+    }
+    if (method === "DELETE" && segments.length === 3) {
+      const filePath = resolveAccountPath(resolved.authDir, fileName);
+      let exists = false;
+      try {
+        await access(filePath);
+        exists = true;
+      } catch {}
+      if (!exists) {
+        jsonResponse(res, 404, { error: `Account not found: ${fileName}` });
+        return true;
+      }
+      try {
+        await mkdir(resolved.backupRoot, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupName = `${fileName}.deleted-${ts}`;
+        await copyFile(filePath, path.join(resolved.backupRoot, backupName));
+      } catch {}
+      await unlink(filePath);
+      jsonResponse(res, 200, { ok: true, deleted: fileName });
       return true;
     }
     if (method === "POST" && segments[3] === "verify") {
@@ -2534,22 +3815,31 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 async function startServer(
   options: DashboardOptions & { host: string; port: number; open?: boolean },
 ): Promise<void> {
+  const serverOptions = {
+    ...options,
+    operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
+  };
   const server = createServer(async (req, res) => {
     try {
       if ((req.method ?? "GET").toUpperCase() === "OPTIONS") {
+        if (!isSameOriginRequest(req)) {
+          jsonResponse(res, 403, { error: "same-origin dashboard request required" });
+          return;
+        }
         res.writeHead(204, {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Headers": "*",
-          "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
+          "Access-Control-Allow-Headers": `Content-Type, ${DASHBOARD_OPERATOR_TOKEN_HEADER}`,
+          "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
         });
         res.end();
         return;
-      }
-      if (await handleApi(req, res, options)) {
-        return;
-      }
+        }
+        if (await handleApi(req, res, serverOptions)) {
+          return;
+        }
       if ((req.method ?? "GET").toUpperCase() === "GET" && (req.url ?? "/") === "/") {
-        textResponse(res, 200, htmlPage(), "text/html; charset=utf-8");
+        textResponse(res, 200, htmlPage(serverOptions.operatorToken), "text/html; charset=utf-8");
         return;
       }
       jsonResponse(res, 404, { error: "not found" });
@@ -2594,13 +3884,11 @@ async function startServer(
   process.stdout.write(`Cliproxy dashboard: ${url}\n`);
   process.stdout.write(`Config: ${options.configPath ?? DEFAULT_CONFIG_PATH}\n`);
   process.stdout.write(`Auth dir: ${options.authDir ?? DEFAULT_AUTH_DIR}\n`);
+  process.stdout.write(`Quota snapshot state: ${options.quotaSnapshotStatePath ?? defaultQuotaSnapshotStatePath(options.authDir ?? DEFAULT_AUTH_DIR)}\n`);
+  process.stdout.write(`CLI proxy bin: ${resolveCliProxyBin(options)}\n`);
 
   if (options.open) {
-    const child = spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
+    openExternalUrl(url);
   }
 
   const shutdown = async () => {
@@ -2623,11 +3911,13 @@ function parseCliArgs(argv = process.argv.slice(2)): {
   open: boolean;
   configPath?: string;
   authDir?: string;
-  backupRoot?: string;
-  mainLogPath?: string;
-  proxyUrl?: string;
-  proxyPort?: number;
-  inboundKey?: string | null;
+    backupRoot?: string;
+    mainLogPath?: string;
+    quotaSnapshotStatePath?: string;
+    proxyUrl?: string;
+    proxyPort?: number;
+    inboundKey?: string | null;
+  cliProxyBin?: string;
 } {
   const parsed = {
     host: DEFAULT_HOST,
@@ -2637,15 +3927,17 @@ function parseCliArgs(argv = process.argv.slice(2)): {
     authDir: undefined as string | undefined,
     backupRoot: undefined as string | undefined,
     mainLogPath: undefined as string | undefined,
+    quotaSnapshotStatePath: undefined as string | undefined,
     proxyUrl: undefined as string | undefined,
     proxyPort: undefined as number | undefined,
     inboundKey: undefined as string | null | undefined,
+    cliProxyBin: undefined as string | undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 0] [--config <path>] [--auth-dir <path>] [--open]\n",
+        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--cli-proxy-bin <path>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--open]\n",
       );
       process.exit(0);
     }
@@ -2665,6 +3957,10 @@ function parseCliArgs(argv = process.argv.slice(2)): {
       parsed.configPath = argv[++index];
       continue;
     }
+    if (arg === "--cli-proxy-bin") {
+      parsed.cliProxyBin = argv[++index];
+      continue;
+    }
     if (arg === "--auth-dir") {
       parsed.authDir = argv[++index];
       continue;
@@ -2675,6 +3971,10 @@ function parseCliArgs(argv = process.argv.slice(2)): {
     }
     if (arg === "--main-log") {
       parsed.mainLogPath = argv[++index];
+      continue;
+    }
+    if (arg === "--state-file") {
+      parsed.quotaSnapshotStatePath = argv[++index];
       continue;
     }
     if (arg === "--proxy-url") {
@@ -2711,7 +4011,14 @@ export {
   sendTestRequest,
   promotePrimary,
   handleApi,
+  parseCliArgs,
+  resolveCliProxyBin,
+  resolveCodexBin,
+  defaultCliProxyBin,
+  buildOpenUrlCommand,
+  buildStuckOauthCleanupCommand,
   DEFAULT_BACKUP_PRIORITY,
+  DEFAULT_DASHBOARD_PORT,
   DEFAULT_PRIORITY,
 };
 
