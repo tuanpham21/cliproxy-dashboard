@@ -1,0 +1,127 @@
+.account-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plan-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.priority-cell {
+  min-width: 120px;
+}
+
+.note-cell {
+  min-width: 140px;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-pulse-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.status-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.status-pulse.good {
+  background: var(--good);
+}
+
+.status-pulse.bad {
+  background: var(--bad);
+}
+
+.quota-cell {
+  min-width: 170px;
+}
+
+.quota-window {
+  display: grid;
+  gap: 2px;
+  min-width: 140px;
+  margin-bottom: 10px;
+}
+
+.quota-label,
+.quota-note,
+.quota-status {
+  font-size: 10px;
+}
+
+.quota-label,
+.quota-note,
+.quota-unknown {
+  color: var(--muted);
+}
+
+.quota-value {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.quota-status {
+  font-weight: 600;
+}
+
+.timing-cell {
+  min-width: 150px;
+}
+
+.account-actions {
+  display: grid;
+  min-width: 138px;
+  gap: 5px;
+}
+
+.account-actions button {
+  flex: 1;
+  min-width: 52px;
+  min-height: 26px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.action-verify,
+.action-enable {
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.action-primary {
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.15);
+  font-weight: 700;
+}
+
+.action-reauth {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.danger-row {
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+}
+
+.action-delete {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.row-highlight {
+  background: rgba(255, 255, 255, 0.03);
+}

@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="cliproxy-dashboard-token" content="__CLIPROXY_OPERATOR_TOKEN__" />
+    <title>Cliproxy Dashboard</title>
+  </head>
+  <body>
+    <header>
+      <div class="header-title-area">
+        <h1>Cliproxy Dashboard</h1>
+        <div class="subtitle">Local Proxy Account priority, routing config, and recent selector logs.</div>
+      </div>
+      <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle theme" type="button">Theme</button>
+    </header>
+
+    <main>
+      <section>
+        <div class="section-title">
+          <h2>Accounts</h2>
+          <div class="account-title-meta">
+            <span class="badge neutral" id="account-count"></span>
+            <span class="badge neutral" id="selected-account"></span>
+            <button type="button" id="verify-all-btn" class="small verify-all-button">Verify All</button>
+          </div>
+        </div>
+        <div class="stack">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Account</th>
+                <th>Priority</th>
+                <th>Note</th>
+                <th>Status</th>
+                <th>Quota</th>
+                <th>Timing</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="accounts"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="rate-limits-section" class="is-hidden">
+        <div class="section-title">
+          <h2>Rate Limit Resets</h2>
+          <div class="meta" id="rate-limits-meta"></div>
+        </div>
+        <div class="rate-limit-card">
+          <div>
+            <div class="rate-limit-title">Rate limit reset is available</div>
+            <div class="rate-limit-copy">
+              You have <span id="reset-credits-count" class="reset-count">0</span> rate limit reset(s) banked in your Codex account.
+            </div>
+          </div>
+          <button type="button" id="redeem-reset-btn" class="primary redeem-reset-button" disabled>
+            Redemption disabled
+          </button>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Overview</h2>
+          <div class="meta" id="refresh-meta"></div>
+        </div>
+        <div class="summary" id="summary"></div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Routing</h2>
+          <div class="meta">Changes write back to <span class="mono" id="config-path"></span></div>
+        </div>
+        <div class="toolbar">
+          <label class="wide">
+            Strategy
+            <select id="routing-strategy" class="field">
+              <option value="fill-first">fill-first</option>
+              <option value="failover">failover</option>
+            </select>
+          </label>
+          <label class="narrow checkbox-label">
+            <span>Session affinity</span>
+            <input id="session-affinity" type="checkbox" />
+          </label>
+          <div class="actions">
+            <button id="save-routing" class="primary" type="button">Save routing</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Add Codex Account</h2>
+          <div class="meta">Authenticate a new account or import an existing credentials file.</div>
+        </div>
+        <div class="form-grid">
+          <div class="form-column">
+            <h3>Browser Authentication</h3>
+            <div class="oauth-card">
+              <button type="button" id="trigger-oauth-btn" class="primary oauth-button">
+                Login via Browser
+              </button>
+              <div class="helper-text">
+                Opens a browser tab to authenticate a Codex account through Google/OpenAI.
+                The Proxy Account appears here once completed.
+              </div>
+            </div>
+          </div>
+          <div class="form-column">
+            <h3>Import from JSON</h3>
+            <div class="form-column fill-height">
+              <div class="form-group fill-height">
+                <label for="paste-json-area">Paste Codex credentials JSON file</label>
+                <textarea
+                  id="paste-json-area"
+                  class="field paste-area"
+                  placeholder='{
+  "email": "user@example.com",
+  "access_token": "..."
+}'
+                  spellcheck="false"
+                  autocomplete="off"
+                ></textarea>
+              </div>
+              <div class="actions form-footer">
+                <button type="button" id="import-json-btn" class="primary full-width">Import Account JSON</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Test request</h2>
+          <div class="meta">Uses the current proxy config and inbound key.</div>
+        </div>
+        <div class="toolbar">
+          <label class="wide">
+            Prompt
+            <input id="test-prompt" class="field" value="cliproxy dashboard test request" />
+          </label>
+          <label class="narrow">
+            Model
+            <input id="test-model" class="field" value="gpt-5.4-mini" />
+          </label>
+          <label class="narrow">
+            Max tokens
+            <input id="test-tokens" class="field" type="number" min="1" step="1" value="1" />
+          </label>
+          <div class="actions">
+            <button id="send-test" class="primary" type="button">Send test request</button>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="statusline small">
+            <span class="badge neutral" id="model-count">0 models</span>
+          </div>
+          <div class="model-list" id="model-list"></div>
+          <div class="statusline">
+            <span class="badge neutral" id="test-status">idle</span>
+            <span class="message" id="test-message"></span>
+          </div>
+          <div class="terminal-window">
+            <div class="terminal-header">
+              <div class="terminal-dots">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+              </div>
+              <div class="terminal-title">test-output.json</div>
+            </div>
+            <pre class="log test-output" id="test-output"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Selector log</h2>
+          <div class="meta">Newest Codex selection is highlighted here.</div>
+        </div>
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="terminal-dot red"></span>
+              <span class="terminal-dot yellow"></span>
+              <span class="terminal-dot green"></span>
+            </div>
+            <div class="terminal-title">selector.log</div>
+          </div>
+          <div class="terminal-body" id="selector-log"></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Request log</h2>
+          <div class="meta">Latest proxy requests from the service log.</div>
+        </div>
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="terminal-dot red"></span>
+              <span class="terminal-dot yellow"></span>
+              <span class="terminal-dot green"></span>
+            </div>
+            <div class="terminal-title">request.log</div>
+          </div>
+          <div class="terminal-body" id="request-log"></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>Errors</h2>
+          <div class="meta">Read-only diagnostics from local files.</div>
+        </div>
+        <ul class="error-list" id="errors"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

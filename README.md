@@ -35,11 +35,11 @@ Designed with a cozy, high-contrast warm color palette (cozy chocolate-amber cha
 
 ## Tech Stack 🛠️
 
-* **Core**: Pure HTML & Client-side Vanilla JS (TypeScript compiled)
-* **Server**: Node.js HTTP Server (`src/cliproxy-dashboard.ts`)
-* **Styling**: Vanilla CSS (no Tailwind required, utilizing native variables, glassmorphic blurs, and keyframe animations)
-* **Build System**: TypeScript (`tsc`)
-* **Test Runner**: Vitest (`src/cliproxy-dashboard.test.ts`)
+* **Frontend**: Plain Vite + TypeScript under `frontend/`
+* **Server**: Node.js HTTP Server (`src/cliproxy-dashboard.ts`) with implementation modules under `src/server/`
+* **Styling**: Vanilla CSS (no Tailwind required)
+* **Build System**: TypeScript (`tsc`) plus Vite (`vite build`)
+* **Test Runner**: Vitest (`src/test/*.test.ts`, `frontend/src/*.test.ts`)
 
 ---
 
@@ -47,10 +47,17 @@ Designed with a cozy, high-contrast warm color palette (cozy chocolate-amber cha
 
 ```
 cliproxy-dashboard/
-├── dist/                # Compiled JavaScript output
-├── src/                 # TypeScript Source code
-│   ├── cliproxy-dashboard.ts       # Main server & HTML page generator
-│   └── cliproxy-dashboard.test.ts  # Vitest unit test suite
+├── dist/
+│   ├── cliproxy-dashboard.js       # Built server entry used by LaunchAgent/start
+│   └── frontend/                   # Built Vite frontend assets
+├── frontend/
+│   ├── index.html                  # Vite HTML shell
+│   ├── vite.config.ts              # Frontend dev/build config
+│   └── src/                        # Browser TypeScript and CSS
+├── src/
+│   ├── cliproxy-dashboard.ts       # Stable server entry and export surface
+│   ├── server/                     # Server/API/state/quota/log modules
+│   └── test/                       # Vitest server tests and helpers
 ├── tsconfig.json        # TypeScript configuration compiler options
 ├── package.json         # Scripts, dependencies, and devDependencies
 └── .gitignore           # File/folder exclusion list
@@ -84,13 +91,23 @@ pnpm run build
 
 ### Scripts
 
-* **Start in Development Mode**:
+* **Start the Vite Frontend in Development Mode**:
   ```powershell
   pnpm run dev
   ```
+  Run `pnpm run dev:server` in another shell for the Node API that Vite proxies to.
 * **Build the Codebase**:
   ```powershell
   pnpm run build
+  ```
+* **Build Only the Server or Frontend**:
+  ```powershell
+  pnpm run build:server
+  pnpm run build:frontend
+  ```
+* **Type Check**:
+  ```powershell
+  pnpm run typecheck
   ```
 * **Run the Test Suite**:
   ```powershell
