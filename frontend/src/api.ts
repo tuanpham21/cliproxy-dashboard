@@ -1,4 +1,4 @@
-import type { DashboardState, RateLimitState } from "./types";
+import type { DashboardState, RateLimitState } from "../../shared/types";
 
 const TOKEN_PLACEHOLDER = "__CLIPROXY_OPERATOR_TOKEN__";
 const OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";

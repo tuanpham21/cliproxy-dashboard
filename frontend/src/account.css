@@ -5,8 +5,17 @@
 }
 
 .plan-badge {
+  margin-left: 6px;
   font-size: 10px;
+  padding: 2px 6px;
+  font-weight: 600;
   text-transform: uppercase;
+}
+
+.plan-badge.plan-plus {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(249, 115, 22, 0.2));
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--warn);
 }
 
 .priority-cell {
@@ -77,42 +86,115 @@
   font-weight: 600;
 }
 
+.quota-bar-container {
+  margin: 4px 0;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  width: 100%;
+  min-width: 130px;
+}
+
+:root[data-theme="light"] .quota-bar-container {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.quota-bar-fill.good {
+  background-color: var(--good);
+}
+.quota-bar-fill.warn {
+  background-color: var(--warn);
+}
+.quota-bar-fill.bad {
+  background-color: var(--bad);
+}
+.quota-bar-fill.neutral {
+  background-color: var(--muted);
+}
+
 .timing-cell {
   min-width: 150px;
 }
 
 .account-actions {
-  display: grid;
-  min-width: 138px;
+  display: flex;
+  flex-direction: column;
   gap: 5px;
+  min-width: 130px;
+}
+
+.account-actions .action-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 .account-actions button {
   flex: 1;
-  min-width: 52px;
   min-height: 26px;
   padding: 4px 6px;
   font-size: 11px;
 }
 
-.action-verify,
-.action-enable {
+.account-actions button[data-action="verify"],
+.account-actions button[data-action="primary"] {
+  min-width: 52px;
+}
+
+.account-actions button[data-action="save"],
+.account-actions button[data-action="toggle"] {
+  min-width: 40px;
+}
+
+.action-verify {
   color: var(--accent);
   background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+.action-verify:hover {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.4);
 }
 
 .action-primary {
   color: var(--warn);
   background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.3);
   font-weight: 700;
+}
+
+.action-primary:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.action-enable {
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent);
 }
 
 .action-reauth {
   color: var(--warn);
   background: var(--warn-soft);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.action-reauth:hover {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.3);
 }
 
 .danger-row {
+  margin-top: 2px;
   padding-top: 5px;
   border-top: 1px solid var(--line);
 }
@@ -120,6 +202,12 @@
 .action-delete {
   color: #f87171;
   background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.action-delete:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
 }
 
 .row-highlight {

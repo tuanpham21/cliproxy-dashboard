@@ -3,7 +3,8 @@ import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { handleApi, serveFrontend } from "../cliproxy-dashboard.js";
+import { handleApi } from "../api.js";
+import { serveFrontend } from "../static.js";
 import { TEST_OPERATOR_TOKEN, makeMockRes, makeTempRoot, sameOriginHeaders } from "./helpers.js";
 
 function mockReq(method: string, url: string, headers: Record<string, string> = {}): IncomingMessage {
@@ -50,6 +51,17 @@ describe("cliproxy dashboard runtime bootstrap and static frontend", () => {
     ).toBe(true);
     expect(assetRes.getStatus()).toBe(200);
     expect(assetRes.getHeaders()["Content-Type"]).toContain("text/javascript");
+
+    await writeFile(path.join(frontendDistDir, "assets", "dashboard.woff2"), "font");
+    const fontRes = makeMockRes();
+    expect(
+      await serveFrontend(mockReq("GET", "/assets/dashboard.woff2"), fontRes.res, {
+        operatorToken: TEST_OPERATOR_TOKEN,
+        frontendDistDir,
+      }),
+    ).toBe(true);
+    expect(fontRes.getStatus()).toBe(200);
+    expect(fontRes.getHeaders()["Content-Type"]).toBe("font/woff2");
 
     const traversalRes = makeMockRes();
     expect(

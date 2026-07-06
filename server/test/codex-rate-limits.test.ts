@@ -5,19 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 
-import {
-  DEFAULT_DASHBOARD_PORT,
-  buildOpenUrlCommand,
-  buildStuckOauthCleanupCommand,
-  defaultCliProxyBin,
-  handleApi,
-  parseCliArgs,
-  readDashboardState,
-  resolveCliProxyBin,
-  setAccountPatch,
-  setRoutingConfig,
-  sortAccounts,
-} from "../cliproxy-dashboard.js";
+import { handleApi } from "../api.js";
 import { spawnCalls } from "./mock-child-process.js";
 import {
   TEST_OPERATOR_TOKEN,

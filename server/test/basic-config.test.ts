@@ -5,19 +5,12 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 
-import {
-  DEFAULT_DASHBOARD_PORT,
-  buildOpenUrlCommand,
-  buildStuckOauthCleanupCommand,
-  defaultCliProxyBin,
-  handleApi,
-  parseCliArgs,
-  readDashboardState,
-  resolveCliProxyBin,
-  setAccountPatch,
-  setRoutingConfig,
-  sortAccounts,
-} from "../cliproxy-dashboard.js";
+import { setAccountPatch, sortAccounts } from "../accounts.js";
+import { parseCliArgs } from "../cli.js";
+import { buildOpenUrlCommand, buildStuckOauthCleanupCommand, defaultCliProxyBin, resolveCliProxyBin } from "../commands.js";
+import { setRoutingConfig } from "../config.js";
+import { DEFAULT_DASHBOARD_PORT } from "../constants.js";
+import { readDashboardState } from "../dashboard-state.js";
 import { spawnCalls } from "./mock-child-process.js";
 import {
   TEST_OPERATOR_TOKEN,

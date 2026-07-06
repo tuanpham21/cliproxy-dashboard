@@ -36,10 +36,10 @@ Designed with a cozy, high-contrast warm color palette (cozy chocolate-amber cha
 ## Tech Stack 🛠️
 
 * **Frontend**: Plain Vite + TypeScript under `frontend/`
-* **Server**: Node.js HTTP Server (`src/cliproxy-dashboard.ts`) with implementation modules under `src/server/`
+* **Server**: Node.js HTTP Server (`cliproxy-dashboard.ts`) with implementation modules under `server/`
 * **Styling**: Vanilla CSS (no Tailwind required)
 * **Build System**: TypeScript (`tsc`) plus Vite (`vite build`)
-* **Test Runner**: Vitest (`src/test/*.test.ts`, `frontend/src/*.test.ts`)
+* **Test Runner**: Vitest (`server/test/*.test.ts`, `frontend/src/*.test.ts`)
 
 ---
 
@@ -54,10 +54,10 @@ cliproxy-dashboard/
 │   ├── index.html                  # Vite HTML shell
 │   ├── vite.config.ts              # Frontend dev/build config
 │   └── src/                        # Browser TypeScript and CSS
-├── src/
-│   ├── cliproxy-dashboard.ts       # Stable server entry and export surface
-│   ├── server/                     # Server/API/state/quota/log modules
+├── server/                         # Node runtime, API, state, quota, logs
 │   └── test/                       # Vitest server tests and helpers
+├── shared/                         # Browser-safe DTO and API contract types
+├── cliproxy-dashboard.ts           # Stable LaunchAgent/start entrypoint
 ├── tsconfig.json        # TypeScript configuration compiler options
 ├── package.json         # Scripts, dependencies, and devDependencies
 └── .gitignore           # File/folder exclusion list
@@ -68,7 +68,7 @@ cliproxy-dashboard/
 ## Getting Started 🚀
 
 ### Prerequisites
-* **Node.js**: `v20` or higher
+* **Node.js**: `v22.13` or higher. The LaunchAgent and validated local checks use `v24.11.1`.
 * **Go CLI Proxy**: Install `cli-proxy-api.exe` and pass it with `--cli-proxy-bin`, or set `CLI_PROXY_API_BIN`.
 
 Windows migration paths:

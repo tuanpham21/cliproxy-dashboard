@@ -1,3 +1,38 @@
+import type {
+  CodexSelectionLogLine,
+  DashboardState,
+  LogSummary,
+  ProxyModelView,
+  PublicAccountView,
+  PublicDashboardPaths,
+  PublicProxyConfig,
+  PublicQuotaSnapshot,
+  PublicQuotaStatus,
+  PublicQuotaWindow,
+  QuotaEvidenceSource,
+  QuotaWindowName,
+  RequestLogLine,
+  SelectorLogLine,
+} from "../shared/types.js";
+
+export type {
+  CodexSelectionLogLine,
+  DashboardState,
+  LogSummary,
+  ProxyModelView,
+  PublicAccountView,
+  PublicDashboardPaths,
+  PublicProxyConfig,
+  PublicQuotaSnapshot,
+  PublicQuotaStatus,
+  PublicQuotaWindow,
+  QuotaEvidenceSource,
+  QuotaWindowName,
+  RateLimitState,
+  RequestLogLine,
+  SelectorLogLine,
+} from "../shared/types.js";
+
 export type DashboardPaths = {
   configPath: string;
   authDir: string;
@@ -10,10 +45,6 @@ export type DashboardPaths = {
   inboundKey: string | null;
 };
 
-export type PublicDashboardPaths = Omit<DashboardPaths, "inboundKey"> & {
-  inboundKeyConfigured: boolean;
-};
-
 export type ProxyConfig = {
   raw: Record<string, unknown>;
   path: string;
@@ -23,15 +54,6 @@ export type ProxyConfig = {
   sessionAffinity: boolean;
   apiKeys: string[];
 };
-
-export type PublicProxyConfig = Omit<ProxyConfig, "raw" | "apiKeys"> & {
-  apiKeysConfigured: boolean;
-  apiKeyCount: number;
-};
-
-export type QuotaWindowName = "primary5h" | "weekly";
-export type QuotaEvidenceSource = "response-header" | "identity-bound-read";
-export type PublicQuotaStatus = "unknown" | "current" | "stale" | "refresh-needed" | "blocked";
 
 export type PersistedQuotaWindowEvidence = {
   usedPercent?: number;
@@ -57,16 +79,6 @@ export type PersistedQuotaSnapshotStore = {
   snapshots: PersistedQuotaSnapshot[];
 };
 
-export type PublicQuotaWindow = {
-  status: PublicQuotaStatus;
-  usedPercent?: number;
-  resetAt?: string;
-  observedAt?: string;
-  source?: QuotaEvidenceSource;
-};
-
-export type PublicQuotaSnapshot = Record<QuotaWindowName, PublicQuotaWindow>;
-
 export type AccountView = {
   fileName: string;
   path: string;
@@ -87,70 +99,6 @@ export type AccountView = {
   subscriptionActiveUntil?: string;
   subscriptionLastChecked?: string;
   raw: Record<string, unknown>;
-};
-
-export type PublicAccountView = Omit<AccountView, "raw"> & {
-  quota: PublicQuotaSnapshot;
-};
-
-export type SelectorLogLine = {
-  timestamp: string;
-  traceId: string;
-  level: string;
-  source: string;
-  session: string;
-  auth: string;
-  provider: string;
-  model: string;
-  raw: string;
-};
-
-export type CodexSelectionLogLine = {
-  timestamp: string;
-  auth: string;
-  provider: string;
-  raw: string;
-  fileName: string;
-  label: string;
-  type: string;
-};
-
-export type ProxyModelView = {
-  id: string;
-  created: number;
-  ownedBy: string;
-};
-
-export type RequestLogLine = {
-  timestamp: string;
-  traceId: string;
-  level: string;
-  source: string;
-  status: number;
-  duration: string;
-  client: string;
-  method: string;
-  path: string;
-  raw: string;
-};
-
-export type LogSummary = {
-  latestSelection: SelectorLogLine | null;
-  latestCodexSelection: CodexSelectionLogLine | null;
-  recentSelections: SelectorLogLine[];
-  latestRequest: RequestLogLine | null;
-  recentRequests: RequestLogLine[];
-};
-
-export type DashboardState = {
-  paths: PublicDashboardPaths;
-  config: PublicProxyConfig | null;
-  accounts: PublicAccountView[];
-  selectedAccount: PublicAccountView | null;
-  models: ProxyModelView[];
-  logSummary: LogSummary;
-  errors: string[];
-  lastRefreshedAt: string;
 };
 
 export type DashboardOptions = {

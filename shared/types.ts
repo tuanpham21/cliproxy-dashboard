@@ -1,3 +1,5 @@
+export type QuotaWindowName = "primary5h" | "weekly";
+export type QuotaEvidenceSource = "response-header" | "identity-bound-read";
 export type PublicQuotaStatus = "unknown" | "current" | "stale" | "refresh-needed" | "blocked";
 
 export type PublicQuotaWindow = {
@@ -5,10 +7,10 @@ export type PublicQuotaWindow = {
   usedPercent?: number;
   resetAt?: string;
   observedAt?: string;
-  source?: "response-header" | "identity-bound-read";
+  source?: QuotaEvidenceSource;
 };
 
-export type PublicQuotaSnapshot = Record<"primary5h" | "weekly", PublicQuotaWindow>;
+export type PublicQuotaSnapshot = Record<QuotaWindowName, PublicQuotaWindow>;
 
 export type PublicDashboardPaths = {
   configPath: string;

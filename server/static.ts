@@ -17,6 +17,8 @@ const contentTypes = new Map<string, string>([
   [".jpeg", "image/jpeg"],
   [".webp", "image/webp"],
   [".ico", "image/x-icon"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"],
 ]);
 
 const csp = [

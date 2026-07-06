@@ -9,7 +9,7 @@ import {
   relativeAge,
   resetLabel,
 } from "./format";
-import type { DashboardState, PublicAccountView, PublicQuotaWindow, RateLimitState } from "./types";
+import type { DashboardState, PublicAccountView, PublicQuotaWindow, RateLimitState } from "../../shared/types";
 
 export type DashboardElements = {
   refreshMeta: HTMLElement;
@@ -150,6 +150,7 @@ function renderQuotaWindow(label: string, windowQuota: PublicQuotaWindow | undef
     `;
   }
   const remaining = Math.max(0, 100 - quota.usedPercent);
+  const fillPct = Math.max(0, 100 - quota.usedPercent);
   const reset = resetLabel(quota.resetAt);
   const observed = relativeAge(quota.observedAt);
   const availabilityLabel = quota.status === "current" ? "remaining" : "latest known";
@@ -157,6 +158,9 @@ function renderQuotaWindow(label: string, windowQuota: PublicQuotaWindow | undef
     <div class="quota-window">
       <div class="quota-label">${escapeHtml(label)}</div>
       <div class="quota-value ${usageClass}">${escapeHtml(`${remaining}% ${availabilityLabel}`)}</div>
+      <div class="quota-bar-container">
+        <div class="quota-bar-fill ${usageClass}" data-width="${fillPct}"></div>
+      </div>
       <div class="quota-status ${statusClass}">${escapeHtml(quota.status)}</div>
       ${reset ? `<div class="quota-note">${escapeHtml(reset)}</div>` : ""}
       ${observed ? `<div class="quota-note">${escapeHtml(observed)}</div>` : ""}
@@ -178,7 +182,8 @@ function statusBadge(account: PublicAccountView): string {
 function planBadge(account: PublicAccountView): string {
   const planDisplay = account.subscriptionPlan || account.plan || "free";
   const isPlus = planDisplay.toLowerCase() === "plus";
-  return `<span class="badge ${isPlus ? "warn plan-plus" : "neutral"} plan-badge">${escapeHtml(planDisplay)}</span>`;
+  const labelText = isPlus ? "Plus" : "Free";
+  return `<span class="badge ${isPlus ? "warn plan-plus" : "neutral"} plan-badge">${escapeHtml(labelText)}</span>`;
 }
 
 function renderAccounts(state: AppState, els: DashboardElements): void {
@@ -239,20 +244,20 @@ function renderAccounts(state: AppState, els: DashboardElements): void {
           <td>
             <div class="account-actions">
               <div class="action-row">
-                <button type="button" data-action="verify" class="action-verify">Verify</button>
-                <button type="button" data-action="primary" class="action-primary">Primary</button>
+                <button type="button" data-action="verify" class="action-verify" title="Verify token">✓ Verify</button>
+                <button type="button" data-action="primary" class="action-primary" title="Set as primary">★ Primary</button>
               </div>
               <div class="action-row">
-                <button type="button" data-action="save">Save</button>
-                <button type="button" data-action="toggle" class="${account.disabled ? "action-enable" : ""}">${account.disabled ? "Enable" : "Disable"}</button>
+                <button type="button" data-action="save" title="Save priority/note changes">Save</button>
+                <button type="button" data-action="toggle" title="${account.disabled ? "Enable this account" : "Disable this account"}" class="${account.disabled ? "action-enable" : ""}">${account.disabled ? "Enable" : "Disable"}</button>
               </div>
               <div class="action-row">
-                ${showReauth ? '<button type="button" data-action="reauth" class="action-reauth">Reauth</button>' : ""}
-                <button type="button" data-action="backup">Backup</button>
-                <button type="button" data-action="clear">Clear</button>
+                ${showReauth ? '<button type="button" data-action="reauth" class="action-reauth" title="Reauthenticate">⟳ Reauth</button>' : ""}
+                <button type="button" data-action="backup" title="Set as low-priority backup">Backup</button>
+                <button type="button" data-action="clear" title="Remove explicit priority">Clear ★</button>
               </div>
               <div class="action-row danger-row">
-                <button type="button" data-action="delete" class="action-delete">Delete</button>
+                <button type="button" data-action="delete" class="action-delete" title="Permanently delete this profile">🗑 Delete</button>
               </div>
             </div>
           </td>
@@ -260,6 +265,14 @@ function renderAccounts(state: AppState, els: DashboardElements): void {
       `;
     })
     .join("");
+
+  const fills = els.accounts.querySelectorAll<HTMLElement>(".quota-bar-fill");
+  fills.forEach((fill) => {
+    const widthVal = fill.getAttribute("data-width");
+    if (widthVal) {
+      fill.style.width = `${widthVal}%`;
+    }
+  });
 }
 
 function renderLogs(state: AppState, els: DashboardElements): void {

@@ -6,9 +6,10 @@
   "main": "dist/cliproxy-dashboard.js",
   "scripts": {
     "dev": "vite --config frontend/vite.config.ts",
-    "dev:server": "tsx src/cliproxy-dashboard.ts --host 127.0.0.1 --port 60949 --no-port-fallback",
+    "dev:server": "tsx cliproxy-dashboard.ts --host 127.0.0.1 --port 60949 --no-port-fallback",
     "build": "pnpm run build:server && pnpm run build:frontend",
-    "build:server": "tsc -p tsconfig.json",
+    "clean:server": "node -e \"const fs=require('node:fs'); for (const p of ['dist/cliproxy-dashboard.js','dist/server','dist/shared','dist/src']) fs.rmSync(p,{recursive:true,force:true})\"",
+    "build:server": "pnpm run clean:server && tsc -p tsconfig.json",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "preview": "vite preview --config frontend/vite.config.ts",
     "start": "node dist/cliproxy-dashboard.js",
@@ -22,6 +23,8 @@
     "yaml": "^2.3.4"
   },
   "devDependencies": {
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/outfit": "^5.2.8",
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
