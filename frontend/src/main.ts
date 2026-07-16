@@ -1,8 +1,9 @@
-import { deleteJson, postJson, readDashboardState, readRateLimits } from "./api";
+import { deleteJson, postJson, putJson, readDashboardState, readRateLimits } from "./api";
 import { inferPlan } from "./format";
 import { type AppState, type DashboardElements, render, renderModels, setTestStatus } from "./render";
 import "./theme.css";
 import "./account.css";
+import "./rotation.css";
 import "./styles.css";
 
 const state: AppState = {
@@ -46,6 +47,7 @@ const els: DashboardElements = {
   importJsonBtn: byId("import-json-btn"),
   triggerOauthBtn: byId("trigger-oauth-btn"),
   verifyAllBtn: byId("verify-all-btn"),
+  rotation: byId("rotation"),
 };
 
 function activeElementBlocksRefresh(): boolean {
@@ -57,7 +59,7 @@ function activeElementBlocksRefresh(): boolean {
   if (!isEditable) {
     return false;
   }
-  return els.accounts.contains(active) || active.id === "routing-strategy" || active.id === "session-affinity";
+  return els.accounts.contains(active) || els.rotation.contains(active) || active.id === "routing-strategy" || active.id === "session-affinity";
 }
 
 async function refresh(): Promise<void> {
@@ -204,6 +206,50 @@ els.saveRouting.addEventListener("click", async () => {
     setTestStatus(els, "good", "routing saved");
   } catch (error) {
     setTestStatus(els, "bad", error instanceof Error ? error.message : String(error));
+  }
+});
+
+els.rotation.addEventListener("click", async (event) => {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest<HTMLButtonElement>("button");
+  if (!button) return;
+  const mode = button.getAttribute("data-rotation-mode");
+  const action = button.getAttribute("data-rotation-action");
+  const poolAction = button.getAttribute("data-rotation-pool-action");
+  if (!mode && !action && !poolAction) return;
+
+  button.disabled = true;
+  try {
+    setTestStatus(els, "neutral", "updating Quota-Balanced Rotation...");
+    if (mode) {
+      await postJson("/api/rotation/mode", { mode });
+    } else if (action === "pause") {
+      await postJson("/api/rotation/pause", { message: "Operator paused Quota-Balanced Rotation" });
+    } else if (action === "manual-hold") {
+      await postJson("/api/rotation/manual-hold", { message: "Operator entered Manual Hold from dashboard" });
+    } else if (action === "resume") {
+      await postJson("/api/rotation/resume", {});
+    } else if (action === "recover") {
+      await postJson("/api/rotation/recover", {});
+    } else if (poolAction) {
+      const proxyAccountKey = button.getAttribute("data-proxy-account-key") ?? "";
+      const fileName = button.getAttribute("data-file-name") ?? "";
+      if (!proxyAccountKey || !fileName) throw new Error("Proxy Account Key and file name are required");
+      if (poolAction === "add") {
+        const row = button.closest<HTMLElement>("[data-rotation-pool-row]");
+        const exclusivity = row?.querySelector<HTMLInputElement>("[data-rotation-exclusivity]");
+        if (!exclusivity?.checked) throw new Error("Proxy-exclusive usage attestation is required");
+        await putJson(`/api/rotation/pool/${encodeURIComponent(proxyAccountKey)}`, { fileName, exclusivityAttested: true });
+      } else if (poolAction === "remove") {
+        await deleteJson(`/api/rotation/pool/${encodeURIComponent(proxyAccountKey)}`);
+      }
+    }
+    await refresh();
+    setTestStatus(els, "good", "Quota-Balanced Rotation updated");
+  } catch (error) {
+    setTestStatus(els, "bad", error instanceof Error ? error.message : String(error));
+  } finally {
+    button.disabled = false;
   }
 });
 

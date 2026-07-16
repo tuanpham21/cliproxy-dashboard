@@ -132,6 +132,21 @@ export type RotationJournal = {
   updatedAt?: string;
 };
 
+export type PendingRotationRequest = {
+  observationId: string;
+  evidenceWatermark: string;
+  fromProxyAccountKey?: string;
+  routingTargetKey: string;
+  targetFingerprint: string;
+};
+
+export type PendingRotationConfirmation = {
+  observationId: string;
+  observedRoutedAccountKey: string;
+  observedFingerprint: string;
+  evidenceWatermark: string;
+};
+
 export type RotationPrioritySnapshot = {
   fileName: string;
   present: boolean;
@@ -157,6 +172,10 @@ export type RotationState = {
   observedRoutedAccountKey?: string;
   lastObservationId?: string;
   evidenceWatermark?: string;
+  lastDecision?: RotationDecision;
+  eligibleCount?: number;
+  provisionalCount?: number;
+  quotaSpread?: number;
   switchTimestamps: number[];
   journal: RotationJournal;
   overlay?: RotationOverlayState;

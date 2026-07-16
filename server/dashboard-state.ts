@@ -56,27 +56,31 @@ export async function readDashboardState(options: DashboardOptions = {}): Promis
       ) ?? null)
     : null;
 
-  const accountsMapped = accountsResult.accounts.map((account) => {
-    return {
-      ...publicAccount(
-        account,
-        toPublicQuotaSnapshot(
-          quotaSnapshots.snapshotsByCanonicalIdentity.get(
-            normalizeProxyAccountLocalIdentity(account.fileName),
-          ),
+    const accountsMapped = accountsResult.accounts.map((account) => {
+        const quotaSnapshot = quotaSnapshots.snapshotsByCanonicalIdentity.get(
+          normalizeProxyAccountLocalIdentity(account.fileName),
+        );
+        const canonicalLocalIdentity = normalizeProxyAccountLocalIdentity(account.fileName);
+        return {
+          ...publicAccount(
+            account,
+            toPublicQuotaSnapshot(quotaSnapshot),
+            quotaSnapshots.proxyAccountKeysByCanonicalIdentity.get(canonicalLocalIdentity),
         ),
-      ),
     };
   });
   const selectedAccountMapped = selectedAccount
-    ? publicAccount(
-        selectedAccount,
-        toPublicQuotaSnapshot(
-          quotaSnapshots.snapshotsByCanonicalIdentity.get(
+      ? publicAccount(
+          selectedAccount,
+          toPublicQuotaSnapshot(quotaSnapshots.snapshotsByCanonicalIdentity.get(
             normalizeProxyAccountLocalIdentity(selectedAccount.fileName),
-          ),
-        ),
-      )
+          )),
+            quotaSnapshots.snapshotsByCanonicalIdentity.get(
+              normalizeProxyAccountLocalIdentity(selectedAccount.fileName),
+            )?.proxyAccountKey ?? quotaSnapshots.proxyAccountKeysByCanonicalIdentity.get(
+              normalizeProxyAccountLocalIdentity(selectedAccount.fileName),
+            ),
+        )
     : null;
 
   return {

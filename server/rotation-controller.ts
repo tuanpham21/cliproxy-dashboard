@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { atomicWriteText } from "./files.js";
@@ -8,70 +7,37 @@ import {
   releaseRotationStateOwnership,
   type RotationStateOwnership,
 } from "./rotation-state-ownership.js";
-import { isRotationState, MAX_ROTATION_PRIORITY } from "./rotation-state-codec.js";
+import { MAX_ROTATION_PRIORITY } from "./rotation-state-codec.js";
+import {
+  cloneRotationState as cloneState,
+  emptyRotationJournal as emptyJournal,
+  readInitialRotationState as readInitialState,
+  rotationLifecycleForMode as lifecycleForMode,
+} from "./rotation-controller-state.js";
+import {
+  appendRotationAudit,
+  enterManualHoldState,
+  recordObservationDecisionState,
+  replaceRotationPoolState,
+  resumeRotationState,
+  setRotationModeState,
+} from "./rotation-state-transitions.js";
 import type {
-  RotationControllerOptions,
-  RotationDecision,
-  RotationJournal,
+    RotationControllerOptions,
+    RotationDecision,
+    RotationJournal,
+    PendingRotationConfirmation,
+    PendingRotationRequest,
   RotationPauseReason,
   RotationPrioritySnapshot,
   RotationPrioritySnapshots,
   RotationPriorityWriter,
+  RotationPoolMember,
+  RotationMode,
   RotationState,
 } from "./rotation-types.js";
 
-type ManagedProxyAccount = Awaited<ReturnType<RotationPriorityWriter["readAccounts"]>>[number];
-
-export type PendingRotationRequest = {
-  observationId: string;
-  evidenceWatermark: string;
-  fromProxyAccountKey?: string;
-  routingTargetKey: string;
-  targetFingerprint: string;
-};
-
-export type PendingRotationConfirmation = {
-  observationId: string;
-  observedRoutedAccountKey: string;
-  observedFingerprint: string;
-  evidenceWatermark: string;
-};
-
-function emptyJournal(): RotationJournal {
-  return { phase: "idle" };
-}
-
-function lifecycleForMode(mode: RotationState["mode"]): RotationState["lifecycle"] {
-  return mode === "off" ? "off" : mode;
-}
-
-function defaultState(mode: RotationState["mode"]): RotationState {
-  return {
-    schemaVersion: 1,
-    mode,
-    lifecycle: lifecycleForMode(mode),
-    pool: [],
-    switchTimestamps: [],
-    journal: emptyJournal(),
-    manualHold: false,
-    restorationVerified: true,
-    audit: [],
-  };
-}
-
-function corruptState(message: string): RotationState {
-  return {
-    ...defaultState("off"),
-    lifecycle: "paused",
-    pauseReason: "corrupt-state",
-    pauseMessage: message,
-    restorationVerified: false,
-  };
-}
-
-function cloneState(state: RotationState): RotationState {
-  return structuredClone(state);
-}
+  type ManagedProxyAccount = Awaited<ReturnType<RotationPriorityWriter["readAccounts"]>>[number];
 
 function proxyAccountMap(proxyAccounts: ManagedProxyAccount[]): Map<string, ManagedProxyAccount> {
   return new Map(proxyAccounts.map((proxyAccount) => [proxyAccount.proxyAccountKey, proxyAccount]));
@@ -123,16 +89,6 @@ function snapshotConflict(
   return null;
 }
 
-async function readInitialState(statePath: string, mode: RotationState["mode"]): Promise<{ state: RotationState; missing: boolean }> {
-  try {
-    const parsed = JSON.parse(await readFile(statePath, "utf8")) as unknown;
-    return isRotationState(parsed) ? { state: parsed, missing: false } : { state: corruptState("rotation state schema is invalid"), missing: false };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: defaultState(mode), missing: true };
-    return { state: corruptState("rotation state is unreadable"), missing: false };
-  }
-}
-
 export class RotationController {
   readonly #statePath: string;
   readonly #writer?: RotationPriorityWriter;
@@ -161,29 +117,81 @@ export class RotationController {
     decision: RotationDecision;
     observationId: string;
     observationAt: string;
+    observedRoutedAccountKey?: string;
+    observedRoutedAt?: string;
+    eligibleCount?: number;
+    provisionalCount?: number;
   }): Promise<RotationState> {
     return await this.#withLock(async () => {
       if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required") return this.state();
-      const observedMs = Date.parse(input.observationAt);
-      const watermarkMs = Date.parse(this.#state.evidenceWatermark ?? "");
-      if (Number.isFinite(observedMs) && (!Number.isFinite(watermarkMs) || observedMs > watermarkMs)) {
-        this.#state.lastObservationId = input.observationId;
-        this.#state.evidenceWatermark = new Date(observedMs).toISOString();
-      }
-      this.#state.audit.push({
-        id: randomUUID(),
-        at: new Date(this.#now()).toISOString(),
-        kind: "decision",
-        message: input.decision.reason,
-        observationId: input.observationId,
-        ...(input.decision.targetKey ? { proxyAccountKey: input.decision.targetKey } : {}),
-        ...(input.decision.pauseReason ? { pauseReason: input.decision.pauseReason } : {}),
+      recordObservationDecisionState(this.#state, {
+        ...input,
+        eligibleCount: input.eligibleCount ?? 0,
+        provisionalCount: input.provisionalCount ?? 0,
+      }, this.#now());
+      await this.#persist();
+      return this.state();
+    });
+  }
+
+  async setMode(mode: RotationMode): Promise<RotationState> {
+    if (mode === "off") return await this.disable();
+    return await this.#withLock(async () => {
+      if (this.#state.pauseReason === "corrupt-state") return this.state();
+      setRotationModeState(this.#state, mode, this.#now());
+      await this.#persist();
+      return this.state();
+    });
+  }
+
+    async updatePool(update: (pool: RotationPoolMember[]) => RotationPoolMember[]): Promise<RotationState> {
+      return await this.#withLock(async () => {
+        if (this.#state.pauseReason === "corrupt-state") return this.state();
+        if (this.#state.journal.phase !== "idle") {
+          const rollback = await this.#rollbackPending();
+          if (rollback.lifecycle === "paused" || rollback.lifecycle === "recovery-required") return rollback;
+        }
+        if (this.#state.overlay) {
+          const restored = await this.#restoreOverlay(false);
+          if (restored.lifecycle === "paused" || restored.lifecycle === "recovery-required") return restored;
+        }
+        replaceRotationPoolState(this.#state, update(structuredClone(this.#state.pool)), this.#now());
+        await this.#persist();
+        return this.state();
       });
-      if (input.decision.kind === "pause") {
-        this.#state.lifecycle = "paused";
-        this.#state.pauseReason = input.decision.pauseReason ?? "observation-uncertain";
-        this.#state.pauseMessage = input.decision.reason;
+  }
+
+  async enterManualHold(message: string): Promise<RotationState> {
+    return await this.#withLock(async () => {
+      if (this.#state.pauseReason === "corrupt-state") return this.state();
+      if (this.#state.journal.phase !== "idle") {
+        const rollback = await this.#rollbackPending();
+        if (rollback.lifecycle === "paused" || rollback.lifecycle === "recovery-required") return rollback;
       }
+      if (this.#state.overlay) {
+        const restored = await this.#restoreOverlay(false);
+        if (restored.lifecycle === "paused" || restored.lifecycle === "recovery-required") return restored;
+      }
+      enterManualHoldState(this.#state, message, this.#now());
+      await this.#persist();
+      return this.state();
+    });
+  }
+
+    async resume(): Promise<RotationState> {
+      return await this.#withLock(async () => {
+        if (this.#state.pauseReason === "corrupt-state" || this.#state.journal.phase !== "idle") return this.state();
+        if (this.#state.overlay) {
+          if (!this.#writer) return await this.#pause("recovery-unverifiable", "CLIProxy priority writer unavailable during Resume re-baseline");
+          const current = proxyAccountMap(await this.#writer.readAccounts());
+          for (const [proxyAccountKey, baseline] of Object.entries(this.#state.overlay.basePriorities)) {
+            const proxyAccount = current.get(proxyAccountKey);
+            if (!proxyAccount) return await this.#pause("selection-mismatch", `Proxy Account deleted before Resume: ${proxyAccountKey}`);
+            if (!metadataMatches(proxyAccount, baseline)) return await this.#pause("identity-mismatch", `Proxy Account identity changed before Resume: ${proxyAccountKey}`);
+            if (!validPriority(proxyAccount)) return await this.#pause("external-priority-edit", `unsafe priority before Resume: ${proxyAccountKey}`);
+          }
+        }
+        resumeRotationState(this.#state, this.#now());
       await this.#persist();
       return this.state();
     });
@@ -197,11 +205,12 @@ export class RotationController {
       return this.#closing;
   }
 
-  async beginPendingRotation(request: PendingRotationRequest): Promise<RotationState> {
-    return await this.#withLock(async () => {
-      if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required") return this.state();
-      if (this.#state.mode === "off") return await this.#pause("observation-uncertain", "rotation controller is off");
-      if (!this.#writer) return await this.#pause("mutation-failed", "CLIProxy priority writer unavailable");
+    async beginPendingRotation(request: PendingRotationRequest): Promise<RotationState> {
+      return await this.#withLock(async () => {
+        if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required") return this.state();
+        if (this.#state.mode !== "active" || this.#state.lifecycle !== "active" || this.#state.manualHold) return this.state();
+        if (!this.#state.pool.some((member) => member.proxyAccountKey === request.routingTargetKey && member.exclusivityAttested)) return this.state();
+        if (!this.#writer) return await this.#pause("mutation-failed", "CLIProxy priority writer unavailable");
       if (this.#state.journal.phase !== "idle") return await this.#pause("recovery-unverifiable", "Pending Rotation already active");
 
       const proxyAccounts = await this.#writer.readAccounts();
@@ -284,12 +293,13 @@ export class RotationController {
 
     async confirmPendingRotation(confirmation: PendingRotationConfirmation): Promise<RotationState> {
       return await this.#withLock(async () => {
-        if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required") return this.state();
+        if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required" || this.#state.manualHold) return this.state();
         const journal = this.#state.journal;
-      if (journal.phase !== "verified" || !journal.routingTargetKey || journal.intendedPriority === undefined || !journal.basePriorities || !journal.previousPriorities) {
-        return await this.#pause("recovery-unverifiable", "no verified Pending Rotation to confirm");
-      }
-      if (confirmation.observationId !== journal.observationId || confirmation.observedRoutedAccountKey !== journal.routingTargetKey) {
+        if (journal.phase !== "verified" || !journal.routingTargetKey || journal.intendedPriority === undefined || !journal.basePriorities || !journal.previousPriorities) {
+          return await this.#pause("recovery-unverifiable", "no verified Pending Rotation to confirm");
+        }
+        this.#state.observedRoutedAccountKey = confirmation.observedRoutedAccountKey;
+        if (confirmation.observationId !== journal.observationId || confirmation.observedRoutedAccountKey !== journal.routingTargetKey) {
         return await this.#pause("selection-mismatch", "Observed Routed Account does not confirm intended target");
       }
       if (confirmation.observedFingerprint !== journal.targetFingerprint) {
@@ -312,10 +322,11 @@ export class RotationController {
       this.#state.evidenceWatermark = confirmation.evidenceWatermark;
       this.#state.switchTimestamps.push(this.#now());
       this.#state.lifecycle = lifecycleForMode(this.#state.mode);
-      this.#state.pauseReason = undefined;
-      this.#state.pauseMessage = undefined;
-      this.#state.journal.phase = "committed";
-      await this.#persist();
+        this.#state.pauseReason = undefined;
+        this.#state.pauseMessage = undefined;
+        this.#state.journal.phase = "committed";
+        appendRotationAudit(this.#state, { at: new Date(this.#now()).toISOString(), kind: "switch", message: "Observed Routed Account confirmed intended target", proxyAccountKey: journal.routingTargetKey, observationId: confirmation.observationId });
+        await this.#persist();
       await this.#inject("committed");
       this.#state.journal = emptyJournal();
       await this.#persist();
@@ -336,6 +347,7 @@ export class RotationController {
       if (this.#state.overlay) return await this.#restoreOverlay(true);
       this.#state.mode = "off";
       this.#state.lifecycle = "off";
+      this.#state.manualHold = false;
       this.#state.restorationVerified = true;
       this.#state.journal = emptyJournal();
       this.#state.pauseReason = undefined;
@@ -406,6 +418,7 @@ export class RotationController {
     if (disable) {
       this.#state.mode = "off";
       this.#state.lifecycle = "off";
+      this.#state.manualHold = false;
     } else {
       this.#state.lifecycle = lifecycleForMode(this.#state.mode);
     }
@@ -427,9 +440,11 @@ export class RotationController {
       };
       await this.#persist();
       await this.#inject("restoring");
-      await this.#restoreSnapshots(expected);
-      if (!(await this.#verifySnapshots(expected))) return await this.#pause("recovery-unverifiable", verificationMessage);
-      return null;
+        await this.#restoreSnapshots(expected);
+        if (!(await this.#verifySnapshots(expected))) return await this.#pause("recovery-unverifiable", verificationMessage);
+        appendRotationAudit(this.#state, { at: new Date(this.#now()).toISOString(), kind: "restore", message: `${restoreIntent} priority restoration verified` });
+        await this.#persist();
+        return null;
     }
 
     async #restoreSnapshots(expected: RotationPrioritySnapshots): Promise<void> {
@@ -499,7 +514,7 @@ export class RotationController {
     this.#state.lifecycle = "paused";
     this.#state.pauseReason = reason;
     this.#state.pauseMessage = message;
-    this.#state.audit.push({ id: randomUUID(), at: new Date(this.#now()).toISOString(), kind: "pause", message, pauseReason: reason });
+      appendRotationAudit(this.#state, { at: new Date(this.#now()).toISOString(), kind: "pause", message, pauseReason: reason });
     await this.#persist();
     return this.state();
   }

@@ -3,8 +3,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { openRotationController } from "../rotation-controller.js";
-import type { RotationPriorityWriter } from "../rotation-types.js";
+import { openRotationController as openRotationControllerRaw } from "../rotation-controller.js";
+import { RotationCoordinator } from "../rotation-coordinator.js";
+import type { RotationControllerOptions, RotationPriorityWriter } from "../rotation-types.js";
 import { makeTempRoot } from "./helpers.js";
 
 type ManagedProxyAccount = Awaited<ReturnType<RotationPriorityWriter["readAccounts"]>>[number];
@@ -93,6 +94,18 @@ const request = {
   targetFingerprint: "fingerprint-account-a",
 };
 
+async function openRotationController(options: RotationControllerOptions) {
+  const controller = await openRotationControllerRaw(options);
+  const state = controller.state();
+  if (state.mode === "active" && state.journal.phase === "idle" && state.pool.length === 0 && !state.pauseReason) {
+    await controller.updatePool(() => [
+      { proxyAccountKey: "account-a", fileName: "account-a.json", exclusivityAttested: true, addedAt: "2026-07-16T00:00:00.000Z" },
+      { proxyAccountKey: "account-b", fileName: "account-b.json", exclusivityAttested: true, addedAt: "2026-07-16T00:00:00.000Z" },
+    ]);
+  }
+  return controller;
+}
+
 describe("rotation controller journal and recovery", () => {
   it("defaults off and enforces singleton ownership", async () => {
     const filePath = await statePath();
@@ -166,14 +179,15 @@ describe("rotation controller journal and recovery", () => {
     await controller.confirmPendingRotation({ observationId: "observation-2", observedRoutedAccountKey: "account-b", observedFingerprint: "fingerprint-account-b", evidenceWatermark: "2026-07-16T00:00:04.000Z" });
     expect(writer.setCalls).toEqual([{ key: "account-a", priority: 11 }, { key: "account-b", priority: 12 }]);
 
-    const disabled = await controller.disable();
-    expect(disabled).toMatchObject({ mode: "off", lifecycle: "off", restorationVerified: true, journal: { phase: "idle" } });
+      const disabled = await controller.disable();
+      expect(disabled).toMatchObject({ mode: "off", lifecycle: "off", restorationVerified: true, journal: { phase: "idle" } });
+      expect(disabled.audit.map((event) => event.kind)).toContain("restore");
     expect(writer.proxyAccounts.get("account-a")).toMatchObject({ priority: 0, explicitPriority: false, disabled: false, note: "note-account-a" });
     expect(writer.proxyAccounts.get("account-b")).toMatchObject({ priority: 10, explicitPriority: true, disabled: false, note: "note-account-b" });
     await controller.close();
   });
 
-  it("recovers deterministically after journal, mutation, verification, commit, and restoration crashes", async () => {
+    it("recovers deterministically after journal, mutation, verification, commit, and restoration crashes", async () => {
     for (const crashPhase of ["journaled", "mutating", "mutated", "verified", "committed"] as const) {
       const filePath = await statePath();
       const writer = new FakePriorityWriter([proxyAccount("account-a"), proxyAccount("account-b", 10)]);
@@ -308,7 +322,7 @@ describe("rotation controller journal and recovery", () => {
     await controller.close();
   });
 
-  it("does not clear a hard pause when disable cannot safely roll back a pending mutation", async () => {
+    it("does not clear a hard pause when disable cannot safely roll back a pending mutation", async () => {
     const filePath = await statePath();
     const writer = new FakePriorityWriter([proxyAccount("account-a"), proxyAccount("account-b", 10)]);
     writer.afterSet = (proxyAccounts) => { proxyAccounts.get("account-a")!.priority = 99; };
@@ -325,10 +339,36 @@ describe("rotation controller journal and recovery", () => {
       journal: { phase: "mutated" },
       restorationVerified: false,
     });
-    await controller.close();
-  });
+      await controller.close();
+    });
 
-  it("rejects malformed nested persisted state", async () => {
+    it("does not erase overlay recovery authority when Resume sees identity drift", async () => {
+      const filePath = await statePath();
+      const writer = new FakePriorityWriter([proxyAccount("account-a"), proxyAccount("account-b", 10)]);
+      const controller = await openRotationController({ statePath: filePath, writer, mode: "active" });
+      await controller.beginPendingRotation(request);
+      await controller.confirmPendingRotation({
+        observationId: request.observationId,
+        observedRoutedAccountKey: "account-a",
+        observedFingerprint: "fingerprint-account-a",
+        evidenceWatermark: "2026-07-16T00:00:02.000Z",
+      });
+      await controller.recordObservationDecision({
+        decision: { kind: "pause", reason: "synthetic external edit", pauseReason: "external-priority-edit" },
+        observationId: "observation-pause",
+        observationAt: "2026-07-16T00:00:03.000Z",
+      });
+      writer.proxyAccounts.get("account-a")!.fingerprint = "replacement-fingerprint";
+
+      expect(await controller.resume()).toMatchObject({
+        lifecycle: "paused",
+        pauseReason: "identity-mismatch",
+        overlay: { basePriorities: { "account-a": { fingerprint: "fingerprint-account-a" } } },
+      });
+      await controller.close();
+    });
+
+    it("rejects malformed nested persisted state", async () => {
     for (const mutate of [
       (state: Record<string, unknown>) => { state.switchTimestamps = ["not-a-timestamp"]; },
       (state: Record<string, unknown>) => { state.lifecycle = "teleporting"; },
@@ -350,8 +390,31 @@ describe("rotation controller journal and recovery", () => {
       const corrupt = await openRotationController({ statePath: filePath });
       expect(corrupt.state()).toMatchObject({ lifecycle: "paused", pauseReason: "corrupt-state" });
       await corrupt.close();
-    }
-  });
+      }
+    });
+
+    it("completes a crash-interrupted rollback before Recover to Off", async () => {
+      const filePath = await statePath();
+      const writer = new FakePriorityWriter([proxyAccount("account-a"), proxyAccount("account-b", 10)]);
+      const crashing = await openRotationController({
+        statePath: filePath,
+        writer,
+        mode: "active",
+        crashInjector: (phase) => { if (phase === "restoring") throw new Error("crash:restoring"); },
+      });
+      await crashing.beginPendingRotation(request);
+      await expect(crashing.enterManualHold("Synthetic operator action")).rejects.toThrow("crash:restoring");
+      await crashing.close();
+      expect(writer.proxyAccounts.get("account-a")).toMatchObject({ priority: 11, explicitPriority: true });
+
+      const reopened = await openRotationController({ statePath: filePath, writer, mode: "active" });
+      const coordinator = new RotationCoordinator("/synthetic/auth", reopened, { canMutate: true });
+      await coordinator.recover();
+
+      expect(writer.proxyAccounts.get("account-a")).toMatchObject({ priority: 0, explicitPriority: false });
+      expect(coordinator.publicState()).toMatchObject({ mode: "off", lifecycle: "off", journal: { phase: "idle" }, restorationVerified: true });
+      await coordinator.close();
+    });
 
   it("rejects committed and disable-restoring state without its matching overlay", async () => {
     const committedPath = await statePath();

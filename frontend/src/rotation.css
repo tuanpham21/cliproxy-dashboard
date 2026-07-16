@@ -1,0 +1,127 @@
+.rotation-controls,
+.rotation-mode-controls,
+.rotation-action-controls,
+.rotation-statusline,
+.rotation-subtitle,
+.rotation-audit-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rotation-controls,
+.rotation-subtitle {
+  justify-content: space-between;
+}
+
+.rotation-statusline {
+  margin-top: 12px;
+}
+
+.rotation-alert {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--bad) 42%, transparent);
+  border-radius: 10px;
+  background: var(--bad-soft);
+}
+
+.rotation-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.rotation-metric,
+.rotation-decision,
+.rotation-subpanel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.rotation-metric .label,
+.rotation-decision .label {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rotation-metric .value {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.rotation-decision {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.rotation-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.rotation-pool-list,
+.rotation-audit-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.rotation-pool-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.rotation-pool-intent {
+  display: flex;
+  align-items: center;
+}
+
+.rotation-audit-row {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.rotation-audit-meta {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.rotation-empty {
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+@media (max-width: 720px) {
+  .rotation-pool-row,
+  .rotation-decision {
+    grid-template-columns: 1fr;
+  }
+
+  .rotation-columns {
+    grid-template-columns: 1fr;
+  }
+}

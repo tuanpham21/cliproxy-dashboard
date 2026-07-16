@@ -135,8 +135,9 @@ export type DashboardOptions = {
   host?: string;
   cliProxyBin?: string;
   codexBin?: string;
-  operatorToken?: string;
-  allowPortFallback?: boolean;
+    operatorToken?: string;
+    managementKey?: string;
+    allowPortFallback?: boolean;
   beforeQuotaSnapshotStateWrite?: () => Promise<void> | void;
 };
 

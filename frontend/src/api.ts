@@ -102,6 +102,10 @@ export async function postJson<T>(url: string, payload: unknown): Promise<T> {
   );
 }
 
+export async function putJson<T>(url: string, payload: unknown): Promise<T> {
+  return await requestJson<T>(url, { method: "PUT", body: JSON.stringify(payload) }, true);
+}
+
 export async function deleteJson<T>(url: string): Promise<T> {
   return await requestJson<T>(url, { method: "DELETE" }, true);
 }

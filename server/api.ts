@@ -11,6 +11,8 @@ import { readDashboardState } from "./dashboard-state.js";
 import { atomicWriteText, readJsonObject } from "./files.js";
 import { readLatestCodexSelection } from "./logs.js";
 import { resolveAccountPath, resolveDashboardPaths } from "./paths.js";
+import type { RotationCoordinator } from "./rotation-coordinator.js";
+import { coordinateManualRoutingAction, handleRotationApi } from "./rotation-api.js";
 import type { CodexSelectionLogLine, DashboardOptions, DashboardPaths, TestRequestOptions } from "./types.js";
 import { asHeaderValue, asString, isRecord } from "./util.js";
 
@@ -158,7 +160,7 @@ export function hasValidOperatorToken(req: IncomingMessage, options: DashboardOp
 export async function handleApi(
   req: IncomingMessage,
   res: ServerResponse,
-  options: DashboardOptions,
+  options: DashboardOptions & { rotationCoordinator?: RotationCoordinator | null },
 ): Promise<boolean> {
   const method = (req.method ?? "GET").toUpperCase();
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -173,8 +175,10 @@ export async function handleApi(
     return true;
   }
 
+  if (await handleRotationApi(req, res, method, url.pathname, segments, options.rotationCoordinator)) return true;
+
   if (method === "GET" && url.pathname === "/api/state") {
-    jsonResponse(res, 200, await readDashboardState(options));
+    jsonResponse(res, 200, { ...(await readDashboardState(options)), rotation: options.rotationCoordinator?.publicState() });
     return true;
   }
 
@@ -221,8 +225,10 @@ export async function handleApi(
       jsonResponse(res, 400, { error: "routing.strategy is required" });
       return true;
     }
+    await coordinateManualRoutingAction(options.rotationCoordinator, "Routing configuration changed by operator");
     const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
     const updated = await setRoutingConfig(configPath, { strategy, sessionAffinity });
+    await options.rotationCoordinator?.refreshReadiness();
     jsonResponse(res, 200, { ok: true, config: publicConfig(updated) });
     return true;
   }
@@ -335,7 +341,7 @@ export async function handleApi(
   if (segments[0] === "api" && segments[1] === "accounts" && segments[2]) {
     const fileName = decodeURIComponent(segments[2]);
     const resolved = await resolveDashboardPaths(options);
-    if ((method === "PATCH" || method === "POST") && segments.length === 3) {
+      if ((method === "PATCH" || method === "POST") && segments.length === 3) {
       const body = await readJsonBody(req);
       const priority =
         body.priority === null
@@ -345,12 +351,15 @@ export async function handleApi(
             : undefined;
       const note =
         body.note === null ? null : typeof body.note === "string" ? body.note : undefined;
-      const disabled =
+        const disabled =
         body.disabled === null
           ? null
           : typeof body.disabled === "boolean"
-            ? body.disabled
-            : undefined;
+              ? body.disabled
+              : undefined;
+        if (priority !== undefined || disabled !== undefined) {
+          await coordinateManualRoutingAction(options.rotationCoordinator, `Proxy Account changed manually: ${fileName}`);
+        }
       const account = await setAccountPatch(resolved.authDir, resolved.backupRoot, fileName, {
         priority,
         note,
@@ -359,7 +368,8 @@ export async function handleApi(
       jsonResponse(res, 200, { ok: true, account: publicAccount(account) });
       return true;
     }
-    if (method === "POST" && segments[3] === "primary") {
+      if (method === "POST" && segments[3] === "primary") {
+        await coordinateManualRoutingAction(options.rotationCoordinator, `Manual Primary selected: ${fileName}`);
       const body = await readJsonBody(req);
       const backupPriority =
         typeof body.backupPriority === "number" && Number.isFinite(body.backupPriority)
@@ -369,7 +379,8 @@ export async function handleApi(
       jsonResponse(res, 200, { ok: true });
       return true;
     }
-    if (method === "POST" && segments[3] === "backup") {
+      if (method === "POST" && segments[3] === "backup") {
+        await coordinateManualRoutingAction(options.rotationCoordinator, `Manual backup priority selected: ${fileName}`);
       const account = await setAccountPatch(resolved.authDir, resolved.backupRoot, fileName, {
         priority: DEFAULT_BACKUP_PRIORITY,
         note: "backup",
@@ -377,14 +388,16 @@ export async function handleApi(
       jsonResponse(res, 200, { ok: true, account: publicAccount(account) });
       return true;
     }
-    if (method === "POST" && segments[3] === "clear-priority") {
+      if (method === "POST" && segments[3] === "clear-priority") {
+        await coordinateManualRoutingAction(options.rotationCoordinator, `Manual priority cleared: ${fileName}`);
       const account = await setAccountPatch(resolved.authDir, resolved.backupRoot, fileName, {
         priority: null,
       });
       jsonResponse(res, 200, { ok: true, account: publicAccount(account) });
       return true;
     }
-    if (method === "DELETE" && segments.length === 3) {
+      if (method === "DELETE" && segments.length === 3) {
+        await coordinateManualRoutingAction(options.rotationCoordinator, `Proxy Account deleted manually: ${fileName}`);
       const filePath = resolveAccountPath(resolved.authDir, fileName);
       let exists = false;
       try {

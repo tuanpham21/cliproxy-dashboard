@@ -19,10 +19,11 @@ export async function startServer(
     onRotationObservation?: (batch: RotationObservationBatch) => Promise<void> | void;
   },
 ): Promise<void> {
-  const serverOptions = {
-    ...options,
-    operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
-  };
+      const serverOptions: DashboardOptions & { operatorToken: string; rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null } = {
+      ...options,
+      operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
+      rotationCoordinator: null,
+    };
   const server = createServer(async (req, res) => {
     try {
       if ((req.method ?? "GET").toUpperCase() === "OPTIONS") {
@@ -32,7 +33,7 @@ export async function startServer(
         }
         res.writeHead(204, {
           "Access-Control-Allow-Headers": "Content-Type, x-cliproxy-dashboard-token",
-          "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
           "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff",
         });
@@ -92,7 +93,8 @@ export async function startServer(
       }
     }
 
-    const rotationCoordinator = await createRotationCoordinator(serverOptions);
+      const rotationCoordinator = await createRotationCoordinator(serverOptions);
+      serverOptions.rotationCoordinator = rotationCoordinator;
     const rotationObserver = await createRotationLogObserver(serverOptions, {
       onObservation: async (batch) => {
         await rotationCoordinator.handleObservation(batch);

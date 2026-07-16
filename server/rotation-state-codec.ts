@@ -4,6 +4,7 @@ import {
   ROTATION_MODES,
   ROTATION_PAUSE_REASONS,
   type RotationJournal,
+  type RotationDecision,
   type RotationPauseReason,
   type RotationPrioritySnapshot,
   type RotationPrioritySnapshots,
@@ -150,6 +151,15 @@ function isAuditEvent(value: unknown): value is RotationState["audit"][number] {
   return value.pauseReason === undefined || isPauseReason(value.pauseReason);
 }
 
+function isDecision(value: unknown): value is RotationDecision {
+  if (!isRecord(value) || !(["switch", "hold", "pause", "confirm"] as unknown[]).includes(value.kind) || typeof value.reason !== "string") return false;
+  if (value.targetKey !== undefined && !isNonEmptyString(value.targetKey)) return false;
+  for (const field of ["activeUsedPercent", "lowestUsedPercent", "spread"] as const) {
+    if (value[field] !== undefined && (typeof value[field] !== "number" || !Number.isFinite(value[field]))) return false;
+  }
+  return value.pauseReason === undefined || isPauseReason(value.pauseReason);
+}
+
 export function isRotationState(value: unknown): value is RotationState {
   if (!isRecord(value) || value.schemaVersion !== 1) return false;
   if (!(ROTATION_MODES as readonly unknown[]).includes(value.mode)) return false;
@@ -167,6 +177,10 @@ export function isRotationState(value: unknown): value is RotationState {
   if (value.pauseMessage !== undefined && typeof value.pauseMessage !== "string") return false;
   if (value.evidenceWatermark !== undefined && !isTimestamp(value.evidenceWatermark)) return false;
   if (value.pauseReason !== undefined && !isPauseReason(value.pauseReason)) return false;
+  if (value.lastDecision !== undefined && !isDecision(value.lastDecision)) return false;
+  if (value.eligibleCount !== undefined && (typeof value.eligibleCount !== "number" || !Number.isSafeInteger(value.eligibleCount) || value.eligibleCount < 0)) return false;
+  if (value.provisionalCount !== undefined && (typeof value.provisionalCount !== "number" || !Number.isSafeInteger(value.provisionalCount) || value.provisionalCount < 0)) return false;
+  if (value.quotaSpread !== undefined && (typeof value.quotaSpread !== "number" || !Number.isFinite(value.quotaSpread))) return false;
   if ((value.pauseReason === undefined) !== (value.pauseMessage === undefined)) return false;
   if (journal.phase === "committed") {
     return Boolean(

@@ -22,7 +22,8 @@ export type CliProxyManagementWriterOptions = {
   fetchImpl?: typeof fetch;
   expectedVersion?: string;
   expectedCommit?: string;
-  fingerprintResolver: (fileName: string) => Promise<string> | string;
+    fingerprintResolver: (fileName: string) => Promise<string> | string;
+    proxyAccountKeyResolver?: (fileName: string) => Promise<string> | string;
 };
 
 function normalizedLoopbackBaseUrl(value: string): string {
@@ -139,15 +140,26 @@ export function createCliProxyManagementWriter(options: CliProxyManagementWriter
     return payload;
   };
 
+  const verifyProxyAccountMapping = async (fileName: string, proxyAccountKey: string): Promise<void> => {
+    if (!options.proxyAccountKeyResolver) return;
+    const resolvedKey = (await options.proxyAccountKeyResolver(fileName)).trim();
+    if (!resolvedKey) throw new Error(`CLIProxy Proxy Account Key unavailable: ${fileName}`);
+    if (resolvedKey !== proxyAccountKey) {
+      throw new Error(`CLIProxy Proxy Account Key does not match target file name: ${fileName}`);
+    }
+  };
+
   const listAccounts = async () => {
     const entries = authFilesFromPayload(await request("/v0/management/auth-files"));
     return await Promise.all(entries.map(async (entry) => {
       const fileName = authFileName(entry);
       if (!fileName) throw new Error("CLIProxy auth entry missing file name");
-      const fingerprint = (await options.fingerprintResolver(fileName)).trim();
-      if (!fingerprint) throw new Error(`CLIProxy credential fingerprint unavailable: ${fileName}`);
-      return {
-        proxyAccountKey: fileName,
+        const fingerprint = (await options.fingerprintResolver(fileName)).trim();
+        if (!fingerprint) throw new Error(`CLIProxy credential fingerprint unavailable: ${fileName}`);
+        const proxyAccountKey = (await options.proxyAccountKeyResolver?.(fileName) ?? fileName).trim();
+        if (!proxyAccountKey) throw new Error(`CLIProxy Proxy Account Key unavailable: ${fileName}`);
+        return {
+          proxyAccountKey,
         fileName,
         ...authFilePriorityState(entry, fileName),
         revision: authFileRevision(entry, fileName),
@@ -190,6 +202,7 @@ export function createCliProxyManagementWriter(options: CliProxyManagementWriter
   return {
     readAccounts: async () => await withLock(listAccounts),
     setTargetPriority: async (input) => await withLock(async () => {
+      await verifyProxyAccountMapping(input.fileName, input.proxyAccountKey);
       const mutation = await patchPriority({ fileName: input.fileName, expectedRevision: input.expectedRevision, operation: "set", priority: input.priority });
       const account = (await listAccounts()).find((entry) => entry.fileName === input.fileName);
       if (!account || account.priority !== input.priority || !account.explicitPriority || account.revision !== mutation.revision) {
@@ -202,6 +215,7 @@ export function createCliProxyManagementWriter(options: CliProxyManagementWriter
     }),
     restoreBasePriorities: async (entries) => await withLock(async () => {
       for (const entry of Object.values(entries)) {
+        await verifyProxyAccountMapping(entry.fileName, entry.proxyAccountKey);
         const mutation = await patchPriority({
           fileName: entry.fileName,
           expectedRevision: entry.expectedRevision,

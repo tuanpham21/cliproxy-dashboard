@@ -42,6 +42,7 @@ export type PublicProxyConfig = {
 };
 
 export type PublicAccountView = {
+  proxyAccountKey?: string;
   fileName: string;
   path: string;
   email: string;
@@ -112,6 +113,28 @@ export type LogSummary = {
   recentRequests: RequestLogLine[];
 };
 
+export type PublicRotationState = {
+  mode: "off" | "shadow" | "active";
+  lifecycle: "off" | "recovering" | "shadow" | "active" | "pending" | "awaiting-confirmation" | "manual-hold" | "paused" | "recovery-required";
+  pool: Array<{ proxyAccountKey: string; fileName: string; exclusivityAttested: boolean; addedAt: string }>;
+  routingTargetKey?: string;
+  observedRoutedAccountKey?: string;
+  evidenceWatermark?: string;
+  lastDecision?: { kind: "switch" | "hold" | "pause" | "confirm"; reason: string; targetKey?: string; spread?: number; pauseReason?: string };
+  eligibleCount: number;
+  provisionalCount: number;
+  quotaSpread?: number;
+  journal: { phase: "idle" | "journaled" | "mutating" | "mutated" | "verified" | "committed" | "restoring"; routingTargetKey?: string; intendedPriority?: number };
+  pauseReason?: string;
+  pauseMessage?: string;
+  manualHold: boolean;
+  restorationVerified: boolean;
+  canActivate: boolean;
+  routingCompatible: boolean;
+  routingCompatibilityMessage?: string;
+  audit: Array<{ id: string; at: string; kind: string; message: string; proxyAccountKey?: string; observationId?: string; pauseReason?: string }>;
+};
+
 export type DashboardState = {
   paths: PublicDashboardPaths;
   config: PublicProxyConfig | null;
@@ -119,6 +142,7 @@ export type DashboardState = {
   selectedAccount: PublicAccountView | null;
   models: ProxyModelView[];
   logSummary: LogSummary;
+  rotation?: PublicRotationState;
   errors: string[];
   lastRefreshedAt: string;
 };

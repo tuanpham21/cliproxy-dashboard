@@ -254,7 +254,7 @@ export function mergeQuotaSnapshotUpdates(
   accounts: AccountView[],
   updates: QuotaSnapshotUpdate[],
   completedRoutes: ObservedRoutedAccountRoute[] = [],
-): { snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; changed: boolean } {
+): { snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; proxyAccountKeysByCanonicalIdentity: Map<string, string>; changed: boolean } {
   let changed = false;
   const snapshotsByKey = new Map<string, PersistedQuotaSnapshot>();
   for (const snapshot of store.snapshots) {
@@ -460,7 +460,7 @@ export function mergeQuotaSnapshotUpdates(
       snapshotsByCanonicalIdentity.set(canonicalIdentity, snapshot);
     }
   }
-  return { snapshotsByCanonicalIdentity, changed };
+    return { snapshotsByCanonicalIdentity, proxyAccountKeysByCanonicalIdentity: keyByCanonicalIdentity, changed };
 }
 
 export async function readMergedQuotaSnapshots(
@@ -468,7 +468,7 @@ export async function readMergedQuotaSnapshots(
   accounts: AccountView[],
   beforeWrite?: () => Promise<void> | void,
   completedRoutes: ObservedRoutedAccountRoute[] = [],
-): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; errors: string[] }> {
+  ): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; proxyAccountKeysByCanonicalIdentity: Map<string, string>; errors: string[] }> {
   const updates = await readResponseHeaderQuotaUpdates(paths.logsDir);
   return await mergeObservedQuotaUpdates(paths, accounts, updates, completedRoutes, beforeWrite);
 }
@@ -479,7 +479,7 @@ export async function mergeObservedQuotaUpdates(
   updates: QuotaSnapshotUpdate[],
   completedRoutes: ObservedRoutedAccountRoute[] = [],
   beforeWrite?: () => Promise<void> | void,
-): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; errors: string[] }> {
+  ): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; proxyAccountKeysByCanonicalIdentity: Map<string, string>; errors: string[] }> {
   const stateFilePath = paths.quotaSnapshotStatePath;
 
   try {
@@ -491,18 +491,20 @@ export async function mergeObservedQuotaUpdates(
         await beforeWrite?.();
         await atomicWriteOwnerOnlyJson(stateFilePath, store);
       }
-      return {
-        snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
-        errors: error ? [error] : [],
+        return {
+          snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
+          proxyAccountKeysByCanonicalIdentity: merged.proxyAccountKeysByCanonicalIdentity,
+          errors: error ? [error] : [],
       };
     });
   } catch (error) {
     const store = createEmptyQuotaSnapshotStore();
       const merged = mergeQuotaSnapshotUpdates(store, accounts, updates, completedRoutes);
     const message = error instanceof Error ? error.message : String(error);
-    return {
-      snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
-      errors: [`Quota snapshot state store unavailable: ${message}`],
+      return {
+        snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
+        proxyAccountKeysByCanonicalIdentity: merged.proxyAccountKeysByCanonicalIdentity,
+        errors: [`Quota snapshot state store unavailable: ${message}`],
     };
   }
 }

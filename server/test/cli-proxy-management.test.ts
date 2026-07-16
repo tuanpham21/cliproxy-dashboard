@@ -99,6 +99,52 @@ describe("CLIProxy management priority adapter", () => {
     expect(patchBodies).toEqual([{ name: "codex-a.json", expected_revision: "revision-1", operation: "unset" }]);
   });
 
+  it("maps an opaque Proxy Account Key to its filename and rejects mismatches before mutation", async () => {
+    let revision = "revision-1";
+    let priority = 10;
+    const patchBodies: unknown[] = [];
+    const writer = createCliProxyManagementWriter({
+      baseUrl: "http://127.0.0.1:8317",
+      managementKey: "synthetic-management-key",
+      fingerprintResolver: () => "fp-a",
+      proxyAccountKeyResolver: (fileName) => fileName === "codex-a.json" ? "pak_v1_opaque_a" : "pak_v1_opaque_b",
+      fetchImpl: async (_url, init) => {
+        if (init?.method === "PATCH") {
+          patchBodies.push(JSON.parse(String(init.body)));
+          priority = Number((patchBodies.at(-1) as { priority: number }).priority);
+          revision = `revision-${patchBodies.length + 1}`;
+          return response({
+            status: "ok",
+            id: "codex-a.json",
+            name: "codex-a.json",
+            revision,
+            priority: { present: true, value: priority },
+            persisted: true,
+          });
+        }
+        return response({ files: [{ name: "codex-a.json", priority, priority_present: true, revision }] });
+      },
+    });
+
+    await writer.setTargetPriority({
+      fileName: "codex-a.json",
+      proxyAccountKey: "pak_v1_opaque_a",
+      priority: 101,
+      expectedFingerprint: "fp-a",
+      expectedRevision: "revision-1",
+    });
+    expect(patchBodies).toEqual([{ name: "codex-a.json", expected_revision: "revision-1", operation: "set", priority: 101 }]);
+
+    await expect(writer.setTargetPriority({
+      fileName: "codex-a.json",
+      proxyAccountKey: "pak_v1_opaque_b",
+      priority: 102,
+      expectedFingerprint: "fp-a",
+      expectedRevision: "revision-2",
+    })).rejects.toThrow(/Proxy Account Key.*file name/i);
+    expect(patchBodies).toHaveLength(1);
+  });
+
   it("serializes concurrent requests and fails closed on runtime/auth mismatch", async () => {
     let inFlight = 0;
     let maxInFlight = 0;

@@ -84,11 +84,12 @@ export function normalizeAccount(filePath: string, raw: Record<string, unknown>,
     };
   }
 
-export function publicAccount(account: AccountView, quota = emptyPublicQuotaSnapshot()): PublicAccountView {
+export function publicAccount(account: AccountView, quota = emptyPublicQuotaSnapshot(), proxyAccountKey?: string): PublicAccountView {
   const { raw: _raw, credentialFileMtimeMs: _credentialFileMtimeMs, ...publicAccountValue } = account;
   return {
-    ...publicAccountValue,
-    quota,
+      ...publicAccountValue,
+      ...(proxyAccountKey ? { proxyAccountKey } : {}),
+      quota,
   };
 }
 

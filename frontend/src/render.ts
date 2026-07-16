@@ -10,6 +10,7 @@ import {
   resetLabel,
 } from "./format";
 import type { DashboardState, PublicAccountView, PublicQuotaWindow, RateLimitState } from "../../shared/types";
+import { renderRotationPanel } from "./rotation";
 
 export type DashboardElements = {
   refreshMeta: HTMLElement;
@@ -37,6 +38,7 @@ export type DashboardElements = {
   importJsonBtn: HTMLButtonElement;
   triggerOauthBtn: HTMLButtonElement;
   verifyAllBtn: HTMLButtonElement;
+  rotation: HTMLElement;
 };
 
 export type AppState = {
@@ -311,12 +313,18 @@ function renderRateLimits(state: AppState): void {
   count.textContent = String(rateLimits.availableCount);
 }
 
+function renderRotation(state: AppState, els: DashboardElements): void {
+  if (!state.data) return;
+  els.rotation.innerHTML = renderRotationPanel(state.data);
+}
+
 export function render(state: AppState, els: DashboardElements): void {
   renderSummary(state, els);
   renderAccounts(state, els);
   renderModels(state, els);
   renderLogs(state, els);
   renderRateLimits(state);
+  renderRotation(state, els);
 }
 
 export function setTestStatus(els: DashboardElements, kind: string, message: string): void {

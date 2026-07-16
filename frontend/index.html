@@ -70,9 +70,9 @@
         <div class="summary" id="summary"></div>
       </section>
 
-      <section>
-        <div class="section-title">
-          <h2>Routing</h2>
+        <section>
+          <div class="section-title">
+            <h2>Routing</h2>
           <div class="meta">Changes write back to <span class="mono" id="config-path"></span></div>
         </div>
         <div class="toolbar">
@@ -90,10 +90,18 @@
           <div class="actions">
             <button id="save-routing" class="primary" type="button">Save routing</button>
           </div>
-        </div>
-      </section>
+          </div>
+        </section>
 
-      <section>
+        <section id="rotation-section">
+          <div class="section-title">
+            <h2>Quota-Balanced Rotation</h2>
+            <div class="meta">Automatic rotation defaults off. Active mode requires local CLIProxy management wiring.</div>
+          </div>
+          <div id="rotation" class="stack"></div>
+        </section>
+
+        <section>
         <div class="section-title">
           <h2>Add Codex Account</h2>
           <div class="meta">Authenticate a new account or import an existing credentials file.</div>

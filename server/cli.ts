@@ -17,7 +17,8 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
   proxyUrl?: string;
   proxyPort?: number;
   inboundKey?: string | null;
-  cliProxyBin?: string;
+    cliProxyBin?: string;
+    managementKey?: string;
 } {
   const parsed = {
     host: DEFAULT_HOST,
@@ -32,7 +33,8 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     proxyUrl: undefined as string | undefined,
     proxyPort: undefined as number | undefined,
     inboundKey: undefined as string | null | undefined,
-    cliProxyBin: undefined as string | undefined,
+      cliProxyBin: undefined as string | undefined,
+      managementKey: process.env.CLI_PROXY_MANAGEMENT_KEY,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
