@@ -119,7 +119,7 @@ function nullableInteger(value: unknown): number | null {
 }
 
 function normalizePlan(value: unknown): CodexPlan {
-  if (typeof value !== "string") invalidResponse();
+  if (typeof value !== "string") return "unknown";
   const normalized = value.toLowerCase();
   if (normalized === "hc") return "enterprise";
   if (normalized === "education") return "edu";
@@ -133,7 +133,7 @@ function normalizeWindow(value: unknown): CodexRateLimitWindow | null {
   }
   return {
     usedPercent: value.usedPercent,
-    windowMinutes: nullableInteger(value.windowMinutes),
+    windowMinutes: nullableInteger(value.windowDurationMins ?? value.windowMinutes),
     resetsAt: nullableInteger(value.resetsAt),
   };
 }

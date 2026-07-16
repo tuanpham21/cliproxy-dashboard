@@ -4,6 +4,8 @@ node_modules/
 # Build outputs
 dist/
 out/
+playwright-report/
+test-results/
 
 # Log files
 *.log

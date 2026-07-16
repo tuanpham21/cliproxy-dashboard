@@ -1,14 +1,23 @@
-import { deleteJson, postJson, putJson, readDashboardState, readRateLimits } from "./api";
+import { deleteJson, postJson, putJson, readCodexAccountUsage, readDashboardState } from "./api";
+import { codexLoadingView } from "./codex-app-account";
 import { inferPlan } from "./format";
-import { type AppState, type DashboardElements, render, renderModels, setTestStatus } from "./render";
+import {
+  type AppState,
+  type DashboardElements,
+  render,
+  renderCodexAccountPanel,
+  renderModels,
+  setTestStatus,
+} from "./render";
 import "./theme.css";
 import "./account.css";
 import "./rotation.css";
+import "./codex-account.css";
 import "./styles.css";
 
 const state: AppState = {
   data: null,
-  rateLimits: null,
+  codexAccount: codexLoadingView(),
   busy: false,
   refreshTimer: null,
 };
@@ -48,7 +57,10 @@ const els: DashboardElements = {
   triggerOauthBtn: byId("trigger-oauth-btn"),
   verifyAllBtn: byId("verify-all-btn"),
   rotation: byId("rotation"),
+  codexAccount: byId("codex-app-account-content"),
 };
+
+let codexRefreshPromise: Promise<void> | null = null;
 
 function activeElementBlocksRefresh(): boolean {
   const active = document.activeElement;
@@ -59,7 +71,13 @@ function activeElementBlocksRefresh(): boolean {
   if (!isEditable) {
     return false;
   }
-  return els.accounts.contains(active) || els.rotation.contains(active) || active.id === "routing-strategy" || active.id === "session-affinity";
+  return (
+    els.accounts.contains(active) ||
+    els.rotation.contains(active) ||
+    els.codexAccount.contains(active) ||
+    active.id === "routing-strategy" ||
+    active.id === "session-affinity"
+  );
 }
 
 async function refresh(): Promise<void> {
@@ -68,14 +86,36 @@ async function refresh(): Promise<void> {
   }
   state.busy = true;
   try {
-    state.data = await readDashboardState();
-    state.rateLimits = await readRateLimits();
-    render(state, els);
+    const [dashboardResult] = await Promise.allSettled([readDashboardState(), refreshCodexAccount(false)]);
+    if (dashboardResult.status === "fulfilled") {
+      state.data = dashboardResult.value;
+    } else {
+      render(state, els, { codexAccount: false });
+      throw dashboardResult.reason;
+    }
+    render(state, els, { codexAccount: false });
   } catch (error) {
     setTestStatus(els, "bad", error instanceof Error ? error.message : String(error));
   } finally {
     state.busy = false;
   }
+}
+
+function refreshCodexAccount(showLoading = true): Promise<void> {
+  if (codexRefreshPromise) return codexRefreshPromise;
+  if (showLoading) {
+    state.codexAccount = codexLoadingView();
+    renderCodexAccountPanel(state, els);
+  }
+  codexRefreshPromise = readCodexAccountUsage()
+    .then((result) => {
+      state.codexAccount = result;
+      renderCodexAccountPanel(state, els);
+    })
+    .finally(() => {
+      codexRefreshPromise = null;
+    });
+  return codexRefreshPromise;
 }
 
 function accountPayload(row: HTMLTableRowElement): { priority?: number | null; note?: string | null; disabled?: boolean | null } {
@@ -340,8 +380,16 @@ els.triggerOauthBtn.addEventListener("click", async () => {
   }
 });
 
-document.getElementById("redeem-reset-btn")?.addEventListener("click", () => {
-  setTestStatus(els, "warn", "Reset-credit redemption is outside this retained snapshot story.");
+const refreshCodexAccountButton = byId<HTMLButtonElement>("refresh-codex-account-btn");
+refreshCodexAccountButton.addEventListener("click", async () => {
+  refreshCodexAccountButton.disabled = true;
+  refreshCodexAccountButton.setAttribute("aria-busy", "true");
+  try {
+    await refreshCodexAccount();
+  } finally {
+    refreshCodexAccountButton.disabled = false;
+    refreshCodexAccountButton.removeAttribute("aria-busy");
+  }
 });
 
 const themeToggle = byId<HTMLButtonElement>("theme-toggle");
@@ -364,9 +412,10 @@ function setTheme(theme: "dark" | "light"): void {
   updateThemeIcon(theme);
 }
 
-const savedTheme = localStorage.getItem("theme") === "light" ? "light" : "dark";
-setTheme(savedTheme);
-themeToggle.addEventListener("click", () => setTheme(getTheme() === "dark" ? "light" : "dark"));
+  const savedTheme = localStorage.getItem("theme") === "light" ? "light" : "dark";
+  setTheme(savedTheme);
+  themeToggle.addEventListener("click", () => setTheme(getTheme() === "dark" ? "light" : "dark"));
 
-void refresh();
+  renderCodexAccountPanel(state, els);
+  void refresh();
 state.refreshTimer = window.setInterval(refresh, 60000);

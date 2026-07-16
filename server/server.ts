@@ -3,6 +3,8 @@ import { createServer } from "node:http";
 import process from "node:process";
 
 import { handleApi, isSameOriginRequest, jsonResponse } from "./api.js";
+import { CodexAppAccountUsageService } from "./codex-app-account-usage.js";
+import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
 import { openExternalUrl, resolveCliProxyBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
 import { defaultQuotaSnapshotStatePath } from "./paths.js";
@@ -18,12 +20,19 @@ export async function startServer(
     open?: boolean;
     onRotationObservation?: (batch: RotationObservationBatch) => Promise<void> | void;
   },
-): Promise<void> {
-      const serverOptions: DashboardOptions & { operatorToken: string; rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null } = {
-      ...options,
-      operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
-      rotationCoordinator: null,
-    };
+  ): Promise<void> {
+      const codexRuntimeQualifier = new CodexRuntimeQualifier();
+      const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
+        const serverOptions: DashboardOptions & {
+          operatorToken: string;
+          rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null;
+          codexAccountUsageService: CodexAppAccountUsageService;
+        } = {
+        ...options,
+        operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
+        rotationCoordinator: null,
+        codexAccountUsageService,
+      };
   const server = createServer(async (req, res) => {
     try {
       if ((req.method ?? "GET").toUpperCase() === "OPTIONS") {
@@ -103,10 +112,11 @@ export async function startServer(
     });
     try {
       await rotationObserver.start();
-    } catch (error) {
-      await rotationCoordinator.close();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      throw error;
+      } catch (error) {
+        await rotationCoordinator.close();
+        await codexRuntimeQualifier.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        throw error;
     }
 
     const url = "http://" + options.host + ":" + actualPort;
@@ -123,9 +133,10 @@ export async function startServer(
     const shutdown = async () => {
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
-      await rotationObserver.close();
-      await rotationCoordinator.close();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rotationObserver.close();
+        await rotationCoordinator.close();
+        await codexRuntimeQualifier.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
     process.exit(0);
   };
   const onSignal = () => {

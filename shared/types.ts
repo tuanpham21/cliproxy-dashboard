@@ -154,3 +154,50 @@ export type RateLimitState = {
   error?: string;
   authRequired?: boolean;
 };
+
+export type CodexAccountUsageState =
+  | "loading"
+  | "signed-out"
+  | "runtime-unavailable"
+  | "runtime-incompatible"
+  | "identity-incomplete"
+  | "read-failed"
+  | "usage-ready-no-resets"
+  | "usage-ready-resets-available";
+
+export type CodexAccountUsageErrorCode =
+  | "codex_auth_required"
+  | "codex_runtime_unavailable"
+  | "codex_runtime_incompatible"
+  | "codex_identity_incomplete"
+  | "codex_read_failed";
+
+export type CodexAccountUsageWindow = {
+  usedPercent: number | null;
+  durationMinutes: number | null;
+  resetsAt: string | null;
+};
+
+export type CodexAccountResetCredit = {
+  id: string | null;
+  availability: "available" | "unavailable" | "unsupported" | "malformed";
+  title: string | null;
+  description: string | null;
+  grantedAt: string | null;
+  expiresAt: string | null;
+};
+
+export type CodexAccountUsageView = {
+  state: CodexAccountUsageState;
+  errorCode: CodexAccountUsageErrorCode | null;
+  message: string;
+  runtime: { status: "unknown" | "qualified" | "unavailable" | "incompatible"; version: string | null };
+  account: { email: string | null; plan: string | null } | null;
+  observedAt: string | null;
+  usage: { primary: CodexAccountUsageWindow | null; secondary: CodexAccountUsageWindow | null } | null;
+  resetCredits: {
+    availableCount: number;
+    selectionMode: "none" | "detailed" | "generic";
+    credits: CodexAccountResetCredit[];
+  } | null;
+};

@@ -9,7 +9,8 @@ import {
   relativeAge,
   resetLabel,
 } from "./format";
-import type { DashboardState, PublicAccountView, PublicQuotaWindow, RateLimitState } from "../../shared/types";
+import type { CodexAccountUsageView, DashboardState, PublicAccountView, PublicQuotaWindow } from "../../shared/types";
+import { renderCodexAppAccount } from "./codex-app-account";
 import { renderRotationPanel } from "./rotation";
 
 export type DashboardElements = {
@@ -39,11 +40,12 @@ export type DashboardElements = {
   triggerOauthBtn: HTMLButtonElement;
   verifyAllBtn: HTMLButtonElement;
   rotation: HTMLElement;
+  codexAccount: HTMLElement;
 };
 
 export type AppState = {
   data: DashboardState | null;
-  rateLimits: RateLimitState | null;
+  codexAccount: CodexAccountUsageView;
   busy: boolean;
   refreshTimer: number | null;
 };
@@ -298,19 +300,8 @@ function renderLogs(state: AppState, els: DashboardElements): void {
     : '<div class="muted">No request lines found in the tail of main.log.</div>';
 }
 
-function renderRateLimits(state: AppState): void {
-  const section = document.getElementById("rate-limits-section");
-  const count = document.getElementById("reset-credits-count");
-  if (!section || !count) {
-    return;
-  }
-  const rateLimits = state.rateLimits;
-  if (!rateLimits?.ok || rateLimits.availableCount <= 0) {
-    section.classList.add("is-hidden");
-    return;
-  }
-  section.classList.remove("is-hidden");
-  count.textContent = String(rateLimits.availableCount);
+export function renderCodexAccountPanel(state: AppState, els: DashboardElements): void {
+  els.codexAccount.innerHTML = renderCodexAppAccount(state.codexAccount);
 }
 
 function renderRotation(state: AppState, els: DashboardElements): void {
@@ -318,12 +309,12 @@ function renderRotation(state: AppState, els: DashboardElements): void {
   els.rotation.innerHTML = renderRotationPanel(state.data);
 }
 
-export function render(state: AppState, els: DashboardElements): void {
+export function render(state: AppState, els: DashboardElements, options: { codexAccount?: boolean } = {}): void {
   renderSummary(state, els);
   renderAccounts(state, els);
   renderModels(state, els);
   renderLogs(state, els);
-  renderRateLimits(state);
+  if (options.codexAccount !== false) renderCodexAccountPanel(state, els);
   renderRotation(state, els);
 }
 

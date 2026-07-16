@@ -1,0 +1,111 @@
+.codex-panel-copy {
+  margin: 6px 0 0;
+  max-width: 72ch;
+}
+
+.codex-account-state {
+  display: grid;
+  gap: 16px;
+}
+
+.codex-state-message {
+  margin: 0;
+  font-weight: 600;
+}
+
+.codex-state-read-failed .codex-state-message,
+.codex-state-runtime-incompatible .codex-state-message,
+.codex-state-runtime-unavailable .codex-state-message {
+  color: var(--bad);
+}
+
+.codex-state-identity-incomplete .codex-state-message {
+  color: var(--warn);
+}
+
+.codex-account-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+  gap: 16px;
+}
+
+.codex-account-identity,
+.codex-usage-window,
+.codex-credit,
+.codex-generic-reset {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.codex-account-identity,
+.codex-usage-window,
+.codex-generic-reset {
+  display: grid;
+  gap: 5px;
+}
+
+.codex-usage-windows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.codex-observed {
+  font-family: var(--font-mono);
+}
+
+.codex-workspace-warning {
+  margin: 0;
+  padding: 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+}
+
+.codex-reset-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.codex-reset-summary strong {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-redemption-disabled {
+  margin: 0;
+}
+
+.codex-credit-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.codex-credit-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.codex-credit p {
+  margin: 8px 0;
+}
+
+.codex-credit-malformed,
+.codex-credit-unsupported,
+.codex-credit-unavailable {
+  opacity: 0.78;
+}
+
+@media (max-width: 800px) {
+  .codex-account-grid,
+  .codex-usage-windows {
+    grid-template-columns: 1fr;
+  }
+}

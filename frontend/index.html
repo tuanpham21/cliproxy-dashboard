@@ -44,23 +44,16 @@
         </div>
       </section>
 
-      <section id="rate-limits-section" class="is-hidden">
-        <div class="section-title">
-          <h2>Rate Limit Resets</h2>
-          <div class="meta" id="rate-limits-meta"></div>
-        </div>
-        <div class="rate-limit-card">
-          <div>
-            <div class="rate-limit-title">Rate limit reset is available</div>
-            <div class="rate-limit-copy">
-              You have <span id="reset-credits-count" class="reset-count">0</span> rate limit reset(s) banked in your Codex account.
+        <section id="codex-app-account-section" aria-labelledby="codex-app-account-title">
+          <div class="section-title">
+            <div>
+              <h2 id="codex-app-account-title">Codex app account</h2>
+              <p class="muted small codex-panel-copy">Account signed into the local Codex app. Actions here do not affect or select Proxy Accounts.</p>
             </div>
+            <button type="button" id="refresh-codex-account-btn" class="small">Refresh Codex usage</button>
           </div>
-          <button type="button" id="redeem-reset-btn" class="primary redeem-reset-button" disabled>
-            Redemption disabled
-          </button>
-        </div>
-      </section>
+            <div id="codex-app-account-content"></div>
+        </section>
 
       <section>
         <div class="section-title">

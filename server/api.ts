@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { mutateAccountFile, normalizeAccount, parseJwtExp, promotePrimary, publicAccount, setAccountPatch } from "./accounts.js";
 import { handleCodexApi } from "./codex-api.js";
+import type { CodexAccountUsageReader } from "./codex-app-account-usage.js";
 import { cleanupStuckOauthLogins, resolveCliProxyBin, startOauthLogin } from "./commands.js";
 import { DEFAULT_BACKUP_PRIORITY, DEFAULT_CONFIG_PATH, DEFAULT_PRIORITY, DEFAULT_TEST_MODEL, DEFAULT_TEST_OUTPUT_TOKENS, DEFAULT_TEST_PROMPT, DASHBOARD_OPERATOR_TOKEN_HEADER } from "./constants.js";
 import { publicConfig, setRoutingConfig } from "./config.js";
@@ -161,7 +162,10 @@ export function hasValidOperatorToken(req: IncomingMessage, options: DashboardOp
 export async function handleApi(
   req: IncomingMessage,
   res: ServerResponse,
-  options: DashboardOptions & { rotationCoordinator?: RotationCoordinator | null },
+  options: DashboardOptions & {
+    rotationCoordinator?: RotationCoordinator | null;
+    codexAccountUsageService?: CodexAccountUsageReader;
+  },
 ): Promise<boolean> {
   const method = (req.method ?? "GET").toUpperCase();
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -188,7 +192,19 @@ export async function handleApi(
     return true;
   }
 
-  if (await handleCodexApi(res, method, url.pathname, options, jsonResponse)) return true;
+  if (
+    await handleCodexApi(
+      req,
+      res,
+      method,
+      url.pathname,
+      options,
+      options.codexAccountUsageService,
+      jsonResponse,
+    )
+  ) {
+    return true;
+  }
 
   if (method === "POST" && url.pathname === "/api/routing") {
     const body = await readJsonBody(req);

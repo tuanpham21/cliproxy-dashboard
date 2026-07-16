@@ -1,4 +1,4 @@
-import type { DashboardState, RateLimitState } from "../../shared/types";
+import type { CodexAccountUsageView, DashboardState, RateLimitState } from "../../shared/types";
 
 const TOKEN_PLACEHOLDER = "__CLIPROXY_OPERATOR_TOKEN__";
 const OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";
@@ -100,6 +100,23 @@ export async function postJson<T>(url: string, payload: unknown): Promise<T> {
     },
     true,
   );
+}
+
+export async function readCodexAccountUsage(): Promise<CodexAccountUsageView> {
+  try {
+    return await requestJson<CodexAccountUsageView>("/api/codex/account-usage", {}, true);
+  } catch {
+    return {
+      state: "read-failed",
+      errorCode: "codex_read_failed",
+      message: "Couldn’t load Codex app usage.",
+      runtime: { status: "unknown", version: null },
+      account: null,
+      observedAt: null,
+      usage: null,
+      resetCredits: null,
+    };
+  }
 }
 
 export async function putJson<T>(url: string, payload: unknown): Promise<T> {
