@@ -5,9 +5,16 @@ export type PublicQuotaStatus = "unknown" | "current" | "stale" | "refresh-neede
 export type PublicQuotaWindow = {
   status: PublicQuotaStatus;
   usedPercent?: number;
+  rawUsedPercent?: number;
   resetAt?: string;
   observedAt?: string;
   source?: QuotaEvidenceSource;
+  durationMinutes?: number;
+  windowKind?: "weekly" | "five-hour" | "unknown";
+  providerSlot?: string;
+  continuity?: "continuous" | "broken" | "uncertain";
+  migrationOnly?: boolean;
+  identityBound?: boolean;
 };
 
 export type PublicQuotaSnapshot = Record<QuotaWindowName, PublicQuotaWindow>;

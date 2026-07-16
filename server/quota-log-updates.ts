@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { access, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { responseAuthPattern, responseLogFilePattern, responseTimestampPattern } from "./logs.js";
 import { validateQuotaSnapshotStatePath } from "./paths.js";
+import { classifyQuotaWindow, deriveCredentialFingerprint, hasVerifiedCredentialIdentity } from "./rotation-policy.js";
 import { atomicWriteOwnerOnlyJson, createEmptyQuotaSnapshotStore, deriveProxyAccountKey, hasQuotaEvidence, mergeQuotaWindowEvidence, readQuotaSnapshotStoreFile, withQuotaSnapshotStateLock } from "./quota-store.js";
 import type { AccountView, DashboardPaths, PersistedQuotaSnapshot, PersistedQuotaSnapshotStore, PersistedQuotaWindowEvidence, QuotaSnapshotUpdate } from "./types.js";
 import { normalizeProxyAccountLocalIdentity, normalizeUsedPercent } from "./util.js";
@@ -50,10 +52,120 @@ export function quotaWindowEvidenceFromHeaders(
     (resetAfterSeconds === undefined ? undefined : new Date(observedMs + resetAfterSeconds * 1000).toISOString());
   return {
     usedPercent,
+    rawUsedPercent: usedPercent,
     ...(resetAt ? { resetAt } : {}),
     observedAt: new Date(observedMs).toISOString(),
     source: "response-header",
   };
+}
+
+function getHeaderNumberAny(lines: string[], names: string[]): number | undefined {
+  for (const name of names) {
+    const value = getResponseHeaderNumber(lines, name);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function durationMinutesFromHeaders(lines: string[], slot: "primary" | "secondary"): number | undefined {
+  const prefix = slot === "primary" ? "X-Codex-Primary" : "X-Codex-Secondary";
+  const direct = getHeaderNumberAny(lines, [
+    `${prefix}-Window-Minutes`,
+    `${prefix}-Window-Duration-Minutes`,
+    `${prefix}-Limit-Window-Minutes`,
+  ]);
+  if (direct !== undefined) {
+    return direct;
+  }
+  const seconds = getHeaderNumberAny(lines, [
+    `${prefix}-Window-Seconds`,
+    `${prefix}-Window-Duration-Seconds`,
+  ]);
+  return seconds === undefined ? undefined : seconds / 60;
+}
+
+function evidenceIdFor(lines: string[], responseId: string, slot: string): string {
+  return createHash("sha256")
+    .update("cliproxy-dashboard quota-evidence v2\0")
+    .update(responseId, "utf8")
+    .update("\0" + slot + "\0" + lines.join("\n"), "utf8")
+    .digest("base64url");
+}
+
+function responseObservationId(lines: string[], responseId: string): string {
+  return createHash("sha256")
+    .update("cliproxy-dashboard routed-observation v1\0")
+    .update(responseId, "utf8")
+    .update("\0" + lines.join("\n"), "utf8")
+    .digest("base64url");
+}
+
+function routeTraceIdFromLines(lines: string[]): string | undefined {
+  for (const line of lines) {
+    const match = line.trim().match(/^(?:Trace ID|TraceId|X-Client-Request-Id|Request ID):\s*(\S+)$/i);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+function semanticEvidenceForSlot(
+  lines: string[],
+  observedMs: number,
+  responseId: string,
+  credentialFingerprint: string,
+  slot: "primary" | "secondary",
+): PersistedQuotaWindowEvidence | undefined {
+  const prefix = slot === "primary" ? "X-Codex-Primary" : "X-Codex-Secondary";
+  const usedPercent = normalizeUsedPercent(getResponseHeaderNumber(lines, `${prefix}-Used-Percent`) ?? NaN);
+  if (usedPercent === undefined) {
+    return undefined;
+  }
+  const resetAt = epochHeaderToIso(getResponseHeaderNumber(lines, `${prefix}-Reset-At`)) ??
+    (() => {
+      const resetAfter = getResponseHeaderNumber(lines, `${prefix}-Reset-After-Seconds`);
+      return resetAfter === undefined ? undefined : new Date(observedMs + resetAfter * 1000).toISOString();
+    })();
+  const durationMinutes = durationMinutesFromHeaders(lines, slot);
+  const windowKind = classifyQuotaWindow(durationMinutes);
+  return {
+    usedPercent,
+    rawUsedPercent: usedPercent,
+    ...(resetAt ? { resetAt } : {}),
+    observedAt: new Date(observedMs).toISOString(),
+    source: "response-header",
+    durationMinutes,
+    windowKind,
+    providerSlot: slot,
+    evidenceId: evidenceIdFor(lines, responseId, slot),
+    credentialFingerprint,
+    continuity: "continuous",
+    migrationOnly: windowKind === "unknown",
+    schemaVersion: 2,
+  };
+}
+
+export function parseQuotaResponseEvidence(
+  lines: string[],
+  observedMs: number,
+  responseId: string,
+  credentialFingerprint: string,
+): {
+  weekly?: PersistedQuotaWindowEvidence;
+  fiveHour?: PersistedQuotaWindowEvidence;
+  legacyPrimary5h?: PersistedQuotaWindowEvidence;
+  legacyWeekly?: PersistedQuotaWindowEvidence;
+  continuity: "continuous" | "broken" | "uncertain";
+} {
+  const primary = semanticEvidenceForSlot(lines, observedMs, responseId, credentialFingerprint, "primary");
+  const secondary = semanticEvidenceForSlot(lines, observedMs, responseId, credentialFingerprint, "secondary");
+  const weekly = [primary, secondary].find((evidence) => evidence?.windowKind === "weekly");
+  const fiveHour = [primary, secondary].find((evidence) => evidence?.windowKind === "five-hour");
+  const legacyPrimary5h = primary && primary.windowKind === "unknown" ? { ...primary, migrationOnly: true } : undefined;
+  const legacyWeekly = secondary && secondary.windowKind === "unknown" ? { ...secondary, migrationOnly: true } : undefined;
+  const continuity = weekly || fiveHour ? "continuous" : legacyPrimary5h || legacyWeekly ? "uncertain" : "broken";
+  return { weekly, fiveHour, legacyPrimary5h, legacyWeekly, continuity };
 }
 
 export async function readResponseHeaderQuotaUpdates(
@@ -104,29 +216,23 @@ export async function readResponseHeaderQuotaUpdates(
       if (!match?.groups) {
         continue;
       }
-      const observedMs = parseResponseTimestampMs(lines, file.mtimeMs);
-      const primary5h = quotaWindowEvidenceFromHeaders(
-        lines,
-        observedMs,
-        "X-Codex-Primary-Used-Percent",
-        "X-Codex-Primary-Reset-After-Seconds",
-        "X-Codex-Primary-Reset-At",
-      );
-      const weekly = quotaWindowEvidenceFromHeaders(
-        lines,
-        observedMs,
-        "X-Codex-Secondary-Used-Percent",
-        "X-Codex-Secondary-Reset-After-Seconds",
-        "X-Codex-Secondary-Reset-At",
-      );
-      if (!primary5h && !weekly) {
-        continue;
-      }
-      updates.push({
-        canonicalLocalIdentity: normalizeProxyAccountLocalIdentity(match.groups.auth),
-        ...(primary5h ? { primary5h } : {}),
-        ...(weekly ? { weekly } : {}),
-      });
+        const observedMs = parseResponseTimestampMs(lines, file.mtimeMs);
+        const timestampIsValid = lines.some((line) => {
+          const timestamp = line.trim().match(responseTimestampPattern)?.groups?.timestamp;
+          return Boolean(timestamp && Number.isFinite(Date.parse(timestamp)));
+        });
+        const parsed = parseQuotaResponseEvidence(lines, observedMs, file.name, "");
+        const primary5h = parsed.fiveHour ?? parsed.legacyPrimary5h;
+        const weekly = parsed.weekly ?? parsed.legacyWeekly;
+        updates.push({
+          canonicalLocalIdentity: normalizeProxyAccountLocalIdentity(match.groups.auth),
+          ...(primary5h ? { primary5h } : {}),
+          ...(weekly ? { weekly } : {}),
+          continuity: timestampIsValid ? parsed.continuity : "broken",
+          observationId: responseObservationId(lines, file.name),
+          observedAt: new Date(observedMs).toISOString(),
+          routeTraceId: routeTraceIdFromLines(lines),
+        });
     } catch {}
   }
 
@@ -137,6 +243,7 @@ export function mergeQuotaSnapshotUpdates(
   store: PersistedQuotaSnapshotStore,
   accounts: AccountView[],
   updates: QuotaSnapshotUpdate[],
+  completedRoutes: Array<{ canonicalLocalIdentity: string; observedAt: string; traceId: string }> = [],
 ): { snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; changed: boolean } {
   let changed = false;
   const snapshotsByKey = new Map<string, PersistedQuotaSnapshot>();
@@ -145,10 +252,39 @@ export function mergeQuotaSnapshotUpdates(
   }
 
   const keyByCanonicalIdentity = new Map<string, string>();
+  const accountByCanonicalIdentity = new Map<string, AccountView>();
+  const fingerprintByCanonicalIdentity = new Map<string, string>();
+  const baselineByKey = new Map(store.credentialBaselines.map((baseline) => [baseline.proxyAccountKey, baseline]));
+  const baselineNow = new Date().toISOString();
   for (const account of accounts) {
     const canonicalIdentity = normalizeProxyAccountLocalIdentity(account.fileName);
     if (!keyByCanonicalIdentity.has(canonicalIdentity)) {
-      keyByCanonicalIdentity.set(canonicalIdentity, deriveProxyAccountKey(store, canonicalIdentity));
+      const proxyAccountKey = deriveProxyAccountKey(store, canonicalIdentity);
+      keyByCanonicalIdentity.set(canonicalIdentity, proxyAccountKey);
+      accountByCanonicalIdentity.set(canonicalIdentity, account);
+      if (hasVerifiedCredentialIdentity(account.raw)) {
+        const credentialFingerprint = deriveCredentialFingerprint(store.keyDerivation.secret, account.fileName, account.raw);
+        fingerprintByCanonicalIdentity.set(canonicalIdentity, credentialFingerprint);
+        const currentEvidenceIds = updates
+          .filter((update) => update.canonicalLocalIdentity === canonicalIdentity)
+          .flatMap((update) => [update.primary5h?.evidenceId, update.weekly?.evidenceId])
+          .filter((value): value is string => Boolean(value));
+        const baseline = baselineByKey.get(proxyAccountKey);
+        if (!baseline || baseline.credentialFingerprint !== credentialFingerprint) {
+          baselineByKey.set(proxyAccountKey, {
+            proxyAccountKey,
+            credentialFingerprint,
+            establishedAt: baselineNow,
+            seenEvidenceIds: [...new Set(currentEvidenceIds)].slice(-256),
+          });
+          const snapshot = snapshotsByKey.get(proxyAccountKey);
+          if (snapshot?.credentialFingerprint && snapshot.credentialFingerprint !== credentialFingerprint) {
+            snapshot.identityMismatch = true;
+            snapshot.observationContinuity = "broken";
+          }
+          changed = true;
+        }
+      }
     }
   }
 
@@ -163,8 +299,144 @@ export function mergeQuotaSnapshotUpdates(
       snapshotsByKey.set(proxyAccountKey, snapshot);
       changed = true;
     }
-    changed = mergeQuotaWindowEvidence(snapshot, "primary5h", update.primary5h) || changed;
-    changed = mergeQuotaWindowEvidence(snapshot, "weekly", update.weekly) || changed;
+    const credentialFingerprint = fingerprintByCanonicalIdentity.get(update.canonicalLocalIdentity) ?? "";
+    const baseline = baselineByKey.get(proxyAccountKey);
+    const bindEvidence = (evidence: PersistedQuotaWindowEvidence | undefined): PersistedQuotaWindowEvidence | undefined => {
+      if (!evidence) return undefined;
+      if (evidence.migrationOnly) {
+        return {
+          ...(evidence.usedPercent === undefined ? {} : { usedPercent: evidence.usedPercent }),
+          ...(evidence.resetAt ? { resetAt: evidence.resetAt } : {}),
+          observedAt: evidence.observedAt,
+          source: evidence.source,
+        };
+      }
+      const evidenceObservedMs = Date.parse(evidence.observedAt);
+      const baselineMs = baseline ? Date.parse(baseline.establishedAt) : NaN;
+      const canBindCurrentCredential = Boolean(
+        credentialFingerprint &&
+        baseline?.credentialFingerprint === credentialFingerprint &&
+        evidence.evidenceId &&
+        !baseline.seenEvidenceIds.includes(evidence.evidenceId) &&
+        Number.isFinite(evidenceObservedMs) &&
+        Number.isFinite(baselineMs) &&
+        evidenceObservedMs >= baselineMs,
+      );
+      return evidence.credentialFingerprint
+        ? evidence
+        : canBindCurrentCredential
+          ? { ...evidence, credentialFingerprint }
+            : (() => {
+                const { credentialFingerprint: _ignored, ...unbound } = evidence;
+                return unbound;
+              })();
+    };
+    let semanticEvidenceAccepted = false;
+    let boundSemanticEvidenceAccepted = false;
+    let unboundSemanticEvidenceAccepted = false;
+    for (const windowName of ["primary5h", "weekly"] as const) {
+      const evidence = bindEvidence(update[windowName]);
+      const current = snapshot[windowName];
+      if (current?.credentialFingerprint && credentialFingerprint && current.credentialFingerprint !== credentialFingerprint) {
+        if (evidence?.evidenceId && current.evidenceId === evidence.evidenceId) {
+          snapshot.identityMismatch = true;
+          snapshot.observationContinuity = "broken";
+          changed = true;
+          continue;
+        }
+        delete snapshot[windowName];
+        changed = true;
+      }
+      const mergedEvidence = mergeQuotaWindowEvidence(snapshot, windowName, evidence);
+      changed = mergedEvidence || changed;
+      const semanticMerged = Boolean(mergedEvidence && evidence?.windowKind && evidence.windowKind !== "unknown");
+        semanticEvidenceAccepted = semanticEvidenceAccepted || semanticMerged;
+        boundSemanticEvidenceAccepted = boundSemanticEvidenceAccepted || Boolean(semanticMerged && evidence?.credentialFingerprint);
+      unboundSemanticEvidenceAccepted = unboundSemanticEvidenceAccepted || Boolean(semanticMerged && !evidence?.credentialFingerprint);
+      if (evidence?.evidenceId && baseline && !baseline.seenEvidenceIds.includes(evidence.evidenceId)) {
+        baseline.seenEvidenceIds = [...baseline.seenEvidenceIds, evidence.evidenceId].slice(-256);
+        changed = true;
+      }
+      }
+      const continuityToRecord = unboundSemanticEvidenceAccepted
+        ? "broken"
+        : update.continuity === "uncertain" && snapshot.credentialFingerprint
+        ? "broken"
+        : update.continuity;
+    const tracksRotationContinuity = semanticEvidenceAccepted || continuityToRecord === "broken";
+    const updateObservedMs = update.observedAt ? Date.parse(update.observedAt) : 0;
+    const currentObservedMs = snapshot.lastObservationAt ? Date.parse(snapshot.lastObservationAt) : 0;
+    if (tracksRotationContinuity && updateObservedMs >= currentObservedMs) {
+      if (continuityToRecord !== "uncertain" && snapshot.observationContinuity !== continuityToRecord) {
+        snapshot.observationContinuity = continuityToRecord;
+        changed = true;
+      }
+      if (update.observationId && snapshot.lastObservationId !== update.observationId) {
+        snapshot.lastObservationId = update.observationId;
+        changed = true;
+      }
+      if (update.observedAt && snapshot.lastObservationAt !== update.observedAt) {
+        snapshot.lastObservationAt = update.observedAt;
+        changed = true;
+      }
+    }
+      if (boundSemanticEvidenceAccepted && credentialFingerprint) {
+        const identityChanged = snapshot.credentialFingerprint !== credentialFingerprint || snapshot.identityMismatch;
+        if (identityChanged) {
+          snapshot.credentialFingerprint = credentialFingerprint;
+          delete snapshot.identityMismatch;
+          changed = true;
+        }
+        if ((identityChanged || !snapshot.continuityStartedAt) && update.observedAt) {
+          snapshot.continuityStartedAt = update.observedAt;
+          changed = true;
+        }
+    }
+  }
+
+  store.credentialBaselines = [...baselineByKey.values()].sort((left, right) => left.proxyAccountKey.localeCompare(right.proxyAccountKey));
+
+  for (const [canonicalIdentity, proxyAccountKey] of keyByCanonicalIdentity) {
+    const snapshot = snapshotsByKey.get(proxyAccountKey);
+    const account = accountByCanonicalIdentity.get(canonicalIdentity);
+    if (!snapshot?.credentialFingerprint || !account) continue;
+    if (!hasVerifiedCredentialIdentity(account.raw)) {
+      if (!snapshot.identityMismatch || snapshot.observationContinuity !== "broken") {
+        snapshot.identityMismatch = true;
+        snapshot.observationContinuity = "broken";
+        changed = true;
+      }
+      continue;
+    }
+    const currentFingerprint = deriveCredentialFingerprint(store.keyDerivation.secret, account.fileName, account.raw);
+    if (currentFingerprint !== snapshot.credentialFingerprint) {
+      if (!snapshot.identityMismatch || snapshot.observationContinuity !== "broken") {
+        snapshot.identityMismatch = true;
+        snapshot.observationContinuity = "broken";
+        changed = true;
+      }
+    }
+  }
+
+  const matchedRouteKeys = new Set(
+    updates
+      .filter((update) => update.routeTraceId)
+      .map((update) => `${update.canonicalLocalIdentity}\0${update.routeTraceId}`),
+  );
+  for (const route of completedRoutes) {
+    if (matchedRouteKeys.has(`${route.canonicalLocalIdentity}\0${route.traceId}`)) continue;
+    const proxyAccountKey = keyByCanonicalIdentity.get(route.canonicalLocalIdentity);
+    const snapshot = proxyAccountKey ? snapshotsByKey.get(proxyAccountKey) : undefined;
+    if (!snapshot?.credentialFingerprint) continue;
+    const authorityStartMs = snapshot.continuityStartedAt ? Date.parse(snapshot.continuityStartedAt) : NaN;
+    const routedMs = Date.parse(route.observedAt);
+    if (!Number.isFinite(authorityStartMs) || !Number.isFinite(routedMs) || routedMs < authorityStartMs) continue;
+    snapshot.observationContinuity = "broken";
+    if (!snapshot.lastObservationAt || routedMs > Date.parse(snapshot.lastObservationAt)) {
+      snapshot.lastObservationAt = new Date(routedMs).toISOString();
+      snapshot.lastObservationId = `route_${route.traceId}`;
+    }
+    changed = true;
   }
 
   store.snapshots = [...snapshotsByKey.values()]
@@ -185,6 +457,7 @@ export async function readMergedQuotaSnapshots(
   paths: DashboardPaths,
   accounts: AccountView[],
   beforeWrite?: () => Promise<void> | void,
+  completedRoutes: Array<{ canonicalLocalIdentity: string; observedAt: string; traceId: string }> = [],
 ): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; errors: string[] }> {
   const updates = await readResponseHeaderQuotaUpdates(paths.logsDir);
   const stateFilePath = paths.quotaSnapshotStatePath;
@@ -193,7 +466,7 @@ export async function readMergedQuotaSnapshots(
     return await withQuotaSnapshotStateLock(stateFilePath, async () => {
       await validateQuotaSnapshotStatePath(stateFilePath, paths.authDir, paths.configPath);
       const { store, error, dirty } = await readQuotaSnapshotStoreFile(stateFilePath);
-      const merged = mergeQuotaSnapshotUpdates(store, accounts, updates);
+        const merged = mergeQuotaSnapshotUpdates(store, accounts, updates, completedRoutes);
       if (dirty || merged.changed) {
         await beforeWrite?.();
         await atomicWriteOwnerOnlyJson(stateFilePath, store);
@@ -205,7 +478,7 @@ export async function readMergedQuotaSnapshots(
     });
   } catch (error) {
     const store = createEmptyQuotaSnapshotStore();
-    const merged = mergeQuotaSnapshotUpdates(store, accounts, updates);
+      const merged = mergeQuotaSnapshotUpdates(store, accounts, updates, completedRoutes);
     const message = error instanceof Error ? error.message : String(error);
     return {
       snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,

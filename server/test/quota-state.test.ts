@@ -310,10 +310,11 @@ describe("cliproxy dashboard quota state", () => {
 
     const text = await readFile(statePath, "utf8");
     const persisted = JSON.parse(text);
-    expect(Object.keys(persisted).sort()).toEqual(["keyDerivation", "schemaVersion", "snapshots"]);
+    expect(Object.keys(persisted).sort()).toEqual(["credentialBaselines", "keyDerivation", "schemaVersion", "snapshots"]);
     expect(Object.keys(persisted.keyDerivation).sort()).toEqual(["algorithm", "keyPrefix", "secret"]);
     expect(Object.keys(persisted.snapshots[0]).sort()).toEqual(["primary5h", "proxyAccountKey", "weekly"]);
     expect(Object.keys(persisted.snapshots[0].primary5h).sort()).toEqual(["observedAt", "resetAt", "source", "usedPercent"]);
+    expect(Object.keys(persisted.credentialBaselines[0]).sort()).toEqual(["credentialFingerprint", "establishedAt", "proxyAccountKey", "seenEvidenceIds"]);
     const keys = new Set<string>();
     const collectKeys = (value: unknown) => {
       if (!value || typeof value !== "object") return;
@@ -374,7 +375,7 @@ describe("cliproxy dashboard quota state", () => {
     expect(state.accounts[0].quota.primary5h.usedPercent).toBe(33);
     const cleanedText = await readFile(statePath, "utf8");
     const cleaned = JSON.parse(cleanedText);
-    expect(Object.keys(cleaned).sort()).toEqual(["keyDerivation", "schemaVersion", "snapshots"]);
+    expect(Object.keys(cleaned).sort()).toEqual(["credentialBaselines", "keyDerivation", "schemaVersion", "snapshots"]);
     expect(Object.keys(cleaned.snapshots[0]).sort()).toEqual(["primary5h", "proxyAccountKey"]);
     expect(Object.keys(cleaned.snapshots[0].primary5h).sort()).toEqual(["observedAt", "source", "usedPercent"]);
     expect(cleanedText).not.toContain(fileName);

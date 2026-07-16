@@ -70,6 +70,7 @@ cliproxy-dashboard/
 ### Prerequisites
 * **Node.js**: `v22.13` or higher. The LaunchAgent and validated local checks use `v24.11.1`.
 * **Go CLI Proxy**: Install `cli-proxy-api.exe` and pass it with `--cli-proxy-bin`, or set `CLI_PROXY_API_BIN`.
+* **Quota rotation contract build**: Use `tuanpham21/CLIProxyAPI` commit `75df9810620eae13f04f906c4ec7aad3355a844e`, reporting runtime version `7.2.75`. Upstream PR: [router-for-me/CLIProxyAPI#4351](https://github.com/router-for-me/CLIProxyAPI/pull/4351).
 
 Windows migration paths:
 
@@ -153,12 +154,21 @@ The dashboard persists latest known Proxy Account quota evidence in
 run may pass `--state-file <path>`, but the path must resolve inside the same
 dashboard-owned state directory and API requests cannot select it.
 
-Proxy Account Keys are derived by stripping a `.disabled` suffix from the local
-auth filename and applying a dashboard-local HMAC secret stored outside snapshot
-entries. Persisted snapshot entries contain only the opaque key plus allowlisted
-`primary5h` and `weekly` evidence. Passed reset times are shown as
-`refresh-needed` latest-known evidence until newer identity-bound response
-headers arrive. Account-Scoped Quota Refresh remains future discovery.
+Proxy Account Keys remain opaque dashboard-local HMAC identifiers. Rotation
+authority is bound separately to a non-linkable HMAC credential fingerprint, so
+replacing credentials under the same filename cannot inherit prior evidence or
+restoration authority. Credential material and linkable identity hashes are not
+persisted.
+
+Provider quota windows are classified by declared duration: 300 minutes is the
+five-hour window and 10,080 minutes is the Rotation Weekly Window. Primary or
+Secondary position does not define meaning. Legacy positional snapshots remain
+visible as latest-known evidence but are migration-only and rotation-ineligible.
+Missing or unusable routed-response quota evidence, credential replacement, or
+other Observation Continuity breaks retain the last values for inspection while
+marking them blocked for rotation. Passed reset times remain `refresh-needed`
+until newer identity-bound response headers arrive. Account-Scoped Quota Refresh
+remains future discovery.
 
 ---
 

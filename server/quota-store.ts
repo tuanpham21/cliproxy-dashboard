@@ -14,8 +14,9 @@ export function createEmptyQuotaSnapshotStore(): PersistedQuotaSnapshotStore {
       algorithm: "hmac-sha256",
       secret: randomBytes(32).toString("base64url"),
       keyPrefix: "pak_v1",
-    },
-    snapshots: [],
+      },
+      snapshots: [],
+      credentialBaselines: [],
   };
 }
 
@@ -36,14 +37,41 @@ export function normalizeQuotaEvidence(raw: unknown): PersistedQuotaWindowEviden
     typeof raw.resetAt === "string" && Number.isFinite(Date.parse(raw.resetAt))
       ? new Date(Date.parse(raw.resetAt)).toISOString()
       : undefined;
-  const debugStatus =
-    typeof raw.debugStatus === "string" && raw.debugStatus.length <= 80 ? raw.debugStatus : undefined;
-  return {
-    ...(usedPercent === undefined ? {} : { usedPercent }),
-    ...(resetAt === undefined ? {} : { resetAt }),
-    observedAt,
-    source,
-    ...(debugStatus === undefined ? {} : { debugStatus }),
+    const debugStatus =
+      typeof raw.debugStatus === "string" && raw.debugStatus.length <= 80 ? raw.debugStatus : undefined;
+    const durationMinutes = typeof raw.durationMinutes === "number" && Number.isFinite(raw.durationMinutes) && raw.durationMinutes > 0
+      ? raw.durationMinutes
+      : undefined;
+    const windowKind = raw.windowKind === "weekly" || raw.windowKind === "five-hour" || raw.windowKind === "unknown"
+      ? raw.windowKind
+      : undefined;
+    const providerSlot = raw.providerSlot === "primary" || raw.providerSlot === "secondary"
+      ? raw.providerSlot
+      : undefined;
+    const evidenceId = typeof raw.evidenceId === "string" && raw.evidenceId.length <= 128 ? raw.evidenceId : undefined;
+    const credentialFingerprint = typeof raw.credentialFingerprint === "string" && raw.credentialFingerprint.length <= 128
+      ? raw.credentialFingerprint
+      : undefined;
+    const continuity = raw.continuity === "continuous" || raw.continuity === "broken" || raw.continuity === "uncertain"
+      ? raw.continuity
+      : undefined;
+    const migrationOnly = raw.migrationOnly === true;
+    const schemaVersion = raw.schemaVersion === 2 ? 2 : undefined;
+    return {
+      ...(usedPercent === undefined ? {} : { usedPercent }),
+      ...(typeof raw.rawUsedPercent === "number" ? { rawUsedPercent: raw.rawUsedPercent } : {}),
+      ...(resetAt === undefined ? {} : { resetAt }),
+      observedAt,
+      source,
+      ...(debugStatus === undefined ? {} : { debugStatus }),
+      ...(durationMinutes === undefined ? {} : { durationMinutes }),
+      ...(windowKind === undefined ? {} : { windowKind }),
+      ...(providerSlot === undefined ? {} : { providerSlot }),
+      ...(evidenceId === undefined ? {} : { evidenceId }),
+      ...(credentialFingerprint === undefined ? {} : { credentialFingerprint }),
+      ...(continuity === undefined ? {} : { continuity }),
+      ...(migrationOnly ? { migrationOnly: true } : {}),
+      ...(schemaVersion === undefined ? {} : { schemaVersion }),
   };
 }
 
@@ -54,7 +82,10 @@ export function quotaEvidenceWasSanitized(
   if (!isRecord(raw)) {
     return normalized !== undefined;
   }
-  const allowedEvidenceKeys = new Set(["usedPercent", "resetAt", "observedAt", "source", "debugStatus"]);
+    const allowedEvidenceKeys = new Set([
+      "usedPercent", "rawUsedPercent", "resetAt", "observedAt", "source", "debugStatus", "durationMinutes",
+      "windowKind", "providerSlot", "evidenceId", "credentialFingerprint", "continuity", "migrationOnly", "schemaVersion",
+    ]);
   for (const key of Object.keys(raw)) {
     if (!allowedEvidenceKeys.has(key)) {
       return true;
@@ -101,7 +132,7 @@ export function normalizePersistedQuotaSnapshotStore(
     return null;
   }
   let dirty = false;
-  const allowedRootKeys = new Set(["schemaVersion", "keyDerivation", "snapshots"]);
+    const allowedRootKeys = new Set(["schemaVersion", "keyDerivation", "snapshots", "credentialBaselines"]);
   for (const key of Object.keys(raw)) {
     if (!allowedRootKeys.has(key)) {
       dirty = true;
@@ -132,7 +163,9 @@ export function normalizePersistedQuotaSnapshotStore(
       dirty = true;
       continue;
     }
-    const allowedSnapshotKeys = new Set(["proxyAccountKey", "primary5h", "weekly"]);
+      const allowedSnapshotKeys = new Set([
+        "proxyAccountKey", "primary5h", "weekly", "credentialFingerprint", "observationContinuity", "lastObservationId", "lastObservationAt", "continuityStartedAt", "identityMismatch",
+      ]);
     for (const key of Object.keys(rawSnapshot)) {
       if (!allowedSnapshotKeys.has(key)) {
         dirty = true;
@@ -154,23 +187,71 @@ export function normalizePersistedQuotaSnapshotStore(
     if (rawSnapshot.weekly !== undefined) {
       dirty = quotaEvidenceWasSanitized(rawSnapshot.weekly, weekly) || dirty;
     }
-    snapshots.push({
-      proxyAccountKey: rawSnapshot.proxyAccountKey,
-      ...(primary5h ? { primary5h } : {}),
-      ...(weekly ? { weekly } : {}),
-    });
+      const credentialFingerprint = typeof rawSnapshot.credentialFingerprint === "string" && rawSnapshot.credentialFingerprint.length <= 128
+        ? rawSnapshot.credentialFingerprint
+        : undefined;
+      const observationContinuity = rawSnapshot.observationContinuity === "continuous" || rawSnapshot.observationContinuity === "broken" || rawSnapshot.observationContinuity === "uncertain"
+        ? rawSnapshot.observationContinuity
+        : undefined;
+      const lastObservationId = typeof rawSnapshot.lastObservationId === "string" && rawSnapshot.lastObservationId.length <= 128
+        ? rawSnapshot.lastObservationId
+        : undefined;
+      const lastObservationAt = typeof rawSnapshot.lastObservationAt === "string" && Number.isFinite(Date.parse(rawSnapshot.lastObservationAt))
+        ? new Date(Date.parse(rawSnapshot.lastObservationAt)).toISOString()
+        : undefined;
+      const continuityStartedAt = typeof rawSnapshot.continuityStartedAt === "string" && Number.isFinite(Date.parse(rawSnapshot.continuityStartedAt))
+        ? new Date(Date.parse(rawSnapshot.continuityStartedAt)).toISOString()
+        : undefined;
+      const identityMismatch = rawSnapshot.identityMismatch === true;
+      snapshots.push({
+        proxyAccountKey: rawSnapshot.proxyAccountKey,
+        ...(primary5h ? { primary5h } : {}),
+        ...(weekly ? { weekly } : {}),
+        ...(credentialFingerprint ? { credentialFingerprint } : {}),
+        ...(observationContinuity ? { observationContinuity } : {}),
+        ...(lastObservationId ? { lastObservationId } : {}),
+        ...(lastObservationAt ? { lastObservationAt } : {}),
+        ...(continuityStartedAt ? { continuityStartedAt } : {}),
+        ...(identityMismatch ? { identityMismatch: true } : {}),
+      });
   }
 
-  return {
-    store: {
+    const credentialBaselines: PersistedQuotaSnapshotStore["credentialBaselines"] = [];
+    const rawBaselines = Array.isArray(raw.credentialBaselines) ? raw.credentialBaselines : [];
+    for (const rawBaseline of rawBaselines) {
+      if (!isRecord(rawBaseline)) {
+        dirty = true;
+        continue;
+      }
+      const proxyAccountKey = typeof rawBaseline.proxyAccountKey === "string" ? rawBaseline.proxyAccountKey : "";
+      const credentialFingerprint = typeof rawBaseline.credentialFingerprint === "string" ? rawBaseline.credentialFingerprint : "";
+      const establishedMs = typeof rawBaseline.establishedAt === "string" ? Date.parse(rawBaseline.establishedAt) : NaN;
+      const seenEvidenceIds = Array.isArray(rawBaseline.seenEvidenceIds)
+        ? rawBaseline.seenEvidenceIds.filter((value): value is string => typeof value === "string" && value.length <= 128).slice(-256)
+        : [];
+      if (!/^pak_v1_[A-Za-z0-9_-]{32,}$/.test(proxyAccountKey) || !credentialFingerprint || !Number.isFinite(establishedMs)) {
+        dirty = true;
+        continue;
+      }
+      credentialBaselines.push({
+        proxyAccountKey,
+        credentialFingerprint,
+        establishedAt: new Date(establishedMs).toISOString(),
+        seenEvidenceIds,
+      });
+    }
+
+    return {
+      store: {
       schemaVersion: QUOTA_SNAPSHOT_SCHEMA_VERSION,
       keyDerivation: {
         algorithm: "hmac-sha256",
         secret,
         keyPrefix: "pak_v1",
+        },
+        snapshots,
+        credentialBaselines,
       },
-      snapshots,
-    },
     dirty,
   };
 }

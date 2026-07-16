@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { publicAccount, readAccounts } from "./accounts.js";
 import { publicConfig, readConfig } from "./config.js";
-import { readLatestCodexSelection, readLogSummary } from "./logs.js";
+import { readCompletedCodexRoutes, readLatestCodexSelection, readLogSummary } from "./logs.js";
 import { publicDashboardPaths, resolveDashboardPaths } from "./paths.js";
 import { readProxyModels } from "./proxy-models.js";
 import { readMergedQuotaSnapshots } from "./quota-log-updates.js";
@@ -11,19 +11,30 @@ import { normalizeProxyAccountLocalIdentity, toPublicQuotaSnapshot } from "./uti
 
 export async function readDashboardState(options: DashboardOptions = {}): Promise<DashboardState> {
   const paths = await resolveDashboardPaths(options);
-  const [config, accountsResult, modelsResult, logSummary, latestCodexSelectionFromLogs] =
-    await Promise.all([
+    const [config, accountsResult, modelsResult, logSummary, latestCodexSelectionFromLogs, completedCodexRoutes] =
+      await Promise.all([
       readConfig(paths.configPath),
       readAccounts(paths.authDir),
       readProxyModels(paths.proxyUrl, paths.inboundKey),
       readLogSummary(paths.mainLogPath),
-      readLatestCodexSelection(paths.logsDir),
-    ]);
-  const quotaSnapshots = await readMergedQuotaSnapshots(
-    paths,
-    accountsResult.accounts,
-    options.beforeQuotaSnapshotStateWrite,
-  );
+        readLatestCodexSelection(paths.logsDir),
+        readCompletedCodexRoutes(paths.mainLogPath),
+      ]);
+    const completedRoutes = completedCodexRoutes.flatMap((route) => {
+      const requestAt = Date.parse(route.observedAt);
+      if (!Number.isFinite(requestAt)) return [];
+      return [{
+        canonicalLocalIdentity: normalizeProxyAccountLocalIdentity(path.basename(route.auth)),
+        observedAt: new Date(requestAt).toISOString(),
+        traceId: route.traceId,
+      }];
+    });
+    const quotaSnapshots = await readMergedQuotaSnapshots(
+      paths,
+      accountsResult.accounts,
+      options.beforeQuotaSnapshotStateWrite,
+      completedRoutes,
+    );
   const latestCodexSelection =
     latestCodexSelectionFromLogs ??
     (logSummary.latestSelection?.auth?.startsWith("codex-")

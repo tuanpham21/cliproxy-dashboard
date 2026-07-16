@@ -57,16 +57,31 @@ export type ProxyConfig = {
 
 export type PersistedQuotaWindowEvidence = {
   usedPercent?: number;
+  rawUsedPercent?: number;
   resetAt?: string;
   observedAt: string;
   source: QuotaEvidenceSource;
   debugStatus?: string;
+  durationMinutes?: number;
+  windowKind?: "weekly" | "five-hour" | "unknown";
+  providerSlot?: "primary" | "secondary" | string;
+  evidenceId?: string;
+  credentialFingerprint?: string;
+  continuity?: "continuous" | "broken" | "uncertain";
+  migrationOnly?: boolean;
+  schemaVersion?: number;
 };
 
 export type PersistedQuotaSnapshot = {
   proxyAccountKey: string;
   primary5h?: PersistedQuotaWindowEvidence;
   weekly?: PersistedQuotaWindowEvidence;
+  credentialFingerprint?: string;
+  observationContinuity?: "continuous" | "broken" | "uncertain";
+  lastObservationId?: string;
+  lastObservationAt?: string;
+  continuityStartedAt?: string;
+  identityMismatch?: boolean;
 };
 
 export type PersistedQuotaSnapshotStore = {
@@ -77,6 +92,12 @@ export type PersistedQuotaSnapshotStore = {
     keyPrefix: "pak_v1";
   };
   snapshots: PersistedQuotaSnapshot[];
+  credentialBaselines: Array<{
+    proxyAccountKey: string;
+    credentialFingerprint: string;
+    establishedAt: string;
+    seenEvidenceIds: string[];
+  }>;
 };
 
 export type AccountView = {
@@ -98,6 +119,7 @@ export type AccountView = {
   subscriptionPlan?: string;
   subscriptionActiveUntil?: string;
   subscriptionLastChecked?: string;
+  credentialFileMtimeMs?: number;
   raw: Record<string, unknown>;
 };
 
@@ -128,4 +150,10 @@ export type QuotaSnapshotUpdate = {
   canonicalLocalIdentity: string;
   primary5h?: PersistedQuotaWindowEvidence;
   weekly?: PersistedQuotaWindowEvidence;
+  legacyPrimary5h?: PersistedQuotaWindowEvidence;
+  legacyWeekly?: PersistedQuotaWindowEvidence;
+  observationId?: string;
+  observedAt?: string;
+  routeTraceId?: string;
+  continuity?: "continuous" | "broken" | "uncertain";
 };

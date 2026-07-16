@@ -49,11 +49,10 @@ export function normalizeUsedPercent(value: number): number | undefined {
   if (!Number.isFinite(value)) {
     return undefined;
   }
-  const rounded = Math.round(value);
-  if (rounded < 0 || rounded > 100) {
+  if (value < 0 || value > 100) {
     return undefined;
   }
-  return rounded;
+  return value;
 }
 
 export function observedMsFromIso(value: string | undefined): number {
@@ -71,25 +70,56 @@ export function evidenceIsNewer(
   if (!current) {
     return true;
   }
-  return observedMsFromIso(next.observedAt) > observedMsFromIso(current.observedAt);
+  const nextMs = observedMsFromIso(next.observedAt);
+  const currentMs = observedMsFromIso(current.observedAt);
+  if (nextMs !== currentMs) {
+    return nextMs > currentMs;
+  }
+  if (
+    next.evidenceId && current.evidenceId &&
+    next.usedPercent !== undefined && current.usedPercent !== undefined &&
+    next.usedPercent > current.usedPercent
+  ) {
+    return true;
+  }
+  return Boolean(next.evidenceId && next.evidenceId !== current.evidenceId && !current.evidenceId);
 }
 
 export function publicQuotaWindow(
   evidence: PersistedQuotaWindowEvidence | undefined,
   nowMs = Date.now(),
+  snapshot?: PersistedQuotaSnapshot,
 ): PublicQuotaWindow {
   if (!evidence) {
     return { status: "unknown" };
   }
   const resetMs = evidence.resetAt ? Date.parse(evidence.resetAt) : NaN;
+  const continuity = snapshot?.identityMismatch
+    ? "broken"
+    : snapshot?.observationContinuity ?? evidence.continuity ?? (evidence.windowKind ? "continuous" : "uncertain");
+  const identityBound = Boolean(
+    evidence.credentialFingerprint &&
+    snapshot?.credentialFingerprint &&
+    evidence.credentialFingerprint === snapshot.credentialFingerprint &&
+    !snapshot.identityMismatch,
+  );
   const status: PublicQuotaStatus =
-    Number.isFinite(resetMs) && resetMs > nowMs ? "current" : "refresh-needed";
+    continuity === "broken"
+      ? "blocked"
+      : Number.isFinite(resetMs) && resetMs > nowMs ? "current" : "refresh-needed";
   return {
     status,
     usedPercent: evidence.usedPercent,
+    rawUsedPercent: evidence.rawUsedPercent,
     resetAt: evidence.resetAt,
     observedAt: evidence.observedAt,
     source: evidence.source,
+    durationMinutes: evidence.durationMinutes,
+    windowKind: evidence.windowKind,
+    providerSlot: evidence.providerSlot,
+    continuity,
+    migrationOnly: evidence.migrationOnly ?? !evidence.windowKind,
+    identityBound,
   };
 }
 
@@ -101,7 +131,7 @@ export function toPublicQuotaSnapshot(
     return emptyPublicQuotaSnapshot();
   }
   return {
-    primary5h: publicQuotaWindow(snapshot.primary5h, nowMs),
-    weekly: publicQuotaWindow(snapshot.weekly, nowMs),
+    primary5h: publicQuotaWindow(snapshot.primary5h, nowMs, snapshot),
+    weekly: publicQuotaWindow(snapshot.weekly, nowMs, snapshot),
   };
 }

@@ -1,5 +1,7 @@
+import { createReadStream } from "node:fs";
 import { access, open, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 import { DEFAULT_LOG_BYTES } from "./constants.js";
 import type { CodexSelectionLogLine, LogSummary, RequestLogLine, SelectorLogLine } from "./types.js";
@@ -178,4 +180,36 @@ export async function readLogSummary(logPath: string): Promise<LogSummary> {
     latestRequest: recentRequests[0] ?? null,
     recentRequests,
   };
+}
+
+export async function readCompletedCodexRoutes(
+  logPath: string,
+): Promise<Array<{ auth: string; traceId: string; observedAt: string }>> {
+  const selections = new Map<string, SelectorLogLine>();
+  const requests = new Map<string, RequestLogLine>();
+  const completed = new Map<string, { auth: string; traceId: string; observedAt: string }>();
+  try {
+    const lines = createInterface({ input: createReadStream(logPath, { encoding: "utf8" }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      const selection = parseSelectorLine(line);
+      if (selection?.auth.startsWith("codex-")) {
+        selections.set(selection.traceId, selection);
+        const request = requests.get(selection.traceId);
+        if (request) {
+          completed.set(selection.traceId, { auth: selection.auth, traceId: selection.traceId, observedAt: request.timestamp });
+        }
+      }
+      const request = parseRequestLine(line);
+      if (request) {
+        requests.set(request.traceId, request);
+        const selectionForRequest = selections.get(request.traceId);
+        if (selectionForRequest) {
+          completed.set(request.traceId, { auth: selectionForRequest.auth, traceId: request.traceId, observedAt: request.timestamp });
+        }
+      }
+    }
+  } catch {
+    return [];
+  }
+  return [...completed.values()];
 }

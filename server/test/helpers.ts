@@ -50,8 +50,9 @@ export function accountFixture(
 export function responseLogFixture(
   authFileName: string,
   overrides: Partial<{
-    label: string;
-    timestamp: string;
+      label: string;
+      timestamp: string;
+      traceId: string;
   }> = {},
 ) {
   const label =
@@ -62,7 +63,8 @@ export function responseLogFixture(
     "Version: 6.9.36",
     "URL: /v1/responses",
     "Method: POST",
-    `Timestamp: ${timestamp}`,
+      `Timestamp: ${timestamp}`,
+      ...(overrides.traceId ? [`Trace ID: ${overrides.traceId}`] : []),
     "",
     "=== API REQUEST 1 ===",
     `Auth: provider=codex, auth_id=${authFileName}, label=${label}, type=oauth`,
@@ -114,30 +116,40 @@ export async function writeQuotaResponseLog(
   authFileName: string,
   options: Partial<{
     timestamp: string;
-    primaryUsedPercent: number;
-    primaryResetAfterSeconds: number;
-    weeklyUsedPercent: number;
-    weeklyResetAfterSeconds: number;
+      primaryUsedPercent: number;
+      primaryResetAfterSeconds: number;
+      primaryDurationMinutes: number;
+      weeklyUsedPercent: number;
+      weeklyResetAfterSeconds: number;
+      secondaryDurationMinutes: number;
+      traceId: string;
   }> = {},
 ) {
   await mkdir(logsDir, { recursive: true });
   const lines = [
-    responseLogFixture(authFileName, {
-      timestamp: options.timestamp ?? new Date().toISOString(),
-    }),
+      responseLogFixture(authFileName, {
+        timestamp: options.timestamp ?? new Date().toISOString(),
+        traceId: options.traceId,
+      }),
   ];
   if (options.primaryUsedPercent !== undefined) {
     lines.push(`X-Codex-Primary-Used-Percent: ${options.primaryUsedPercent}`);
   }
-  if (options.primaryResetAfterSeconds !== undefined) {
-    lines.push(`X-Codex-Primary-Reset-After-Seconds: ${options.primaryResetAfterSeconds}`);
-  }
+    if (options.primaryResetAfterSeconds !== undefined) {
+      lines.push(`X-Codex-Primary-Reset-After-Seconds: ${options.primaryResetAfterSeconds}`);
+    }
+    if (options.primaryDurationMinutes !== undefined) {
+      lines.push(`X-Codex-Primary-Window-Minutes: ${options.primaryDurationMinutes}`);
+    }
   if (options.weeklyUsedPercent !== undefined) {
     lines.push(`X-Codex-Secondary-Used-Percent: ${options.weeklyUsedPercent}`);
   }
-  if (options.weeklyResetAfterSeconds !== undefined) {
-    lines.push(`X-Codex-Secondary-Reset-After-Seconds: ${options.weeklyResetAfterSeconds}`);
-  }
+    if (options.weeklyResetAfterSeconds !== undefined) {
+      lines.push(`X-Codex-Secondary-Reset-After-Seconds: ${options.weeklyResetAfterSeconds}`);
+    }
+    if (options.secondaryDurationMinutes !== undefined) {
+      lines.push(`X-Codex-Secondary-Window-Minutes: ${options.secondaryDurationMinutes}`);
+    }
   await writeFile(path.join(logsDir, fileName), `${lines.join("\n")}\n`);
 }
 

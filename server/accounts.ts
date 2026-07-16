@@ -1,4 +1,4 @@
-import { access, readdir, unlink } from "node:fs/promises";
+import { access, readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { DEFAULT_BACKUP_PRIORITY, DEFAULT_PRIORITY } from "./constants.js";
@@ -26,7 +26,7 @@ export function parseJwtExp(token: string): string | null {
   return null;
 }
 
-export function normalizeAccount(filePath: string, raw: Record<string, unknown>): AccountView {
+export function normalizeAccount(filePath: string, raw: Record<string, unknown>, credentialFileMtimeMs?: number): AccountView {
   const fileName = path.basename(filePath);
   const disabled = asBoolean(raw.disabled, false) || fileName.endsWith(".disabled");
   const priority =
@@ -79,12 +79,13 @@ export function normalizeAccount(filePath: string, raw: Record<string, unknown>)
       subscriptionPlan,
       subscriptionActiveUntil,
       subscriptionLastChecked,
+      credentialFileMtimeMs,
       raw,
     };
   }
 
 export function publicAccount(account: AccountView, quota = emptyPublicQuotaSnapshot()): PublicAccountView {
-  const { raw: _raw, ...publicAccountValue } = account;
+  const { raw: _raw, credentialFileMtimeMs: _credentialFileMtimeMs, ...publicAccountValue } = account;
   return {
     ...publicAccountValue,
     quota,
@@ -128,7 +129,8 @@ export async function readAccounts(
       errors.push(`Could not read ${entry.name}`);
       continue;
     }
-    accounts.push(normalizeAccount(filePath, raw));
+      const stats = await stat(filePath).catch(() => null);
+      accounts.push(normalizeAccount(filePath, raw, stats?.mtimeMs));
   }
   return { accounts: sortAccounts(accounts), errors };
 }
@@ -168,7 +170,8 @@ export async function mutateAccountFile(
     }
   }
 
-  return normalizeAccount(targetPath, next);
+    const stats = await stat(targetPath).catch(() => null);
+    return normalizeAccount(targetPath, next, stats?.mtimeMs);
 }
 
 export async function setAccountPatch(
