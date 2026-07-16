@@ -6,11 +6,18 @@ import { handleApi, isSameOriginRequest, jsonResponse } from "./api.js";
 import { openExternalUrl, resolveCliProxyBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
 import { defaultQuotaSnapshotStatePath } from "./paths.js";
+import { createRotationCoordinator } from "./rotation-coordinator.js";
+import { createRotationLogObserver, type RotationObservationBatch } from "./rotation-log-observer.js";
 import { serveFrontend } from "./static.js";
 import type { DashboardOptions } from "./types.js";
 
 export async function startServer(
-  options: DashboardOptions & { host: string; port: number; open?: boolean },
+  options: DashboardOptions & {
+    host: string;
+    port: number;
+    open?: boolean;
+    onRotationObservation?: (batch: RotationObservationBatch) => Promise<void> | void;
+  },
 ): Promise<void> {
   const serverOptions = {
     ...options,
@@ -77,15 +84,30 @@ export async function startServer(
   let actualPort: number;
   try {
     actualPort = await listen(options.port);
-  } catch (error) {
-    if (options.port !== 0 && options.allowPortFallback !== false) {
-      actualPort = await listen(0);
-    } else {
+    } catch (error) {
+      if (options.port !== 0 && options.allowPortFallback !== false) {
+        actualPort = await listen(0);
+      } else {
+        throw error;
+      }
+    }
+
+    const rotationCoordinator = await createRotationCoordinator(serverOptions);
+    const rotationObserver = await createRotationLogObserver(serverOptions, {
+      onObservation: async (batch) => {
+        await rotationCoordinator.handleObservation(batch);
+        await options.onRotationObservation?.(batch);
+      },
+    });
+    try {
+      await rotationObserver.start();
+    } catch (error) {
+      await rotationCoordinator.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       throw error;
     }
-  }
 
-  const url = "http://" + options.host + ":" + actualPort;
+    const url = "http://" + options.host + ":" + actualPort;
   process.stdout.write("Cliproxy dashboard: " + url + "\n");
   process.stdout.write("Config: " + (options.configPath ?? DEFAULT_CONFIG_PATH) + "\n");
   process.stdout.write("Auth dir: " + (options.authDir ?? DEFAULT_AUTH_DIR) + "\n");
@@ -96,10 +118,12 @@ export async function startServer(
     openExternalUrl(url);
   }
 
-  const shutdown = async () => {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const shutdown = async () => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      await rotationObserver.close();
+      await rotationCoordinator.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     process.exit(0);
   };
   const onSignal = () => {

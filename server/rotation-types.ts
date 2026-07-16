@@ -37,6 +37,12 @@ export type RotationJournalPhase = (typeof ROTATION_JOURNAL_PHASES)[number];
 export type QuotaWindowKind = "weekly" | "five-hour" | "unknown";
 export type ObservationContinuity = "continuous" | "broken" | "uncertain";
 
+export type ObservedRoutedAccountRoute = {
+  canonicalLocalIdentity: string;
+  observedAt: string;
+  traceId: string;
+};
+
 export type SemanticQuotaEvidence = {
   usedPercent: number;
   rawUsedPercent?: number;

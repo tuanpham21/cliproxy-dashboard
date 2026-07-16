@@ -11,6 +11,7 @@ import {
 import { isRotationState, MAX_ROTATION_PRIORITY } from "./rotation-state-codec.js";
 import type {
   RotationControllerOptions,
+  RotationDecision,
   RotationJournal,
   RotationPauseReason,
   RotationPrioritySnapshot,
@@ -154,6 +155,38 @@ export class RotationController {
 
   state(): RotationState {
     return cloneState(this.#state);
+  }
+
+  async recordObservationDecision(input: {
+    decision: RotationDecision;
+    observationId: string;
+    observationAt: string;
+  }): Promise<RotationState> {
+    return await this.#withLock(async () => {
+      if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required") return this.state();
+      const observedMs = Date.parse(input.observationAt);
+      const watermarkMs = Date.parse(this.#state.evidenceWatermark ?? "");
+      if (Number.isFinite(observedMs) && (!Number.isFinite(watermarkMs) || observedMs > watermarkMs)) {
+        this.#state.lastObservationId = input.observationId;
+        this.#state.evidenceWatermark = new Date(observedMs).toISOString();
+      }
+      this.#state.audit.push({
+        id: randomUUID(),
+        at: new Date(this.#now()).toISOString(),
+        kind: "decision",
+        message: input.decision.reason,
+        observationId: input.observationId,
+        ...(input.decision.targetKey ? { proxyAccountKey: input.decision.targetKey } : {}),
+        ...(input.decision.pauseReason ? { pauseReason: input.decision.pauseReason } : {}),
+      });
+      if (input.decision.kind === "pause") {
+        this.#state.lifecycle = "paused";
+        this.#state.pauseReason = input.decision.pauseReason ?? "observation-uncertain";
+        this.#state.pauseMessage = input.decision.reason;
+      }
+      await this.#persist();
+      return this.state();
+    });
   }
 
     close(): Promise<void> {

@@ -182,32 +182,45 @@ export async function readLogSummary(logPath: string): Promise<LogSummary> {
   };
 }
 
-export async function readCompletedCodexRoutes(
-  logPath: string,
-): Promise<Array<{ auth: string; traceId: string; observedAt: string }>> {
+type CompletedRoute = { auth: string; traceId: string; observedAt: string };
+
+function collectCompletedCodexRoute(
+  line: string,
+  selections: Map<string, SelectorLogLine>,
+  requests: Map<string, RequestLogLine>,
+  completed: Map<string, CompletedRoute>,
+): void {
+  const selection = parseSelectorLine(line);
+  if (selection?.auth.startsWith("codex-")) {
+    selections.set(selection.traceId, selection);
+    const request = requests.get(selection.traceId);
+    if (request) completed.set(selection.traceId, { auth: selection.auth, traceId: selection.traceId, observedAt: request.timestamp });
+  }
+  const request = parseRequestLine(line);
+  if (request) {
+    requests.set(request.traceId, request);
+    const selectionForRequest = selections.get(request.traceId);
+    if (selectionForRequest) completed.set(request.traceId, { auth: selectionForRequest.auth, traceId: request.traceId, observedAt: request.timestamp });
+  }
+}
+
+export function parseCompletedCodexRoutes(lines: Iterable<string>): CompletedRoute[] {
   const selections = new Map<string, SelectorLogLine>();
   const requests = new Map<string, RequestLogLine>();
-  const completed = new Map<string, { auth: string; traceId: string; observedAt: string }>();
+  const completed = new Map<string, CompletedRoute>();
+  for (const line of lines) collectCompletedCodexRoute(line, selections, requests, completed);
+  return [...completed.values()];
+}
+
+export async function readCompletedCodexRoutes(
+  logPath: string,
+): Promise<CompletedRoute[]> {
+  const selections = new Map<string, SelectorLogLine>();
+  const requests = new Map<string, RequestLogLine>();
+  const completed = new Map<string, CompletedRoute>();
   try {
     const lines = createInterface({ input: createReadStream(logPath, { encoding: "utf8" }), crlfDelay: Infinity });
-    for await (const line of lines) {
-      const selection = parseSelectorLine(line);
-      if (selection?.auth.startsWith("codex-")) {
-        selections.set(selection.traceId, selection);
-        const request = requests.get(selection.traceId);
-        if (request) {
-          completed.set(selection.traceId, { auth: selection.auth, traceId: selection.traceId, observedAt: request.timestamp });
-        }
-      }
-      const request = parseRequestLine(line);
-      if (request) {
-        requests.set(request.traceId, request);
-        const selectionForRequest = selections.get(request.traceId);
-        if (selectionForRequest) {
-          completed.set(request.traceId, { auth: selectionForRequest.auth, traceId: request.traceId, observedAt: request.timestamp });
-        }
-      }
-    }
+    for await (const line of lines) collectCompletedCodexRoute(line, selections, requests, completed);
   } catch {
     return [];
   }

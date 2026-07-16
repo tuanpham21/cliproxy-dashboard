@@ -5,6 +5,7 @@ import path from "node:path";
 import { responseAuthPattern, responseLogFilePattern, responseTimestampPattern } from "./logs.js";
 import { validateQuotaSnapshotStatePath } from "./paths.js";
 import { classifyQuotaWindow, deriveCredentialFingerprint, hasVerifiedCredentialIdentity } from "./rotation-policy.js";
+import type { ObservedRoutedAccountRoute } from "./rotation-types.js";
 import { atomicWriteOwnerOnlyJson, createEmptyQuotaSnapshotStore, deriveProxyAccountKey, hasQuotaEvidence, mergeQuotaWindowEvidence, readQuotaSnapshotStoreFile, withQuotaSnapshotStateLock } from "./quota-store.js";
 import type { AccountView, DashboardPaths, PersistedQuotaSnapshot, PersistedQuotaSnapshotStore, PersistedQuotaWindowEvidence, QuotaSnapshotUpdate } from "./types.js";
 import { normalizeProxyAccountLocalIdentity, normalizeUsedPercent } from "./util.js";
@@ -168,6 +169,42 @@ export function parseQuotaResponseEvidence(
   return { weekly, fiveHour, legacyPrimary5h, legacyWeekly, continuity };
 }
 
+export async function readResponseHeaderQuotaUpdateFile(
+  filePath: string,
+  responseId = path.basename(filePath),
+  fallbackMtimeMs?: number,
+): Promise<QuotaSnapshotUpdate | null> {
+  try {
+    const [text, fileStats] = await Promise.all([
+      readFile(filePath, "utf8"),
+      fallbackMtimeMs === undefined ? stat(filePath) : Promise.resolve(null),
+    ]);
+    const lines = text.split(/\r?\n/);
+    const authLine = lines.find((line) => line.trimStart().startsWith("Auth: provider=codex,"));
+    const match = authLine ? responseAuthPattern.exec(authLine.trim()) : null;
+    if (!match?.groups) return null;
+    const observedMs = parseResponseTimestampMs(lines, fallbackMtimeMs ?? fileStats?.mtimeMs ?? Date.now());
+    const timestampIsValid = lines.some((line) => {
+      const timestamp = line.trim().match(responseTimestampPattern)?.groups?.timestamp;
+      return Boolean(timestamp && Number.isFinite(Date.parse(timestamp)));
+    });
+    const parsed = parseQuotaResponseEvidence(lines, observedMs, responseId, "");
+    const primary5h = parsed.fiveHour ?? parsed.legacyPrimary5h;
+    const weekly = parsed.weekly ?? parsed.legacyWeekly;
+    return {
+      canonicalLocalIdentity: normalizeProxyAccountLocalIdentity(match.groups.auth),
+      ...(primary5h ? { primary5h } : {}),
+      ...(weekly ? { weekly } : {}),
+      continuity: timestampIsValid ? parsed.continuity : "broken",
+      observationId: responseObservationId(lines, responseId),
+      observedAt: new Date(observedMs).toISOString(),
+      routeTraceId: routeTraceIdFromLines(lines),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function readResponseHeaderQuotaUpdates(
   logsDir: string,
 ): Promise<QuotaSnapshotUpdate[]> {
@@ -205,35 +242,8 @@ export async function readResponseHeaderQuotaUpdates(
   activeFiles.sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name));
 
   for (const file of activeFiles) {
-    try {
-      const text = await readFile(file.filePath, "utf8");
-      const lines = text.split(/\r?\n/);
-      const authLine = lines.find((line) => line.trimStart().startsWith("Auth: provider=codex,"));
-      if (!authLine) {
-        continue;
-      }
-      const match = responseAuthPattern.exec(authLine.trim());
-      if (!match?.groups) {
-        continue;
-      }
-        const observedMs = parseResponseTimestampMs(lines, file.mtimeMs);
-        const timestampIsValid = lines.some((line) => {
-          const timestamp = line.trim().match(responseTimestampPattern)?.groups?.timestamp;
-          return Boolean(timestamp && Number.isFinite(Date.parse(timestamp)));
-        });
-        const parsed = parseQuotaResponseEvidence(lines, observedMs, file.name, "");
-        const primary5h = parsed.fiveHour ?? parsed.legacyPrimary5h;
-        const weekly = parsed.weekly ?? parsed.legacyWeekly;
-        updates.push({
-          canonicalLocalIdentity: normalizeProxyAccountLocalIdentity(match.groups.auth),
-          ...(primary5h ? { primary5h } : {}),
-          ...(weekly ? { weekly } : {}),
-          continuity: timestampIsValid ? parsed.continuity : "broken",
-          observationId: responseObservationId(lines, file.name),
-          observedAt: new Date(observedMs).toISOString(),
-          routeTraceId: routeTraceIdFromLines(lines),
-        });
-    } catch {}
+    const update = await readResponseHeaderQuotaUpdateFile(file.filePath, file.name, file.mtimeMs);
+    if (update) updates.push(update);
   }
 
   return updates;
@@ -243,7 +253,7 @@ export function mergeQuotaSnapshotUpdates(
   store: PersistedQuotaSnapshotStore,
   accounts: AccountView[],
   updates: QuotaSnapshotUpdate[],
-  completedRoutes: Array<{ canonicalLocalIdentity: string; observedAt: string; traceId: string }> = [],
+  completedRoutes: ObservedRoutedAccountRoute[] = [],
 ): { snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; changed: boolean } {
   let changed = false;
   const snapshotsByKey = new Map<string, PersistedQuotaSnapshot>();
@@ -457,9 +467,19 @@ export async function readMergedQuotaSnapshots(
   paths: DashboardPaths,
   accounts: AccountView[],
   beforeWrite?: () => Promise<void> | void,
-  completedRoutes: Array<{ canonicalLocalIdentity: string; observedAt: string; traceId: string }> = [],
+  completedRoutes: ObservedRoutedAccountRoute[] = [],
 ): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; errors: string[] }> {
   const updates = await readResponseHeaderQuotaUpdates(paths.logsDir);
+  return await mergeObservedQuotaUpdates(paths, accounts, updates, completedRoutes, beforeWrite);
+}
+
+export async function mergeObservedQuotaUpdates(
+  paths: DashboardPaths,
+  accounts: AccountView[],
+  updates: QuotaSnapshotUpdate[],
+  completedRoutes: ObservedRoutedAccountRoute[] = [],
+  beforeWrite?: () => Promise<void> | void,
+): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; errors: string[] }> {
   const stateFilePath = paths.quotaSnapshotStatePath;
 
   try {
