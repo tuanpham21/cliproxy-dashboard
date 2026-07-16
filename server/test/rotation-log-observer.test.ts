@@ -257,6 +257,93 @@ describe("rotation log observer", () => {
     await observer.close();
   });
 
+  it("accepts normal multi-megabyte response logs within the production bound", async () => {
+    const test = await fixture();
+    const batches: RotationObservationBatch[] = [];
+    const observer = await createRotationLogObserver(test.dashboardOptions, {
+      statePath: test.cursorPath,
+      onObservation: (batch) => { batches.push(batch); },
+    });
+    await observer.reconcile(true);
+    batches.length = 0;
+
+    const responseFileName = "v1-responses-large-normal.log";
+    const responsePath = path.join(test.logsDir, responseFileName);
+    await writeQuotaResponseLog(test.logsDir, responseFileName, test.fileName, {
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+      weeklyUsedPercent: 31,
+      weeklyResetAfterSeconds: 604_800,
+      secondaryDurationMinutes: 10_080,
+    });
+    const responseLog = await readFile(responsePath, "utf8");
+    await writeFile(
+      responsePath,
+      responseLog.replace(
+        "=== API REQUEST 1 ===\n",
+        `=== API REQUEST 1 ===\nRequest Body: ${"x".repeat(6 * 1024 * 1024)}\n`,
+      ),
+    );
+
+    await observer.reconcile();
+    expect(batches).toHaveLength(1);
+    expect(batches[0].errors).toEqual([]);
+    expect(batches[0].updates).toHaveLength(1);
+    expect(batches[0].updates[0]).toMatchObject({
+      canonicalLocalIdentity: test.fileName,
+      continuity: "continuous",
+      weekly: {
+        usedPercent: 31,
+        durationMinutes: 10_080,
+        windowKind: "weekly",
+      },
+    });
+    const snapshot = batches[0].snapshotsByCanonicalIdentity.get(test.fileName);
+    expect(snapshot).toMatchObject({
+      credentialFingerprint: expect.any(String),
+      observationContinuity: "continuous",
+      weekly: {
+        usedPercent: 31,
+        durationMinutes: 10_080,
+        windowKind: "weekly",
+        continuity: "continuous",
+        migrationOnly: false,
+        schemaVersion: 2,
+        credentialFingerprint: expect.any(String),
+      },
+    });
+    expect(snapshot?.credentialFingerprint).toMatch(/\S/);
+    expect(snapshot?.weekly?.credentialFingerprint).toMatch(/\S/);
+    expect(snapshot?.weekly?.credentialFingerprint).toBe(snapshot?.credentialFingerprint);
+    await observer.close();
+  });
+
+  it("fails closed above the configured response-log bound and reports the unchanged gap once", async () => {
+    const test = await fixture();
+    const batches: RotationObservationBatch[] = [];
+    const observer = await createRotationLogObserver(test.dashboardOptions, {
+      statePath: test.cursorPath,
+      maxResponseFileBytes: 128,
+      onObservation: (batch) => { batches.push(batch); },
+    });
+    await observer.reconcile(true);
+    batches.length = 0;
+
+    await writeQuotaResponseLog(test.logsDir, "v1-responses-over-bound.log", test.fileName, {
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+      weeklyUsedPercent: 32,
+      weeklyResetAfterSeconds: 604_800,
+      secondaryDurationMinutes: 10_080,
+    });
+
+    await observer.reconcile();
+    expect(batches).toHaveLength(1);
+    expect(batches[0].updates).toEqual([]);
+    expect(batches[0].errors.join("\n")).toMatch(/response log exceeds bounded read limit/i);
+    await observer.reconcile();
+    expect(batches).toHaveLength(1);
+    await observer.close();
+  });
+
   it("fails closed on bounded response/main-log overflow and reports each unchanged gap once", async () => {
     const test = await fixture();
     const batches: RotationObservationBatch[] = [];
