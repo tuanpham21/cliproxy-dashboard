@@ -1,4 +1,5 @@
 import {
+  MAX_EVIDENCE_WATERMARK_OBSERVATION_IDS,
   ROTATION_JOURNAL_PHASES,
   ROTATION_LIFECYCLES,
   ROTATION_MODES,
@@ -165,8 +166,27 @@ export function isRotationState(value: unknown): value is RotationState {
   if (!(ROTATION_MODES as readonly unknown[]).includes(value.mode)) return false;
   if (!(ROTATION_LIFECYCLES as readonly unknown[]).includes(value.lifecycle)) return false;
   if (!Array.isArray(value.pool) || !value.pool.every(isPoolMember)) return false;
-  if (!Array.isArray(value.audit) || !value.audit.every(isAuditEvent)) return false;
-  if (!Array.isArray(value.switchTimestamps) || !value.switchTimestamps.every((timestamp) => Number.isSafeInteger(timestamp) && timestamp >= 0)) return false;
+      if (!Array.isArray(value.audit) || !value.audit.every(isAuditEvent)) return false;
+      if (!Array.isArray(value.switchTimestamps) || !value.switchTimestamps.every((timestamp) => Number.isSafeInteger(timestamp) && timestamp >= 0)) return false;
+      if (value.lastSelectedAtByProxyAccountKey !== undefined) {
+        if (!isRecord(value.lastSelectedAtByProxyAccountKey)) return false;
+        if (!Object.entries(value.lastSelectedAtByProxyAccountKey).every(([proxyAccountKey, selectedAt]) =>
+          isNonEmptyString(proxyAccountKey) && Number.isSafeInteger(selectedAt) && (selectedAt as number) >= 0)) return false;
+      }
+      if (value.provisionalResetAttempt !== undefined) {
+        if (!isRecord(value.provisionalResetAttempt)) return false;
+        if (!isNonEmptyString(value.provisionalResetAttempt.proxyAccountKey)) return false;
+        if (!isNonEmptyString(value.provisionalResetAttempt.credentialFingerprint)) return false;
+        if (!isTimestamp(value.provisionalResetAttempt.resetAt)) return false;
+        if (!isTimestamp(value.provisionalResetAttempt.evidenceWatermark)) return false;
+      }
+      if (value.evidenceWatermarkObservationIds !== undefined) {
+      if (!Array.isArray(value.evidenceWatermarkObservationIds)) return false;
+      if (value.evidenceWatermarkObservationIds.length > MAX_EVIDENCE_WATERMARK_OBSERVATION_IDS) return false;
+      if (!value.evidenceWatermarkObservationIds.every(isNonEmptyString)) return false;
+      if (new Set(value.evidenceWatermarkObservationIds).size !== value.evidenceWatermarkObservationIds.length) return false;
+      if (value.evidenceWatermarkObservationIds.length > 0 && value.evidenceWatermark === undefined) return false;
+    }
   if (typeof value.manualHold !== "boolean" || typeof value.restorationVerified !== "boolean") return false;
   const journal = value.journal;
   const overlay = value.overlay;

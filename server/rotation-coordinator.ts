@@ -9,9 +9,10 @@ import { openRotationController, type RotationController } from "./rotation-cont
 import type { RotationObservationBatch } from "./rotation-log-observer.js";
 import { resolveDashboardPaths } from "./paths.js";
 import { resolveAccountPath } from "./paths.js";
-import { deriveCredentialFingerprint, decideRotation, isRotationEligible } from "./rotation-policy.js";
+import { deriveCredentialFingerprint, decideRotation, isProvisionalResetCandidate, isRotationEligible } from "./rotation-policy.js";
 import { deriveProxyAccountKey, readQuotaSnapshotStoreFile } from "./quota-store.js";
-import type { RotationAccountSnapshot, RotationDecision, RotationMode, RotationState, SemanticQuotaEvidence } from "./rotation-types.js";
+import { evaluateRotationObservationConsumption } from "./rotation-state-transitions.js";
+import type { ProvisionalResetAttempt, RotationAccountSnapshot, RotationDecision, RotationMode, RotationState, SemanticQuotaEvidence } from "./rotation-types.js";
 import type { AccountView, DashboardOptions, PersistedQuotaSnapshot, PersistedQuotaWindowEvidence } from "./types.js";
 import { normalizeProxyAccountLocalIdentity } from "./util.js";
 
@@ -47,11 +48,13 @@ function rotationProxyAccount(
   proxyAccount: AccountView,
   snapshot: PersistedQuotaSnapshot | undefined,
   pool: Map<string, { exclusivityAttested: boolean }>,
+  nowMs: number,
+  lastSelectedAt?: number,
 ): RotationAccountSnapshot | null {
   if (!snapshot) return null;
   const membership = pool.get(snapshot.proxyAccountKey);
   const weekly = semanticWeekly(snapshot.weekly, snapshot);
-  return {
+  const rotationAccount: RotationAccountSnapshot = {
     proxyAccountKey: snapshot.proxyAccountKey,
     fileName: proxyAccount.fileName,
     enabled: !proxyAccount.disabled,
@@ -64,17 +67,32 @@ function rotationProxyAccount(
     identityVerified: Boolean(snapshot.credentialFingerprint && !snapshot.identityMismatch),
     ...(weekly ? { weekly } : {}),
     exhausted: Boolean(weekly && weekly.usedPercent >= 100),
+    ...(lastSelectedAt === undefined ? {} : { lastSelectedAt }),
     priority: proxyAccount.priority,
     explicitPriority: proxyAccount.explicitPriority,
   };
+  if (isProvisionalResetCandidate(rotationAccount, nowMs)) rotationAccount.provisionalReset = true;
+  return rotationAccount;
 }
 
-function latestObservation(batch: RotationObservationBatch): { observationId: string; observationAt: string } | null {
-  const candidates = [
-    ...batch.updates.flatMap((update) => update.observationId && update.observedAt ? [{ observationId: update.observationId, observationAt: update.observedAt }] : []),
-    ...batch.completedRoutes.map((route) => ({ observationId: `route_${route.traceId}`, observationAt: route.observedAt })),
-  ];
-  return candidates.sort((left, right) => Date.parse(right.observationAt) - Date.parse(left.observationAt))[0] ?? null;
+type RotationObservation = { observationId: string; observationAt: string };
+
+function batchObservations(batch: RotationObservationBatch): RotationObservation[] {
+  const matchedRouteTraceIds = new Set<string>();
+  const observations = batch.updates.flatMap((update): RotationObservation[] => {
+    if (!update.observationId || !update.observedAt) return [];
+    if (update.routeTraceId) matchedRouteTraceIds.add(update.routeTraceId);
+    return [{ observationId: update.observationId, observationAt: update.observedAt }];
+  });
+  observations.push(...batch.completedRoutes.flatMap((route): RotationObservation[] =>
+    matchedRouteTraceIds.has(route.traceId)
+      ? []
+      : [{ observationId: `route_${route.traceId}`, observationAt: route.observedAt }],
+  ));
+  return observations.sort((left, right) => {
+    const byTime = Date.parse(left.observationAt) - Date.parse(right.observationAt);
+    return byTime || left.observationId.localeCompare(right.observationId);
+  });
 }
 
 function newestCompletedRoute(batch: RotationObservationBatch): RotationObservationBatch["completedRoutes"][number] | undefined {
@@ -128,6 +146,50 @@ function confirmationEvidence(
   return { proxyAccountKey: snapshot.proxyAccountKey, fingerprint: snapshot.credentialFingerprint, observedAt: update.observedAt };
 }
 
+function evaluateProvisionalReset(
+  batch: RotationObservationBatch,
+  accounts: RotationAccountSnapshot[],
+  routingTargetKey: string | undefined,
+  attempt: ProvisionalResetAttempt | undefined,
+  evidenceWatermark: string,
+  nowMs: number,
+): { decision?: RotationDecision; attemptUpdate?: ProvisionalResetAttempt | null } {
+  if (attempt) {
+    const target = accounts.find((account) => account.proxyAccountKey === attempt.proxyAccountKey);
+    if (!target) return { decision: { kind: "pause", reason: "Provisional Reset Candidate disappeared", pauseReason: "selection-mismatch" } };
+    if (target.identityFingerprint !== attempt.credentialFingerprint) {
+      return { decision: { kind: "pause", reason: "Provisional Reset Candidate identity changed", pauseReason: "identity-mismatch" } };
+    }
+    const route = firstCompletedRouteAfter(batch, attempt.evidenceWatermark);
+    if (!route) return { decision: { kind: "hold", reason: "Provisional Reset Candidate awaits its one normal confirmation request" } };
+    const evidence = confirmationEvidence(batch, route);
+    if (!evidence) {
+      return { decision: { kind: "pause", reason: "Provisional Reset Candidate normal request lacked same-trace fresh weekly evidence", pauseReason: "observation-uncertain" } };
+    }
+    if (evidence.proxyAccountKey !== attempt.proxyAccountKey) {
+      return { decision: { kind: "pause", reason: "Provisional Reset Candidate request routed to an unexpected account", pauseReason: "selection-mismatch" } };
+    }
+    if (evidence.fingerprint !== attempt.credentialFingerprint) {
+      return { decision: { kind: "pause", reason: "Provisional Reset Candidate evidence identity changed", pauseReason: "identity-mismatch" } };
+    }
+    if (Date.parse(evidence.observedAt) <= Date.parse(attempt.resetAt) || !isRotationEligible(target, nowMs)) {
+      return { decision: { kind: "pause", reason: "Provisional Reset Candidate confirmation evidence is not fresh and eligible", pauseReason: "observation-uncertain" } };
+    }
+    return { attemptUpdate: null };
+  }
+  const target = accounts.find((account) => account.proxyAccountKey === routingTargetKey);
+  if (!target?.provisionalReset || !target.weekly?.resetAt) return {};
+  return {
+    decision: { kind: "hold", reason: "Provisional Reset Candidate may receive one normal confirmation request" },
+    attemptUpdate: {
+      proxyAccountKey: target.proxyAccountKey,
+      credentialFingerprint: target.identityFingerprint,
+      resetAt: target.weekly.resetAt,
+      evidenceWatermark,
+    },
+  };
+}
+
 export type RotationReadiness = { compatible: boolean; reason?: string };
 
 export type RotationCoordinatorOptions = {
@@ -168,6 +230,13 @@ export class RotationCoordinator {
       ...(state.lastDecision ? { lastDecision: state.lastDecision } : {}),
       eligibleCount: state.eligibleCount ?? 0,
       provisionalCount: state.provisionalCount ?? 0,
+      ...(state.provisionalResetAttempt ? {
+        provisionalResetAttempt: {
+          proxyAccountKey: state.provisionalResetAttempt.proxyAccountKey,
+          resetAt: state.provisionalResetAttempt.resetAt,
+          evidenceWatermark: state.provisionalResetAttempt.evidenceWatermark,
+        },
+      } : {}),
       ...(state.quotaSpread === undefined ? {} : { quotaSpread: state.quotaSpread }),
       journal: {
         phase: state.journal.phase,
@@ -186,9 +255,54 @@ export class RotationCoordinator {
   }
 
   async handleObservation(batch: RotationObservationBatch): Promise<void> {
-    const observation = latestObservation(batch);
+    const observations = batchObservations(batch);
+    for (const observation of observations.slice(0, -1)) {
+      await this.#recordCoalescedObservation(observation);
+    }
+    await this.#handleObservationWorkItem(batch, observations.at(-1) ?? null);
+  }
+
+  async #recordCoalescedObservation(observation: RotationObservation): Promise<void> {
+    const controllerState = this.#controller.state();
+    if (controllerState.manualHold || controllerState.lifecycle === "manual-hold") return;
+    const observationConsumption = evaluateRotationObservationConsumption(controllerState, observation);
+    if (observationConsumption.disposition === "duplicate" || observationConsumption.disposition === "stale") return;
+    await this.#controller.recordObservationDecision({
+      decision: observationConsumption.disposition === "overflow"
+        ? {
+            kind: "pause",
+            reason: "Evidence watermark observation ID capacity exceeded",
+            pauseReason: "observation-uncertain",
+          }
+        : { kind: "hold", reason: "observation coalesced into later batch evidence" },
+      observationId: observation.observationId,
+      observationAt: observation.observationAt,
+    });
+  }
+
+  async #handleObservationWorkItem(
+    batch: RotationObservationBatch,
+    observation: RotationObservation | null,
+  ): Promise<void> {
     if (!observation && batch.errors.length === 0) return;
     const controllerState = this.#controller.state();
+    const observationConsumption = evaluateRotationObservationConsumption(controllerState, observation ?? undefined);
+    const seenObservationIds = observationConsumption.consumedObservationIds;
+    if (observation && batch.errors.length === 0) {
+      if (observationConsumption.disposition === "duplicate" || observationConsumption.disposition === "stale") return;
+      if (observationConsumption.disposition === "overflow") {
+        await this.#controller.recordObservationDecision({
+          decision: {
+            kind: "pause",
+            reason: "Evidence watermark observation ID capacity exceeded",
+            pauseReason: "observation-uncertain",
+          },
+          observationId: observation.observationId,
+          observationAt: observation.observationAt,
+        });
+        return;
+      }
+    }
     const readiness = controllerState.mode === "active" ? await this.refreshReadiness() : this.#readiness;
     const newestRoute = newestCompletedRoute(batch);
     const newestRoutedSnapshot = newestRoute
@@ -226,44 +340,66 @@ export class RotationCoordinator {
       return;
     }
     let decision: RotationDecision;
+    let provisionalResetAttemptUpdate: ProvisionalResetAttempt | null | undefined;
     if (batch.errors.length > 0) {
       decision = { kind: "pause", reason: batch.errors.join("; "), pauseReason: "observation-uncertain" };
     } else {
       const proxyAccountsResult = await readAccounts(this.#authDir);
       const pool = new Map(controllerState.pool.map((member) => [member.proxyAccountKey, member]));
+      const decisionAtMs = Date.now();
       const proxyAccounts = proxyAccountsResult.accounts.flatMap((proxyAccount) => {
         const snapshot = batch.snapshotsByCanonicalIdentity.get(normalizeProxyAccountLocalIdentity(proxyAccount.fileName));
-        const rotationSnapshot = rotationProxyAccount(proxyAccount, snapshot, pool);
+        const rotationSnapshot = rotationProxyAccount(
+          proxyAccount,
+          snapshot,
+          pool,
+          decisionAtMs,
+          snapshot ? controllerState.lastSelectedAtByProxyAccountKey?.[snapshot.proxyAccountKey] : undefined,
+        );
         return rotationSnapshot ? [rotationSnapshot] : [];
       });
       const observedRoutedAccountKey = newestRoutedSnapshot?.proxyAccountKey;
-      decision = proxyAccountsResult.errors.length > 0
-        ? { kind: "pause", reason: proxyAccountsResult.errors.join("; "), pauseReason: "observation-uncertain" }
-        : !readiness.compatible
-          ? { kind: "pause", reason: readiness.reason ?? "Routing is incompatible with active rotation", pauseReason: "routing-incompatible" }
-          : controllerState.mode !== "off"
+      const routingTargetKey = controllerState.routingTargetKey ?? observedRoutedAccountKey;
+      if (proxyAccountsResult.errors.length > 0) {
+        decision = { kind: "pause", reason: proxyAccountsResult.errors.join("; "), pauseReason: "observation-uncertain" };
+      } else if (!readiness.compatible) {
+        decision = { kind: "pause", reason: readiness.reason ?? "Routing is incompatible with active rotation", pauseReason: "routing-incompatible" };
+      } else if (
+        controllerState.mode !== "off"
         && controllerState.routingTargetKey
         && observedRoutedAccountKey
         && observedRoutedAccountKey !== controllerState.routingTargetKey
-        ? { kind: "pause", reason: "Observed Routed Account does not match intended target", pauseReason: "selection-mismatch" }
-        : decideRotation({
+      ) {
+        decision = { kind: "pause", reason: "Observed Routed Account does not match intended target", pauseReason: "selection-mismatch" };
+      } else {
+        const provisionalReset = evaluateProvisionalReset(
+          batch,
+          proxyAccounts,
+          routingTargetKey,
+          controllerState.provisionalResetAttempt,
+          observation!.observationAt,
+          decisionAtMs,
+        );
+        provisionalResetAttemptUpdate = provisionalReset.attemptUpdate;
+        decision = provisionalReset.decision ?? decideRotation({
             accounts: proxyAccounts,
-            routingTargetKey: controllerState.routingTargetKey ?? observedRoutedAccountKey,
-            nowMs: Date.now(),
+            routingTargetKey,
+            nowMs: decisionAtMs,
             recentAutomaticSwitches: controllerState.switchTimestamps,
             observationId: observation!.observationId,
             observationAt: observation!.observationAt,
             mode: controllerState.mode,
-            seenObservationIds: controllerState.lastObservationId ? [controllerState.lastObservationId] : [],
+            seenObservationIds,
             evidenceWatermark: controllerState.evidenceWatermark,
           });
+      }
       const selectedTarget = decision.targetKey
         ? proxyAccounts.find((proxyAccount) => proxyAccount.proxyAccountKey === decision.targetKey)
         : undefined;
       if (decision.kind === "switch" && !selectedTarget) {
         decision = { kind: "pause", reason: "Rotation target disappeared before mutation", pauseReason: "selection-mismatch" };
       }
-      const eligibleCount = proxyAccounts.filter((proxyAccount) => isRotationEligible(proxyAccount, Date.now())).length;
+      const eligibleCount = proxyAccounts.filter((proxyAccount) => isRotationEligible(proxyAccount, decisionAtMs)).length;
       const provisionalCount = proxyAccounts.filter((proxyAccount) => proxyAccount.provisionalReset).length;
       await this.#controller.recordObservationDecision({
         decision,
@@ -272,6 +408,7 @@ export class RotationCoordinator {
         ...(observedRoutedAccountKey && newestRoute ? { observedRoutedAccountKey, observedRoutedAt: newestRoute.observedAt } : {}),
         eligibleCount,
         provisionalCount,
+        ...(provisionalResetAttemptUpdate === undefined ? {} : { provisionalResetAttempt: provisionalResetAttemptUpdate }),
       });
       if (
         decision.kind === "switch"

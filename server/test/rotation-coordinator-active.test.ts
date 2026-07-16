@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { openRotationController } from "../rotation-controller.js";
 import { RotationCoordinator, type RotationCoordinatorOptions } from "../rotation-coordinator.js";
@@ -129,23 +129,29 @@ function observationBatch(
   };
 }
 
-async function activeCoordinator(options: RotationCoordinatorOptions = { canMutate: true }) {
+async function activeCoordinator(
+  options: RotationCoordinatorOptions = { canMutate: true },
+  additionalAccounts: ManagedProxyAccount[] = [],
+) {
   const root = await makeTempRoot();
   const authDir = path.join(root, "auth");
-  await writeAccountFile(authDir, "codex-account-a.json", { priority: 10, validity_status: "valid" });
-  await writeAccountFile(authDir, "codex-account-b.json", { priority: 5, validity_status: "valid" });
-  const writer = new FakePriorityWriter([
+  const accounts = [
     managedAccount("account-a", "codex-account-a.json", 10),
     managedAccount("account-b", "codex-account-b.json", 5),
-  ]);
+    ...additionalAccounts,
+  ];
+  await Promise.all(accounts.map((account) =>
+    writeAccountFile(authDir, account.fileName, { priority: account.priority, validity_status: "valid" })));
+  const writer = new FakePriorityWriter(accounts);
   const controller = await openRotationController({
     statePath: path.join(root, "rotation.json"),
     writer,
     mode: "active",
   });
   const coordinator = new RotationCoordinator(authDir, controller, options);
-  await coordinator.upsertPoolMember({ proxyAccountKey: "account-a", fileName: "codex-account-a.json", exclusivityAttested: true });
-  await coordinator.upsertPoolMember({ proxyAccountKey: "account-b", fileName: "codex-account-b.json", exclusivityAttested: true });
+  for (const account of accounts) {
+    await coordinator.upsertPoolMember({ proxyAccountKey: account.proxyAccountKey, fileName: account.fileName, exclusivityAttested: true });
+  }
   return { authDir, controller, coordinator, writer };
 }
 
@@ -178,7 +184,246 @@ describe("active rotation coordinator", () => {
       journal: { phase: "idle" },
     });
     expect(controller.state().switchTimestamps).toHaveLength(1);
+    expect(controller.state().lastSelectedAtByProxyAccountKey?.["account-b"]).toEqual(expect.any(Number));
     expect(coordinator.publicState().audit.map((event) => event.kind)).toContain("switch");
+    await coordinator.close();
+  });
+
+  it("feeds persisted least-recent selection into equal-usage production decisions", async () => {
+    const accountC = managedAccount("account-c", "codex-account-c.json", 1);
+    const { coordinator, writer } = await activeCoordinator({ canMutate: true }, [accountC]);
+    const firstAt = "2026-07-16T00:00:00.000Z";
+    const firstSnapshots = [
+      quotaSnapshot("account-a", 80, firstAt),
+      quotaSnapshot("account-b", 20, firstAt),
+      quotaSnapshot("account-c", 20, firstAt),
+    ];
+    await coordinator.handleObservation(observationBatch("account-a", firstAt, firstSnapshots));
+    const confirmBAt = "2026-07-16T00:00:01.000Z";
+    await coordinator.handleObservation(observationBatch("account-b", confirmBAt, [
+      firstSnapshots[0],
+      quotaSnapshot("account-b", 20, confirmBAt),
+      firstSnapshots[2],
+    ]));
+
+    const switchAAt = "2026-07-16T00:00:02.000Z";
+    const switchASnapshots = [
+      quotaSnapshot("account-a", 20, switchAAt),
+      quotaSnapshot("account-b", 80, switchAAt),
+      quotaSnapshot("account-c", 20, switchAAt),
+    ];
+    await coordinator.handleObservation(observationBatch("account-b", switchAAt, switchASnapshots));
+    const confirmAAt = "2026-07-16T00:00:03.000Z";
+    await coordinator.handleObservation(observationBatch("account-a", confirmAAt, [
+      quotaSnapshot("account-a", 20, confirmAAt),
+      switchASnapshots[1],
+      switchASnapshots[2],
+    ]));
+
+    const switchCAt = "2026-07-16T00:00:04.000Z";
+    await coordinator.handleObservation(observationBatch("account-a", switchCAt, [
+      quotaSnapshot("account-a", 80, switchCAt),
+      quotaSnapshot("account-b", 20, switchCAt),
+      quotaSnapshot("account-c", 20, switchCAt),
+    ]));
+
+    expect(writer.setCalls.map((call) => call.proxyAccountKey)).toEqual(["account-b", "account-a", "account-c"]);
+    expect(coordinator.publicState()).toMatchObject({
+      lifecycle: "awaiting-confirmation",
+      journal: { phase: "verified", routingTargetKey: "account-c" },
+    });
+    await coordinator.close();
+  });
+
+  it("allows one normal Provisional Reset Candidate request, confirms fresh evidence, and never retries a failed attempt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-14T00:00:00.000Z");
+    const { coordinator, writer } = await activeCoordinator();
+    try {
+      const initialAt = "2026-07-14T00:00:00.000Z";
+      const initialAccountA = quotaSnapshot("account-a", 80, initialAt);
+      const initialAccountB = quotaSnapshot("account-b", 20, initialAt);
+      initialAccountB.weekly!.resetAt = "2026-07-15T00:00:00.000Z";
+      await coordinator.handleObservation(observationBatch("account-a", initialAt, [initialAccountA, initialAccountB]));
+      const initialConfirmationAt = "2026-07-14T00:00:01.000Z";
+      const retainedAccountB = quotaSnapshot("account-b", 20, initialConfirmationAt);
+      retainedAccountB.weekly!.resetAt = "2026-07-15T00:00:00.000Z";
+      await coordinator.handleObservation(observationBatch("account-b", initialConfirmationAt, [initialAccountA, retainedAccountB]));
+
+      vi.setSystemTime("2026-07-16T00:00:00.000Z");
+      const armAt = "2026-07-16T00:00:00.000Z";
+      const armBatch = observationBatch("account-a", armAt, [quotaSnapshot("account-a", 20, armAt), retainedAccountB]);
+      armBatch.completedRoutes = [];
+      armBatch.updates[0].routeTraceId = undefined;
+      await coordinator.handleObservation(armBatch);
+      expect(coordinator.publicState()).toMatchObject({
+        lifecycle: "active",
+        provisionalCount: 1,
+        lastDecision: { kind: "hold", reason: "Provisional Reset Candidate may receive one normal confirmation request" },
+        provisionalResetAttempt: { proxyAccountKey: "account-b", resetAt: "2026-07-15T00:00:00.000Z", evidenceWatermark: armAt },
+      });
+
+      const freshConfirmationAt = "2026-07-16T00:00:01.000Z";
+      const refreshedAccountB = quotaSnapshot("account-b", 5, freshConfirmationAt);
+      refreshedAccountB.weekly!.resetAt = "2026-07-23T00:00:00.000Z";
+      await coordinator.handleObservation(observationBatch("account-b", freshConfirmationAt, [
+        quotaSnapshot("account-a", 20, freshConfirmationAt),
+        refreshedAccountB,
+      ]));
+      expect(coordinator.publicState()).toMatchObject({
+        lifecycle: "active",
+        provisionalCount: 0,
+        lastDecision: { kind: "hold", reason: "Quota Spread below five percentage points" },
+      });
+      expect(coordinator.publicState().provisionalResetAttempt).toBeUndefined();
+
+      vi.setSystemTime("2026-07-24T00:00:00.000Z");
+      const secondArmAt = "2026-07-24T00:00:00.000Z";
+      const currentAccountA = quotaSnapshot("account-a", 20, secondArmAt);
+      currentAccountA.weekly!.resetAt = "2026-07-30T00:00:00.000Z";
+      const secondArmBatch = observationBatch("account-a", secondArmAt, [currentAccountA, refreshedAccountB]);
+      secondArmBatch.completedRoutes = [];
+      secondArmBatch.updates[0].routeTraceId = undefined;
+      await coordinator.handleObservation(secondArmBatch);
+      expect(coordinator.publicState().provisionalResetAttempt).toMatchObject({ proxyAccountKey: "account-b" });
+
+      const missingEvidenceAt = "2026-07-24T00:00:01.000Z";
+      await coordinator.handleObservation(observationBatch("account-b", missingEvidenceAt, [currentAccountA, refreshedAccountB], false));
+      expect(coordinator.publicState()).toMatchObject({
+        lifecycle: "paused",
+        pauseReason: "observation-uncertain",
+        pauseMessage: "Provisional Reset Candidate normal request lacked same-trace fresh weekly evidence",
+      });
+      const auditCountAfterFailure = coordinator.publicState().audit.length;
+      await coordinator.handleObservation(observationBatch("account-b", "2026-07-24T00:00:02.000Z", [
+        currentAccountA,
+        quotaSnapshot("account-b", 0, "2026-07-24T00:00:02.000Z"),
+      ]));
+      expect(coordinator.publicState().audit).toHaveLength(auditCountAfterFailure);
+      expect(writer.setCalls.map((call) => call.proxyAccountKey)).toEqual(["account-b"]);
+    } finally {
+      await coordinator.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not mutate and confirm from two historical observations delivered in one batch", async () => {
+    const { coordinator, writer } = await activeCoordinator();
+    const firstAt = "2026-07-16T00:00:00.000Z";
+    const secondAt = "2026-07-16T00:00:01.000Z";
+    const firstSnapshot = quotaSnapshot("account-a", 80, firstAt);
+    const secondSnapshot = quotaSnapshot("account-b", 20, secondAt);
+    const delivered = observationBatch("account-b", secondAt, [firstSnapshot, secondSnapshot]);
+    delivered.updates.unshift({
+      canonicalLocalIdentity: "codex-account-a.json",
+      weekly: firstSnapshot.weekly,
+      continuity: "continuous",
+      observationId: firstSnapshot.lastObservationId,
+      observedAt: firstAt,
+      routeTraceId: "trace-same-delivery-account-a",
+    });
+    delivered.completedRoutes.unshift({
+      canonicalLocalIdentity: "codex-account-a.json",
+      observedAt: firstAt,
+      traceId: "trace-same-delivery-account-a",
+    });
+
+    await coordinator.handleObservation(delivered);
+
+    expect(writer.setCalls).toEqual([]);
+    expect(coordinator.publicState()).toMatchObject({
+      lifecycle: "active",
+      observedRoutedAccountKey: "account-b",
+      journal: { phase: "idle" },
+    });
+    const consumedIds = coordinator.publicState().audit.flatMap((event) => event.observationId ? [event.observationId] : []);
+    expect(consumedIds.filter((candidate) => candidate === firstSnapshot.lastObservationId)).toHaveLength(1);
+    expect(consumedIds.filter((candidate) => candidate === secondSnapshot.lastObservationId)).toHaveLength(1);
+    await coordinator.close();
+  });
+
+  it("cannot confirm an active mutation from historical traffic in the same observer batch", async () => {
+    const { controller, coordinator, writer } = await activeCoordinator();
+    const historicalAt = "2026-07-16T00:00:00.000Z";
+    const decisionAt = "2026-07-16T00:00:01.000Z";
+    const accountAQuotaSnapshot = quotaSnapshot("account-a", 80, decisionAt);
+    const historicalAccountBQuotaSnapshot = quotaSnapshot("account-b", 20, historicalAt);
+    const batch = observationBatch("account-a", decisionAt, [accountAQuotaSnapshot, historicalAccountBQuotaSnapshot]);
+    batch.completedRoutes.unshift({
+      canonicalLocalIdentity: "codex-account-b.json",
+      observedAt: historicalAt,
+      traceId: "trace-historical-account-b",
+    });
+    batch.updates.unshift({
+      canonicalLocalIdentity: "codex-account-b.json",
+      weekly: historicalAccountBQuotaSnapshot.weekly,
+      continuity: "continuous",
+      observationId: historicalAccountBQuotaSnapshot.lastObservationId,
+      observedAt: historicalAt,
+      routeTraceId: "trace-historical-account-b",
+    });
+
+    await coordinator.handleObservation(batch);
+
+    expect(writer.setCalls).toEqual([{ proxyAccountKey: "account-b", priority: 11 }]);
+    expect(coordinator.publicState()).toMatchObject({
+      lifecycle: "awaiting-confirmation",
+      observedRoutedAccountKey: "account-a",
+      journal: { phase: "verified", routingTargetKey: "account-b" },
+    });
+    expect(controller.state().switchTimestamps).toEqual([]);
+
+    const confirmationAt = "2026-07-16T00:00:02.000Z";
+    await coordinator.handleObservation(observationBatch("account-b", confirmationAt, [
+      accountAQuotaSnapshot,
+      quotaSnapshot("account-b", 20, confirmationAt),
+    ]));
+
+    expect(writer.setCalls).toHaveLength(1);
+    expect(coordinator.publicState()).toMatchObject({
+      lifecycle: "active",
+      routingTargetKey: "account-b",
+      observedRoutedAccountKey: "account-b",
+      journal: { phase: "idle" },
+    });
+    expect(controller.state().switchTimestamps).toHaveLength(1);
+    await coordinator.close();
+  });
+
+  it("consumes recognized weekly observations before pausing on a mixed observer-error batch", async () => {
+    const { controller, coordinator, writer } = await activeCoordinator();
+    const firstAt = "2026-07-16T00:00:00.000Z";
+    const secondAt = "2026-07-16T00:00:01.000Z";
+    const firstQuotaSnapshot = quotaSnapshot("account-a", 80, firstAt);
+    const secondQuotaSnapshot = quotaSnapshot("account-b", 20, secondAt);
+    const batch = observationBatch("account-b", secondAt, [firstQuotaSnapshot, secondQuotaSnapshot]);
+    batch.updates.unshift({
+      canonicalLocalIdentity: "codex-account-a.json",
+      weekly: firstQuotaSnapshot.weekly,
+      continuity: "continuous",
+      observationId: firstQuotaSnapshot.lastObservationId,
+      observedAt: firstAt,
+      routeTraceId: "trace-mixed-error-account-a",
+    });
+    batch.completedRoutes.unshift({
+      canonicalLocalIdentity: "codex-account-a.json",
+      observedAt: firstAt,
+      traceId: "trace-mixed-error-account-a",
+    });
+    batch.errors.push("synthetic tracked-file overflow");
+
+    await coordinator.handleObservation(batch);
+
+    expect(writer.setCalls).toEqual([]);
+    expect(coordinator.publicState()).toMatchObject({
+      lifecycle: "paused",
+      pauseReason: "observation-uncertain",
+      pauseMessage: "synthetic tracked-file overflow",
+      journal: { phase: "idle" },
+    });
+    const consumedIds = controller.state().audit.flatMap((event) => event.observationId ? [event.observationId] : []);
+    expect(consumedIds.filter((candidate) => candidate === firstQuotaSnapshot.lastObservationId)).toHaveLength(1);
+    expect(consumedIds.filter((candidate) => candidate === secondQuotaSnapshot.lastObservationId)).toHaveLength(1);
     await coordinator.close();
   });
 

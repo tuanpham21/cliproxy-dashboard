@@ -28,6 +28,7 @@ import type {
     RotationJournal,
     PendingRotationConfirmation,
     PendingRotationRequest,
+    ProvisionalResetAttempt,
   RotationPauseReason,
   RotationPrioritySnapshot,
   RotationPrioritySnapshots,
@@ -121,6 +122,7 @@ export class RotationController {
     observedRoutedAt?: string;
     eligibleCount?: number;
     provisionalCount?: number;
+    provisionalResetAttempt?: ProvisionalResetAttempt | null;
   }): Promise<RotationState> {
     return await this.#withLock(async () => {
       if (this.#state.lifecycle === "paused" || this.#state.lifecycle === "recovery-required") return this.state();
@@ -316,16 +318,22 @@ export class RotationController {
         basePriorities: structuredClone(journal.basePriorities),
         appliedPriorities: { ...(this.#state.overlay?.appliedPriorities ?? {}), [journal.routingTargetKey]: journal.intendedPriority },
       };
-      this.#state.routingTargetKey = journal.routingTargetKey;
-      this.#state.observedRoutedAccountKey = confirmation.observedRoutedAccountKey;
-      this.#state.lastObservationId = confirmation.observationId;
-      this.#state.evidenceWatermark = confirmation.evidenceWatermark;
-      this.#state.switchTimestamps.push(this.#now());
-      this.#state.lifecycle = lifecycleForMode(this.#state.mode);
+        this.#state.routingTargetKey = journal.routingTargetKey;
+        this.#state.observedRoutedAccountKey = confirmation.observedRoutedAccountKey;
+          this.#state.lastObservationId = confirmation.observationId;
+          this.#state.evidenceWatermark = confirmation.evidenceWatermark;
+          this.#state.evidenceWatermarkObservationIds = [confirmation.observationId];
+        const selectedAt = this.#now();
+        this.#state.lastSelectedAtByProxyAccountKey = {
+          ...(this.#state.lastSelectedAtByProxyAccountKey ?? {}),
+          [journal.routingTargetKey]: selectedAt,
+        };
+        this.#state.switchTimestamps.push(selectedAt);
+        this.#state.lifecycle = lifecycleForMode(this.#state.mode);
         this.#state.pauseReason = undefined;
         this.#state.pauseMessage = undefined;
         this.#state.journal.phase = "committed";
-        appendRotationAudit(this.#state, { at: new Date(this.#now()).toISOString(), kind: "switch", message: "Observed Routed Account confirmed intended target", proxyAccountKey: journal.routingTargetKey, observationId: confirmation.observationId });
+          appendRotationAudit(this.#state, { at: new Date(selectedAt).toISOString(), kind: "switch", message: "Observed Routed Account confirmed intended target", proxyAccountKey: journal.routingTargetKey, observationId: confirmation.observationId });
         await this.#persist();
       await this.#inject("committed");
       this.#state.journal = emptyJournal();
@@ -347,8 +355,9 @@ export class RotationController {
       if (this.#state.overlay) return await this.#restoreOverlay(true);
       this.#state.mode = "off";
       this.#state.lifecycle = "off";
-      this.#state.manualHold = false;
-      this.#state.restorationVerified = true;
+        this.#state.manualHold = false;
+        this.#state.provisionalResetAttempt = undefined;
+        this.#state.restorationVerified = true;
       this.#state.journal = emptyJournal();
       this.#state.pauseReason = undefined;
       this.#state.pauseMessage = undefined;
@@ -415,11 +424,12 @@ export class RotationController {
     this.#state.restorationVerified = true;
     this.#state.pauseReason = undefined;
     this.#state.pauseMessage = undefined;
-    if (disable) {
-      this.#state.mode = "off";
-      this.#state.lifecycle = "off";
-      this.#state.manualHold = false;
-    } else {
+      if (disable) {
+        this.#state.mode = "off";
+        this.#state.lifecycle = "off";
+        this.#state.manualHold = false;
+        this.#state.provisionalResetAttempt = undefined;
+      } else {
       this.#state.lifecycle = lifecycleForMode(this.#state.mode);
     }
       await this.#persist();

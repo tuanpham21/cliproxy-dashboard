@@ -176,11 +176,24 @@ describe("rotation controller journal and recovery", () => {
 
     writer.beforeSet = undefined;
     await controller.beginPendingRotation({ ...request, observationId: "observation-2", evidenceWatermark: "2026-07-16T00:00:03.000Z", fromProxyAccountKey: "account-a", routingTargetKey: "account-b", targetFingerprint: "fingerprint-account-b" });
-    await controller.confirmPendingRotation({ observationId: "observation-2", observedRoutedAccountKey: "account-b", observedFingerprint: "fingerprint-account-b", evidenceWatermark: "2026-07-16T00:00:04.000Z" });
-    expect(writer.setCalls).toEqual([{ key: "account-a", priority: 11 }, { key: "account-b", priority: 12 }]);
+      await controller.confirmPendingRotation({ observationId: "observation-2", observedRoutedAccountKey: "account-b", observedFingerprint: "fingerprint-account-b", evidenceWatermark: "2026-07-16T00:00:04.000Z" });
+      expect(writer.setCalls).toEqual([{ key: "account-a", priority: 11 }, { key: "account-b", priority: 12 }]);
 
-      const disabled = await controller.disable();
-      expect(disabled).toMatchObject({ mode: "off", lifecycle: "off", restorationVerified: true, journal: { phase: "idle" } });
+      await controller.recordObservationDecision({
+        decision: { kind: "hold", reason: "synthetic Provisional Reset Candidate armed" },
+        observationId: "observation-provisional",
+        observationAt: "2026-07-16T00:00:05.000Z",
+        provisionalResetAttempt: {
+          proxyAccountKey: "account-b",
+          credentialFingerprint: "fingerprint-account-b",
+          resetAt: "2026-07-16T00:00:04.500Z",
+          evidenceWatermark: "2026-07-16T00:00:05.000Z",
+        },
+      });
+
+        const disabled = await controller.disable();
+        expect(disabled).toMatchObject({ mode: "off", lifecycle: "off", restorationVerified: true, journal: { phase: "idle" } });
+        expect(disabled.provisionalResetAttempt).toBeUndefined();
       expect(disabled.audit.map((event) => event.kind)).toContain("restore");
     expect(writer.proxyAccounts.get("account-a")).toMatchObject({ priority: 0, explicitPriority: false, disabled: false, note: "note-account-a" });
     expect(writer.proxyAccounts.get("account-b")).toMatchObject({ priority: 10, explicitPriority: true, disabled: false, note: "note-account-b" });

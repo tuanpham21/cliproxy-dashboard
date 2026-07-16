@@ -152,13 +152,23 @@ describe("rotation policy", () => {
   });
 
   it("holds duplicate or old observations and ignores provisional reset candidates", () => {
-    expect(decideRotation(decisionInput({ seenObservationIds: ["obs-1"] })).kind).toBe("hold");
-    expect(decideRotation(decisionInput({ evidenceWatermark: "2026-07-15T00:02:00.000Z" }))).toMatchObject({ kind: "hold", reason: "observation is not newer than evidence watermark" });
-    const active = account({ fileName: "codex-active.json", proxyAccountKey: "pak-active", identityFingerprint: "fp-active", weekly: { ...account().weekly!, usedPercent: 20, credentialFingerprint: "fp-active" } });
+      expect(decideRotation(decisionInput({ seenObservationIds: ["obs-1"] })).kind).toBe("hold");
+      expect(decideRotation(decisionInput({ evidenceWatermark: "2026-07-15T00:02:00.000Z" }))).toMatchObject({ kind: "hold", reason: "observation is not newer than evidence watermark" });
+      expect(decideRotation(decisionInput({
+        observationId: "obs-2",
+        evidenceWatermark: "2026-07-15T00:01:00.000Z",
+        seenObservationIds: ["obs-1"],
+      })).kind).toBe("switch");
+      const active = account({ fileName: "codex-active.json", proxyAccountKey: "pak-active", identityFingerprint: "fp-active", weekly: { ...account().weekly!, usedPercent: 20, credentialFingerprint: "fp-active" } });
     const provisional = account({ fileName: "codex-provisional.json", proxyAccountKey: "pak-provisional", provisionalReset: true, weekly: { ...account().weekly!, usedPercent: 0 } });
-    const safe = account({ fileName: "codex-safe.json", proxyAccountKey: "pak-safe", weekly: { ...account().weekly!, usedPercent: 14 } });
-    expect(decideRotation(decisionInput({ accounts: [active, provisional, safe] }))).toMatchObject({ kind: "switch", targetKey: "pak-safe" });
-  });
+      const safe = account({ fileName: "codex-safe.json", proxyAccountKey: "pak-safe", weekly: { ...account().weekly!, usedPercent: 14 } });
+      expect(decideRotation(decisionInput({ accounts: [active, provisional, safe] }))).toMatchObject({ kind: "switch", targetKey: "pak-safe" });
+      const provisionalTarget = account({ fileName: "codex-active.json", proxyAccountKey: "pak-active", provisionalReset: true });
+      expect(decideRotation(decisionInput({ accounts: [provisionalTarget], routingTargetKey: provisionalTarget.proxyAccountKey }))).toMatchObject({
+        kind: "hold",
+        reason: "Provisional Reset Candidate may receive one normal confirmation request",
+      });
+    });
 
   it("pauses with no eligible member and holds one eligible member", () => {
     expect(decideRotation(decisionInput({ accounts: [account({ provisionalReset: true })] })).kind).toBe("pause");

@@ -52,6 +52,10 @@ async function withManagementServer(
 }
 
 describe("CLIProxy management priority adapter", () => {
+  it("pins the WebSocket-safe production contract build", () => {
+    expect(CLI_PROXY_PRIORITY_CONTRACT_COMMIT).toBe("3bbf6da7ad92545c701cdc7bce09ba2ec4db2bcf");
+  });
+
   it("authenticates conditional target patch through an isolated loopback server and verifies identity", async () => {
     await withManagementServer(async (req, res) => {
       expect(req.headers.authorization).toBe("Bearer synthetic-management-key");

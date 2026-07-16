@@ -1,5 +1,6 @@
 export const ROTATION_MODES = ["off", "shadow", "active"] as const;
 export type RotationMode = (typeof ROTATION_MODES)[number];
+export const MAX_EVIDENCE_WATERMARK_OBSERVATION_IDS = 256;
 
 export const ROTATION_LIFECYCLES = [
   "off",
@@ -163,6 +164,13 @@ export type RotationOverlayState = {
   appliedPriorities: Record<string, number>;
 };
 
+export type ProvisionalResetAttempt = {
+  proxyAccountKey: string;
+  credentialFingerprint: string;
+  resetAt: string;
+  evidenceWatermark: string;
+};
+
 export type RotationState = {
   schemaVersion: 1;
   mode: RotationMode;
@@ -172,11 +180,14 @@ export type RotationState = {
   observedRoutedAccountKey?: string;
   lastObservationId?: string;
   evidenceWatermark?: string;
+  evidenceWatermarkObservationIds?: string[];
   lastDecision?: RotationDecision;
   eligibleCount?: number;
   provisionalCount?: number;
   quotaSpread?: number;
   switchTimestamps: number[];
+  lastSelectedAtByProxyAccountKey?: Record<string, number>;
+  provisionalResetAttempt?: ProvisionalResetAttempt;
   journal: RotationJournal;
   overlay?: RotationOverlayState;
   pauseReason?: RotationPauseReason;

@@ -77,34 +77,62 @@ export function hasVerifiedCredentialIdentity(raw: Record<string, unknown>): boo
   return Boolean(accountId || subject || email);
 }
 
+function hasRotationWeeklyContract(evidence: SemanticQuotaEvidence | undefined): evidence is SemanticQuotaEvidence {
+  return Boolean(
+    evidence
+      && evidence.windowKind === "weekly"
+      && !evidence.migrationOnly
+      && evidence.continuity === "continuous"
+      && Number.isFinite(evidence.usedPercent)
+      && evidence.schemaVersion === 2
+      && evidence.durationMinutes === 10_080
+      && evidence.evidenceId
+      && evidence.credentialFingerprint,
+  );
+}
+
 export function isFreshWeeklyEvidence(evidence: SemanticQuotaEvidence | undefined, nowMs: number): boolean {
-  if (!evidence || evidence.windowKind !== "weekly" || evidence.migrationOnly) {
-    return false;
-  }
-  if (evidence.continuity !== "continuous" || !Number.isFinite(evidence.usedPercent)) {
-    return false;
-  }
+  if (!hasRotationWeeklyContract(evidence)) return false;
   const resetMs = evidence.resetAt ? Date.parse(evidence.resetAt) : NaN;
   if (!Number.isFinite(resetMs) || resetMs <= nowMs) {
     return false;
   }
-  return evidence.schemaVersion === 2 && evidence.durationMinutes === 10_080 && Boolean(evidence.evidenceId && evidence.credentialFingerprint);
+  return true;
+}
+
+function hasRotationAccountPrerequisites(account: RotationAccountSnapshot): boolean {
+  return Boolean(
+    account.rotationPoolMember
+      && account.exclusivityAttested
+      && account.enabled
+      && account.sessionValid
+      && account.observable
+      && account.observationContinuity === "continuous"
+      && account.identityVerified
+      && hasRotationWeeklyContract(account.weekly)
+      && account.weekly.credentialFingerprint === account.identityFingerprint,
+  );
 }
 
 export function isRotationEligible(account: RotationAccountSnapshot, nowMs = Date.now()): boolean {
   return Boolean(
-    account.rotationPoolMember &&
-      account.exclusivityAttested &&
-      account.enabled &&
-      account.sessionValid &&
-      account.observable &&
-      account.observationContinuity === "continuous" &&
+    hasRotationAccountPrerequisites(account) &&
       !account.exhausted &&
       (!account.cooldownUntil || Date.parse(account.cooldownUntil) <= nowMs) &&
       !account.provisionalReset &&
-      account.identityVerified &&
-      isFreshWeeklyEvidence(account.weekly, nowMs) &&
-      account.weekly?.credentialFingerprint === account.identityFingerprint,
+      isFreshWeeklyEvidence(account.weekly, nowMs),
+  );
+}
+
+export function isProvisionalResetCandidate(account: RotationAccountSnapshot, nowMs = Date.now()): boolean {
+  const resetMs = Date.parse(account.weekly?.resetAt ?? "");
+  const observedMs = Date.parse(account.weekly?.observedAt ?? "");
+  return Boolean(
+    hasRotationAccountPrerequisites(account)
+      && Number.isFinite(resetMs)
+      && Number.isFinite(observedMs)
+      && observedMs < resetMs
+      && resetMs <= nowMs,
   );
 }
 
@@ -147,15 +175,23 @@ export function decideRotation(input: RotationDecisionInput): RotationDecision {
     if (!Number.isFinite(watermarkMs)) {
       return { kind: "pause", reason: "evidence watermark is invalid", pauseReason: "corrupt-state" };
     }
-    if (observationMs <= watermarkMs) {
+    if (observationMs < watermarkMs) {
       return { kind: "hold", reason: "observation is not newer than evidence watermark" };
     }
   }
   const eligible = input.accounts.filter((account) => isRotationEligible(account, input.nowMs)).sort(candidateSort);
+  const configuredTarget = input.accounts.find((account) => account.proxyAccountKey === input.routingTargetKey);
+  if (configuredTarget?.provisionalReset) {
+    return {
+      kind: "hold",
+      reason: "Provisional Reset Candidate may receive one normal confirmation request",
+      activeUsedPercent: configuredTarget.weekly ? evidenceUsedPercent(configuredTarget.weekly) : undefined,
+      lowestUsedPercent: eligible[0]?.weekly ? evidenceUsedPercent(eligible[0].weekly) : undefined,
+    };
+  }
   if (eligible.length === 0) {
     return { kind: "pause", reason: "no Rotation-Eligible Proxy Account", pauseReason: "no-eligible-members" };
   }
-  const configuredTarget = input.accounts.find((account) => account.proxyAccountKey === input.routingTargetKey);
   if (input.routingTargetKey && !configuredTarget) {
     if (switchBudgetExhausted(input)) {
       return { kind: "pause", reason: "automatic switch budget exhausted", pauseReason: "switch-budget-exhausted" };

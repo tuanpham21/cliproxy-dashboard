@@ -122,8 +122,9 @@ export type PublicRotationState = {
   evidenceWatermark?: string;
   lastDecision?: { kind: "switch" | "hold" | "pause" | "confirm"; reason: string; targetKey?: string; spread?: number; pauseReason?: string };
   eligibleCount: number;
-  provisionalCount: number;
-  quotaSpread?: number;
+    provisionalCount: number;
+    provisionalResetAttempt?: { proxyAccountKey: string; resetAt: string; evidenceWatermark: string };
+    quotaSpread?: number;
   journal: { phase: "idle" | "journaled" | "mutating" | "mutated" | "verified" | "committed" | "restoring"; routingTargetKey?: string; intendedPriority?: number };
   pauseReason?: string;
   pauseMessage?: string;

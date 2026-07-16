@@ -3,7 +3,7 @@ import type { RotationPriorityWriter } from "./rotation-types.js";
 const MAX_MANAGEMENT_PRIORITY = 2_147_483_647;
 
 export const CLI_PROXY_PRIORITY_CONTRACT_VERSION = "7.2.75";
-export const CLI_PROXY_PRIORITY_CONTRACT_COMMIT = "75df9810620eae13f04f906c4ec7aad3355a844e";
+export const CLI_PROXY_PRIORITY_CONTRACT_COMMIT = "3bbf6da7ad92545c701cdc7bce09ba2ec4db2bcf";
 
 type ManagementAuthFile = {
   name?: unknown;
