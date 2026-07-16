@@ -145,6 +145,12 @@ describe("rotation policy", () => {
       const fallback = account({ fileName: "codex-fallback.json", proxyAccountKey: "pak-fallback" });
       expect(decideRotation(decisionInput({ accounts: [unavailable, fallback] }))).toMatchObject({ kind: "switch", targetKey: "pak-fallback" });
       expect(decideRotation(decisionInput({ accounts: [fallback], routingTargetKey: "pak-missing" }))).toMatchObject({ kind: "switch", targetKey: "pak-fallback" });
+      expect(decideRotation(decisionInput({ routingTargetKey: undefined }))).toMatchObject({
+        kind: "switch",
+        reason: "routing target missing",
+        targetKey: "pak-low",
+        lowestUsedPercent: 10,
+      });
     expect(decideRotation(decisionInput({
       accounts: [unavailable, fallback],
       recentAutomaticSwitches: [0, 1, 2].map((n) => Date.parse("2026-07-15T00:00:00.000Z") + n),

@@ -192,7 +192,7 @@ export function decideRotation(input: RotationDecisionInput): RotationDecision {
   if (eligible.length === 0) {
     return { kind: "pause", reason: "no Rotation-Eligible Proxy Account", pauseReason: "no-eligible-members" };
   }
-  if (input.routingTargetKey && !configuredTarget) {
+  if (!configuredTarget) {
     if (switchBudgetExhausted(input)) {
       return { kind: "pause", reason: "automatic switch budget exhausted", pauseReason: "switch-budget-exhausted" };
     }
