@@ -52,7 +52,11 @@ export type CodexAppServerSessionOptions = {
   closeTimeoutMs?: number;
   maxStdoutLineBytes?: number;
   maxStderrBytes?: number;
+  onNotification?: (notification: CodexAppServerNotification) => Promise<void> | void;
+  onUnexpectedProcessClose?: () => Promise<void> | void;
 };
+
+export type CodexAppServerNotification = { method: string; params?: unknown };
 
 export type CodexAppServerRequestOptions = {
   timeoutMs?: number;
@@ -96,6 +100,8 @@ export class CodexAppServerSession {
   private readonly closeTimeoutMs: number;
   private readonly maxStdoutLineBytes: number;
   private readonly maxStderrBytes: number;
+  private readonly onNotification?: CodexAppServerSessionOptions["onNotification"];
+  private readonly onUnexpectedProcessClose?: CodexAppServerSessionOptions["onUnexpectedProcessClose"];
   private nextRequestId = 1;
   private stdoutBuffer = "";
   private stderrBytes = 0;
@@ -106,6 +112,7 @@ export class CodexAppServerSession {
     reject: (error: CodexAppServerTransportError) => void;
   }> = [];
   private processClosed = false;
+  private readyOnce = false;
   private requestTail: Promise<void> = Promise.resolve();
   private closePromise: Promise<void> | null = null;
   private readonly processClosePromise: Promise<void>;
@@ -127,6 +134,8 @@ export class CodexAppServerSession {
     this.closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.maxStdoutLineBytes = options.maxStdoutLineBytes ?? DEFAULT_MAX_STDOUT_LINE_BYTES;
     this.maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_STDERR_BYTES;
+    this.onNotification = options.onNotification;
+    this.onUnexpectedProcessClose = options.onUnexpectedProcessClose;
     this.processClosePromise = new Promise((resolve) => {
       this.resolveProcessClose = resolve;
     });
@@ -165,6 +174,7 @@ export class CodexAppServerSession {
       );
       await session.sendNotification("initialized");
       session.state = "ready";
+      session.readyOnce = true;
       return session;
     } catch (error) {
       await session.close();
@@ -305,7 +315,17 @@ export class CodexAppServerSession {
       this.failTransport("protocol-error");
       return;
     }
-    if (typeof parsed.method === "string" && parsed.id === undefined) return;
+    if (typeof parsed.method === "string" && parsed.id === undefined) {
+      const notification = Object.hasOwn(parsed, "params")
+        ? { method: parsed.method, params: parsed.params }
+        : { method: parsed.method };
+      try {
+        void Promise.resolve(this.onNotification?.(notification)).catch(() => {});
+      } catch {
+        // Observation cannot poison transport.
+      }
+      return;
+    }
     if (!Number.isInteger(parsed.id)) {
       this.failTransport("protocol-error");
       return;
@@ -369,10 +389,18 @@ export class CodexAppServerSession {
 
   private handleProcessClose(): void {
     if (this.processClosed) return;
+    const unexpected = this.readyOnce && this.state !== "closed";
     this.processClosed = true;
     if (this.spawnState === "pending") this.failSpawn();
     if (this.state !== "closed") this.failTransport("process-exited");
     this.resolveProcessClose();
+    if (unexpected) {
+      try {
+        void Promise.resolve(this.onUnexpectedProcessClose?.()).catch(() => {});
+      } catch {
+        // Observation cannot poison transport.
+      }
+    }
   }
 
   private handleProcessSpawn(): void {

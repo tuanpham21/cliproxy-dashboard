@@ -1,127 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-
-type UsageView = {
-  state: string;
-  errorCode: string | null;
-  message: string;
-  runtime: { status: string; version: string | null };
-  account: { email: string | null; plan: string | null } | null;
-  observedAt: string | null;
-  usage: {
-    primary: { usedPercent: number | null; durationMinutes: number | null; resetsAt: string | null } | null;
-    secondary: { usedPercent: number | null; durationMinutes: number | null; resetsAt: string | null } | null;
-  } | null;
-  resetCredits: {
-    availableCount: number;
-    selectionMode: "none" | "detailed" | "generic";
-    credits: Array<{
-      id: string | null;
-      availability: string;
-      title: string | null;
-      description: string | null;
-      grantedAt: string | null;
-      expiresAt: string | null;
-    }>;
-  } | null;
-};
-
-const dashboardState = {
-  paths: {
-    configPath: "/tmp/config.yaml",
-    authDir: "/tmp/auth",
-    backupRoot: "/tmp/backups",
-    logsDir: "/tmp/logs",
-    mainLogPath: "/tmp/logs/main.log",
-    quotaSnapshotStatePath: "/tmp/quota.json",
-    proxyUrl: "http://127.0.0.1:8317",
-    proxyPort: 8317,
-    inboundKeyConfigured: false,
-  },
-  config: {
-    path: "/tmp/config.yaml",
-    port: 8317,
-    authDir: "/tmp/auth",
-    routingStrategy: "priority",
-    sessionAffinity: false,
-    apiKeysConfigured: false,
-    apiKeyCount: 0,
-  },
-  accounts: [],
-  selectedAccount: null,
-  models: [],
-  logSummary: {
-    latestSelection: null,
-    latestCodexSelection: null,
-    recentSelections: [],
-    latestRequest: null,
-    recentRequests: [],
-  },
-  errors: [],
-  lastRefreshedAt: "2026-07-16T12:00:00.000Z",
-};
-
-function view(overrides: Partial<UsageView> = {}): UsageView {
-  return {
-    state: "usage-ready-no-resets",
-    errorCode: null,
-    message: "No earned usage limit resets available.",
-    runtime: { status: "qualified", version: "codex-cli 0.144.4" },
-    account: { email: "operator@example.com", plan: "pro" },
-    observedAt: "2026-07-16T12:00:00.000Z",
-    usage: {
-      primary: { usedPercent: 25, durationMinutes: 300, resetsAt: "2027-01-15T08:00:00.000Z" },
-      secondary: { usedPercent: 60, durationMinutes: 10_080, resetsAt: "2027-01-22T08:00:00.000Z" },
-    },
-    resetCredits: { availableCount: 0, selectionMode: "none", credits: [] },
-    ...overrides,
-  };
-}
-
-async function mockApi(page: Page, initial: UsageView, stateStatus = 200, deferFirstCodex = false) {
-  let usage = initial;
-  let codexCallCount = 0;
-  let releaseFirstCodex: (() => void) | null = null;
-  const requests: string[] = [];
-  await page.route("**/api/**", async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    requests.push(pathname);
-    if (pathname === "/api/bootstrap") {
-      await route.fulfill({ json: { operatorToken: "browser-test-token" } });
-      return;
-    }
-    if (pathname === "/api/state") {
-      await route.fulfill({ status: stateStatus, json: stateStatus === 200 ? dashboardState : { error: "dashboard unavailable" } });
-      return;
-    }
-    if (pathname === "/api/codex/account-usage") {
-      if (deferFirstCodex && codexCallCount++ === 0) {
-        await new Promise<void>((resolve) => {
-          releaseFirstCodex = resolve;
-        });
-      }
-      await route.fulfill({ json: usage });
-      return;
-    }
-    await route.fulfill({ status: 404, json: { error: "unexpected browser test request" } });
-  });
-  return {
-    requests,
-    setUsage(next: UsageView) {
-      usage = next;
-    },
-    releaseFirstCodex() {
-      releaseFirstCodex?.();
-      releaseFirstCodex = null;
-    },
-  };
-}
-
-async function load(page: Page, initial: UsageView = view(), stateStatus = 200) {
-  const api = await mockApi(page, initial, stateStatus);
-  await page.goto("/");
-  await expect(page.locator("#codex-app-account-content .codex-account-state")).toBeVisible();
-  return api;
-}
+import { expect, test } from "@playwright/test";
+import { load, mockApi, view } from "./codex-app-account-fixture";
 
 test("keeps permanent Codex panel separate from Proxy Accounts", async ({ page }) => {
   await load(page);
@@ -169,7 +47,7 @@ test("renders every stable read-only state with fixed text", async ({ page }) =>
   }
 });
 
-test("keeps credit context visible and offers generic provider selection without mutation", async ({ page }) => {
+test("keeps credit context visible and offers generic proposal selection without consume", async ({ page }) => {
   await load(
     page,
     view({
@@ -193,14 +71,296 @@ test("keeps credit context visible and offers generic provider selection without
   );
 
   const panel = page.locator("#codex-app-account-content");
-  await expect(panel.getByRole("list", { name: "Usage limit reset details" })).toBeVisible();
   await expect(panel).toContainText("<img src=x onerror=alert(1)>");
   await expect(panel).toContainText("Reset & continue");
   await expect(panel.locator("img")).toHaveCount(0);
   await expect(panel).toContainText("OpenAI will select the reset");
-  await expect(panel).toContainText("Redemption remains disabled.");
-  await expect(panel.getByRole("button")).toHaveCount(0);
+  await expect(panel.getByRole("group", { name: "Choose a usage limit reset" })).toBeVisible();
+  await expect(panel.getByRole("radio", { name: /Use a reset/ })).toBeChecked();
+  await expect(panel.getByRole("button", { name: "Review reset" })).toBeDisabled();
+  await expect(panel.getByText("I confirm this Codex app account uses one ChatGPT workspace", { exact: false })).toBeVisible();
 });
+
+test("opens accessible confirmation, cancels explicitly, and restores opener focus", async ({ page }) => {
+    const api = await load(
+      page,
+      view({
+        state: "usage-ready-resets-available",
+        message: "1 earned usage limit reset is available.",
+        resetCredits: {
+          availableCount: 1,
+          selectionMode: "detailed",
+          credits: [{
+            id: "credit-1",
+            availability: "available",
+            title: "Early reset",
+            description: "Provider chooses eligible windows.",
+            grantedAt: "2026-07-01T00:00:00.000Z",
+            expiresAt: null,
+          }],
+        },
+      }),
+    );
+    const panel = page.locator("#codex-app-account-content");
+    const review = panel.getByRole("button", { name: "Review reset" });
+    const attestation = panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ });
+    await expect(panel.getByRole("radio", { name: /Early reset/ })).toBeChecked();
+    await attestation.check();
+    await expect(review).toBeEnabled();
+
+    await review.click();
+    const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    await expect(dialog).toBeVisible();
+    await expect(cancel).toBeFocused();
+    await expect(dialog).toContainText("OpenAI decides which eligible usage limits reset.");
+    await expect(dialog).toContainText("Confirmation expires in 2:00");
+    await expect(dialog.getByRole("button", { name: "Redeem reset" })).toBeDisabled();
+    expect(api.prepareBodies).toEqual([{ creditId: "credit-1", singleWorkspaceAttested: true }]);
+
+    await cancel.click();
+    await expect(dialog).toBeHidden();
+    await expect(review).toBeFocused();
+    await expect(attestation).not.toBeChecked();
+    expect(api.requests).toContain(`/api/codex/reset-redemptions/proposals/${"p".repeat(43)}`);
+    expect(api.requests.some((path) => path.endsWith("/consume"))).toBe(false);
+  });
+
+test("keeps stable dialog through panel refresh and awaits DELETE before Escape closes", async ({ page }) => {
+    const initial = view({
+      state: "usage-ready-resets-available",
+      message: "1 earned usage limit reset is available.",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+    });
+    const api = await mockApi(page, initial, 200, false, { deferCancel: true });
+    await page.goto("/");
+    const panel = page.locator("#codex-app-account-content");
+    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
+    await panel.getByRole("button", { name: "Review reset" }).click();
+    const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+    await expect(dialog).toBeVisible();
+
+    await page.evaluate(() => document.getElementById("refresh-codex-account-btn")?.click());
+    await expect(page.getByRole("button", { name: "Refresh Codex usage" })).toBeEnabled();
+    await expect(dialog).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect.poll(() => api.requests.filter((path) => path === `/api/codex/reset-redemptions/proposals/${"p".repeat(43)}`).length).toBe(1);
+    await expect(dialog).toBeVisible();
+    api.releaseCancel();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("button", { name: "Refresh Codex usage" })).toBeFocused();
+  });
+
+test("resumes polling from browser-safe proposal state after reload without persisting attestation", async ({ page }) => {
+    const initial = view({
+      state: "usage-ready-resets-available",
+      message: "1 earned usage limit reset is available.",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+    });
+    const api = await mockApi(page, initial);
+    await page.goto("/");
+    const panel = page.locator("#codex-app-account-content");
+    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
+    await panel.getByRole("button", { name: "Review reset" }).click();
+    await expect(page.getByRole("dialog", { name: "Redeem usage limit reset?" })).toBeVisible();
+
+    await page.evaluate(() => sessionStorage.clear());
+    await page.reload();
+    const restoredDialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+    await expect(restoredDialog).toBeVisible();
+    await expect(restoredDialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await expect(page.locator("#codex-app-account-content").getByRole("checkbox", {
+      name: /I confirm this Codex app account uses one ChatGPT workspace/,
+    })).toHaveCount(0);
+    await expect.poll(() => api.requests.filter((path) => path === `/api/codex/reset-redemptions/${"p".repeat(43)}`).length).toBeGreaterThan(0);
+    await restoredDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(restoredDialog).toBeHidden();
+  });
+
+test("re-enables cancel for a second prepared proposal", async ({ page }) => {
+  const initial = view({
+    state: "usage-ready-resets-available",
+    message: "1 earned usage limit reset is available.",
+    resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+  });
+  const api = await mockApi(page, initial);
+  await page.goto("/");
+  const panel = page.locator("#codex-app-account-content");
+  const attestation = panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ });
+  await attestation.check();
+  await panel.getByRole("button", { name: "Review reset" }).click();
+  const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+
+  await attestation.check();
+  await panel.getByRole("button", { name: "Review reset" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  expect(api.prepareBodies).toHaveLength(2);
+});
+
+test("uses authoritative server context instead of session storage display fields", async ({ page }) => {
+  const initial = view({
+    state: "usage-ready-resets-available",
+    message: "1 earned usage limit reset is available.",
+    resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+  });
+  await mockApi(page, initial);
+  await page.goto("/");
+  const panel = page.locator("#codex-app-account-content");
+  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
+  await panel.getByRole("button", { name: "Review reset" }).click();
+  await page.evaluate(() => {
+    sessionStorage.setItem("cliproxy-dashboard/codex-reset-redemption/proposal", JSON.stringify({
+      proposalId: "p".repeat(43),
+      account: { email: "attacker@example.com", plan: "enterprise" },
+      availableCount: 999,
+      selection: { mode: "generic" },
+    }));
+  });
+
+  await page.reload();
+  const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+  await expect(dialog).toContainText("operator@example.com");
+  await expect(dialog).not.toContainText("attacker@example.com");
+  await expect(dialog).not.toContainText("999 resets available");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("polls a minimal active proposal without exposing unchecked confirmation context", async ({ page }) => {
+  const proposalId = "p".repeat(43);
+  const api = await mockApi(
+    page,
+    view({
+      state: "usage-ready-resets-available",
+      message: "1 earned usage limit reset is available.",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+    }),
+    200,
+    false,
+    {
+      initialActiveRedemption: {
+        status: "prepared",
+        proposalId,
+        allowedAction: "cancel",
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        selectionMode: "generic",
+      },
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.locator("#codex-redemption-page-status")).toHaveText(
+    "Another reset confirmation is active. Return to its original dashboard tab or wait for expiry.",
+  );
+  await expect(page.getByRole("dialog", { name: "Redeem usage limit reset?" })).toBeHidden();
+  await expect(page.locator("#codex-app-account-content").getByRole("button", { name: "Review reset" })).toHaveCount(0);
+  await expect.poll(() => api.requests.filter((path) => path === `/api/codex/reset-redemptions/${proposalId}`).length)
+    .toBeGreaterThan(0);
+});
+
+test("shows authorization failure for minimal proposal reconnect", async ({ page }) => {
+  const proposalId = "p".repeat(43);
+  const api = await mockApi(
+    page,
+    view({
+      state: "usage-ready-resets-available",
+      message: "1 earned usage limit reset is available.",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+    }),
+    200,
+    false,
+    {
+      pollStatus: 403,
+      initialActiveRedemption: {
+        status: "prepared",
+        proposalId,
+        allowedAction: "cancel",
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        selectionMode: "generic",
+      },
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.locator("#codex-redemption-page-status")).toHaveText(
+    "Dashboard authorization expired. Reload this local dashboard to continue.",
+  );
+  const polls = api.requests.filter((path) => path === `/api/codex/reset-redemptions/${proposalId}`).length;
+  await page.waitForTimeout(1_200);
+  expect(api.requests.filter((path) => path === `/api/codex/reset-redemptions/${proposalId}`).length).toBe(polls);
+});
+
+test("stops polling on authorization failure without cancelling server state", async ({ page }) => {
+  const initial = view({
+    state: "usage-ready-resets-available",
+    message: "1 earned usage limit reset is available.",
+    resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+  });
+  const api = await mockApi(page, initial, 200, false, { pollStatus: 403, proposalTtlMs: 5_000 });
+  await page.goto("/");
+  const panel = page.locator("#codex-app-account-content");
+  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
+  await panel.getByRole("button", { name: "Review reset" }).click();
+  const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "Dashboard authorization expired. Reload this local dashboard to continue.",
+  );
+  const countdown = dialog.locator("#codex-redemption-countdown");
+  const countdownBefore = await countdown.textContent();
+  const polls = api.requests.filter((path) => path === `/api/codex/reset-redemptions/${"p".repeat(43)}`).length;
+  await page.waitForTimeout(1_200);
+  expect(api.requests.filter((path) => path === `/api/codex/reset-redemptions/${"p".repeat(43)}`).length).toBe(polls);
+  await expect(countdown).not.toHaveText(countdownBefore ?? "");
+  expect(api.requests.some((path) => path === `/api/codex/reset-redemptions/proposals/${"p".repeat(43)}`)).toBe(false);
+});
+
+test("does not announce already-missed countdown thresholds", async ({ page }) => {
+  const initial = view({
+    state: "usage-ready-resets-available",
+    message: "1 earned usage limit reset is available.",
+    resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+  });
+  await mockApi(page, initial, 200, false, { proposalTtlMs: 20_000 });
+  await page.goto("/");
+  const panel = page.locator("#codex-app-account-content");
+  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
+  await panel.getByRole("button", { name: "Review reset" }).click();
+  const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+  await expect(dialog.locator("#codex-redemption-threshold-status")).toBeEmpty();
+  await page.waitForTimeout(500);
+  await expect(dialog.locator("#codex-redemption-threshold-status")).toBeEmpty();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("uses server expiry state to close, refresh, clear attestation, and announce fixed copy", async ({ page }) => {
+    const initial = view({
+      state: "usage-ready-resets-available",
+      message: "1 earned usage limit reset is available.",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+    });
+    const api = await mockApi(page, initial, 200, false, { proposalTtlMs: 800 });
+    await page.goto("/");
+    const panel = page.locator("#codex-app-account-content");
+    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
+    await panel.getByRole("button", { name: "Review reset" }).click();
+    const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+    await expect(dialog).toBeVisible();
+
+    await expect(dialog).toBeHidden({ timeout: 5_000 });
+    await expect(page.locator("#codex-redemption-page-status")).toHaveText(
+      "Confirmation expired. Account details and reset availability were refreshed. Review them and try again.",
+    );
+    await expect(page.locator("#codex-app-account-content").getByRole("checkbox", {
+      name: /I confirm this Codex app account uses one ChatGPT workspace/,
+    })).not.toBeChecked();
+    expect(api.requests.some((path) => path === `/api/codex/reset-redemptions/proposals/${"p".repeat(43)}`)).toBe(false);
+    expect(api.requests).toContain(`/api/codex/reset-redemptions/${"p".repeat(43)}`);
+  });
 
 test("manual retry calls only Codex account usage endpoint", async ({ page }) => {
   const api = await load(

@@ -1,5 +1,6 @@
 import { deleteJson, postJson, putJson, readCodexAccountUsage, readDashboardState } from "./api";
 import { codexLoadingView } from "./codex-app-account";
+import { setupCodexRedemption } from "./codex-redemption";
 import { inferPlan } from "./format";
 import {
   type AppState,
@@ -61,6 +62,7 @@ const els: DashboardElements = {
 };
 
 let codexRefreshPromise: Promise<void> | null = null;
+let codexRedemptionController: ReturnType<typeof setupCodexRedemption> | null = null;
 
 function activeElementBlocksRefresh(): boolean {
   const active = document.activeElement;
@@ -108,9 +110,10 @@ function refreshCodexAccount(showLoading = true): Promise<void> {
     renderCodexAccountPanel(state, els);
   }
   codexRefreshPromise = readCodexAccountUsage()
-    .then((result) => {
-      state.codexAccount = result;
-      renderCodexAccountPanel(state, els);
+      .then((result) => {
+        state.codexAccount = result;
+        renderCodexAccountPanel(state, els);
+        codexRedemptionController?.resume(result.activeRedemption);
     })
     .finally(() => {
       codexRefreshPromise = null;
@@ -381,7 +384,7 @@ els.triggerOauthBtn.addEventListener("click", async () => {
 });
 
 const refreshCodexAccountButton = byId<HTMLButtonElement>("refresh-codex-account-btn");
-refreshCodexAccountButton.addEventListener("click", async () => {
+  refreshCodexAccountButton.addEventListener("click", async () => {
   refreshCodexAccountButton.disabled = true;
   refreshCodexAccountButton.setAttribute("aria-busy", "true");
   try {
@@ -389,10 +392,17 @@ refreshCodexAccountButton.addEventListener("click", async () => {
   } finally {
     refreshCodexAccountButton.disabled = false;
     refreshCodexAccountButton.removeAttribute("aria-busy");
-  }
-});
+    }
+  });
+  codexRedemptionController = setupCodexRedemption({
+    panel: els.codexAccount,
+    dialog: byId<HTMLDialogElement>("codex-redemption-dialog"),
+    pageStatus: byId("codex-redemption-page-status"),
+    focusFallback: refreshCodexAccountButton,
+    refreshAccount: async () => await refreshCodexAccount(false),
+  });
 
-const themeToggle = byId<HTMLButtonElement>("theme-toggle");
+  const themeToggle = byId<HTMLButtonElement>("theme-toggle");
 
 function getTheme(): "dark" | "light" {
   return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";

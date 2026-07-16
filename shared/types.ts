@@ -200,4 +200,5 @@ export type CodexAccountUsageView = {
     selectionMode: "none" | "detailed" | "generic";
     credits: CodexAccountResetCredit[];
   } | null;
+  activeRedemption?: import("./codex-account-types.js").CodexRedemptionCurrentView;
 };

@@ -83,7 +83,29 @@
   gap: 10px;
   margin: 0;
   padding: 0;
-  list-style: none;
+  border: 0;
+  min-width: 0;
+}
+
+.codex-credit-list legend {
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+.codex-credit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  cursor: pointer;
+}
+
+.codex-credit > input {
+  grid-row: 1 / span 3;
+  margin-top: 3px;
+}
+
+.codex-credit > span:not(.codex-credit-title) {
+  grid-column: 2;
 }
 
 .codex-credit-title {
@@ -101,6 +123,85 @@
 .codex-credit-unsupported,
 .codex-credit-unavailable {
   opacity: 0.78;
+  cursor: not-allowed;
+}
+
+.codex-redemption-form {
+  display: grid;
+  gap: 14px;
+}
+
+.codex-redemption-attestation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.45;
+}
+
+.codex-redemption-attestation input {
+  margin-top: 3px;
+}
+
+.codex-redemption-page-status {
+  margin: -8px 0 16px;
+}
+
+.codex-redemption-page-status:empty {
+  display: none;
+}
+
+.codex-redemption-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.codex-redemption-dialog::backdrop {
+  background: rgba(3, 7, 18, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.codex-redemption-dialog-content {
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+}
+
+.codex-redemption-dialog-content h2,
+.codex-redemption-dialog-content p {
+  margin: 0;
+}
+
+.codex-redemption-dialog-description {
+  display: grid;
+  gap: 9px;
+}
+
+.codex-redemption-countdown {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-redemption-threshold-status:empty,
+.codex-redemption-dialog-error[hidden] {
+  display: none;
+}
+
+.codex-redemption-dialog-error {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.codex-redemption-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 @media (max-width: 800px) {

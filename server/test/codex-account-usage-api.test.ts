@@ -94,4 +94,35 @@ describe("Codex app account usage API", () => {
     });
     expect(JSON.stringify(mockRes.getParsed())).not.toContain("provider-secret");
   });
+
+  it("includes browser-safe active proposal context for reconnect discovery", async () => {
+    const reader = readerWith(readyView);
+    const mockRes = makeMockRes();
+    const activeRedemption = {
+      status: "prepared" as const,
+      proposalId: "p".repeat(43),
+      allowedAction: "cancel" as const,
+      createdAt: "2026-07-16T12:00:00.000Z",
+      expiresAt: "2026-07-16T12:02:00.000Z",
+      account: { email: "operator@example.com", plan: "pro" },
+      usage: { primary: null, secondary: null },
+      availableCount: 1,
+      selection: { mode: "generic" as const },
+    };
+
+    await handleApi(request("127.0.0.1"), mockRes.res as ServerResponse, {
+      host: "127.0.0.1",
+      operatorToken: TEST_OPERATOR_TOKEN,
+      codexAccountUsageService: reader,
+      codexRedemptionService: {
+        currentState: vi.fn(async () => activeRedemption),
+        prepare: vi.fn(),
+        state: vi.fn(),
+        cancel: vi.fn(),
+        close: vi.fn(async () => {}),
+      },
+    });
+
+    expect(mockRes.getParsed()).toEqual({ ...readyView, activeRedemption });
+  });
 });

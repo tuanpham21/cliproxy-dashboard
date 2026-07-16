@@ -84,11 +84,13 @@ describe("Codex app account panel", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).toContain("Reset &amp; continue");
     expect(html).toContain("Does not expire");
-    expect(html).toContain("Unavailable diagnostic");
-    expect(html).toContain("<ul");
+    expect(html).toContain("Unavailable");
+    expect(html).toContain("<fieldset");
+    expect(html).toContain('type="radio"');
+    expect(html).toContain("disabled");
   });
 
-    it("renders provider-selected generic reset context without enabling mutation", () => {
+  it("renders provider-selected generic reset context with proposal-only controls", () => {
     const html = renderCodexAppAccount(
       view({
         state: "usage-ready-resets-available",
@@ -96,39 +98,56 @@ describe("Codex app account panel", () => {
       }),
     );
 
-      expect(html).toContain("Use a reset");
-      expect(html).toContain("OpenAI will select the reset");
-      expect(html).toContain("Redemption remains disabled");
-      expect(html).not.toContain("<button");
-      expect(html).not.toContain("/consume");
-    });
+    expect(html).toContain("Use a reset");
+    expect(html).toContain("OpenAI will select the reset");
+    expect(html).toContain('type="radio"');
+    expect(html).toContain('data-codex-redemption-prepare');
+    expect(html).toContain('type="checkbox"');
+    expect(html).not.toContain("/consume");
+  });
 
-    it("does not label malformed expiry data as non-expiring", () => {
-      const html = renderCodexAppAccount(
-        view({
-          state: "usage-ready-resets-available",
-          resetCredits: {
-            availableCount: 1,
-            selectionMode: "generic",
-            credits: [
-              {
-                id: null,
-                availability: "malformed",
-                title: "Invalid expiry detail",
-                description: null,
-                grantedAt: null,
-                expiresAt: null,
-              },
-            ],
-          },
-        }),
-      );
+  it("renders exact single-workspace attestation and warning", () => {
+    const html = renderCodexAppAccount(
+      view({
+        state: "usage-ready-resets-available",
+        resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+      }),
+    );
 
-      expect(html).toContain("Expiry unavailable");
-      expect(html).not.toContain("Does not expire");
-    });
+    expect(html).toContain(
+      "I confirm this Codex app account uses one ChatGPT workspace for Codex, and this is the workspace whose earned reset I intend to use.",
+    );
+    expect(html).toContain(
+      "If this email can switch between Personal, Business, Enterprise, or another workspace, do not continue. This dashboard cannot verify which workspace owns the reset.",
+    );
+  });
 
-    it("shows account identity, both usage windows, observation time, and workspace warning", () => {
+  it("does not label malformed expiry data as non-expiring", () => {
+    const html = renderCodexAppAccount(
+      view({
+        state: "usage-ready-resets-available",
+        resetCredits: {
+          availableCount: 1,
+          selectionMode: "generic",
+          credits: [
+            {
+              id: null,
+              availability: "malformed",
+              title: "Invalid expiry detail",
+              description: null,
+              grantedAt: null,
+              expiresAt: null,
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(html).toContain("Expiry unavailable");
+    expect(html).not.toContain("Does not expire");
+  });
+
+  it("shows account identity, both usage windows, observation time, and workspace warning", () => {
     const html = renderCodexAppAccount(
       view({
         usage: {
@@ -144,5 +163,21 @@ describe("Codex app account panel", () => {
     expect(html).toContain("10,080 minutes");
     expect(html).toContain("Observed");
     expect(html).toContain("do not prove which ChatGPT workspace owns a reset");
+  });
+
+  it("hard-blocks reset controls when private redemption state needs recovery", () => {
+    const html = renderCodexAppAccount(view({
+      state: "usage-ready-resets-available",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+      activeRedemption: {
+        status: "recovery-required",
+        code: "redemption-recovery-required",
+        message: "Reset redemption recovery state requires local repair.",
+      },
+    }));
+
+    expect(html).toContain("Reset redemption recovery state requires local repair.");
+    expect(html).toContain('role="alert"');
+    expect(html).not.toContain('data-codex-redemption-prepare');
   });
 });

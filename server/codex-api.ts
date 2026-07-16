@@ -1,10 +1,16 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { CodexAccountUsageView } from "../shared/types.js";
+import type { PrepareCodexRedemptionInput } from "../shared/codex-account-types.js";
+import { isCodexRedemptionProposalId } from "../shared/codex-redemption-identifiers.js";
 
 import { CodexAccountGateway, CodexAccountGatewayError } from "./codex-account-gateway.js";
 import type { CodexAccountUsageReader } from "./codex-app-account-usage.js";
 import { startCodexAppServerSession } from "./codex-app-server-client.js";
 import { resolveCodexBin } from "./commands.js";
+import {
+  CodexRedemptionServiceError,
+  type CodexRedemptionController,
+} from "./codex-redemption-service.js";
 import type { DashboardOptions } from "./types.js";
 
 type JsonResponse = (res: ServerResponse, status: number, payload: unknown) => void;
@@ -16,8 +22,88 @@ export async function handleCodexApi(
   pathname: string,
   options: DashboardOptions,
   accountUsageService: CodexAccountUsageReader | undefined,
+  redemptionService: CodexRedemptionController | undefined,
   jsonResponse: JsonResponse,
 ): Promise<boolean> {
+  const polledProposalId = method === "GET"
+    ? proposalIdFromPath(pathname, "/api/codex/reset-redemptions/")
+    : null;
+  if (polledProposalId) {
+    if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
+      jsonResponse(res, 403, {
+        code: "codex_runtime_unavailable",
+        error: "Reset redemption is available only from a loopback-local dashboard.",
+      });
+      return true;
+    }
+    if (!redemptionService) {
+      jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t load reset redemption state." });
+      return true;
+    }
+    try {
+      jsonResponse(res, 200, await redemptionService.state(polledProposalId));
+    } catch (error) {
+      respondRedemptionError(res, error, jsonResponse);
+    }
+    return true;
+  }
+
+  const cancelledProposalId = method === "DELETE"
+    ? proposalIdFromPath(pathname, "/api/codex/reset-redemptions/proposals/")
+    : null;
+  if (cancelledProposalId) {
+    if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
+      jsonResponse(res, 403, {
+        code: "codex_runtime_unavailable",
+        error: "Reset redemption is available only from a loopback-local dashboard.",
+      });
+      return true;
+    }
+    if (!redemptionService) {
+      jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t cancel reset redemption." });
+      return true;
+    }
+    try {
+      await assertEmptyBody(req, 512);
+      jsonResponse(res, 200, await redemptionService.cancel(cancelledProposalId));
+    } catch (error) {
+      respondRedemptionError(res, error, jsonResponse);
+    }
+    return true;
+  }
+
+  const consumeMatch = method === "POST"
+    ? pathname.match(/^\/api\/codex\/reset-redemptions\/proposals\/([A-Za-z0-9_-]{43})\/consume$/)
+    : null;
+  if (consumeMatch) {
+    jsonResponse(res, 403, {
+      code: "redemption-consume-disabled",
+      error: "Reset redemption is not enabled.",
+    });
+    return true;
+  }
+
+  if (method === "POST" && pathname === "/api/codex/reset-redemptions/proposals") {
+    if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
+      jsonResponse(res, 403, {
+        code: "codex_runtime_unavailable",
+        error: "Reset redemption is available only from a loopback-local dashboard.",
+      });
+      return true;
+    }
+    if (!redemptionService) {
+      jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t prepare reset redemption." });
+      return true;
+    }
+    try {
+      const input = parsePrepareBody(await readBoundedJson(req, 2_048));
+      jsonResponse(res, 201, await redemptionService.prepare(resolveCodexBin(options), input));
+    } catch (error) {
+      respondRedemptionError(res, error, jsonResponse);
+    }
+    return true;
+  }
+
   if (method === "GET" && pathname === "/api/codex/account-usage") {
     if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
       jsonResponse(res, 200, localOnlyView());
@@ -28,7 +114,9 @@ export async function handleCodexApi(
       return true;
     }
     try {
-      jsonResponse(res, 200, await accountUsageService.read(resolveCodexBin(options)));
+      const view = await accountUsageService.read(resolveCodexBin(options));
+      const activeRedemption = redemptionService ? await redemptionService.currentState() : undefined;
+      jsonResponse(res, 200, activeRedemption ? { ...view, activeRedemption } : view);
     } catch {
       jsonResponse(res, 200, readFailedView());
     }
@@ -67,6 +155,89 @@ export async function handleCodexApi(
   }
 
   return false;
+}
+
+function proposalIdFromPath(pathname: string, prefix: string): string | null {
+  if (!pathname.startsWith(prefix)) return null;
+  const proposalId = pathname.slice(prefix.length);
+  return isCodexRedemptionProposalId(proposalId) ? proposalId : null;
+}
+
+class CodexRedemptionRequestError extends Error {
+  readonly code: "redemption-invalid-request";
+
+  constructor() {
+    super("Reset redemption request is invalid.");
+    this.name = "CodexRedemptionRequestError";
+    this.code = "redemption-invalid-request";
+  }
+}
+
+async function readBoundedJson(req: IncomingMessage, maximumBytes: number): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    bytes += buffer.byteLength;
+    if (bytes > maximumBytes) throw new CodexRedemptionRequestError();
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    throw new CodexRedemptionRequestError();
+  }
+}
+
+async function assertEmptyBody(req: IncomingMessage, maximumBytes: number): Promise<void> {
+  let bytes = 0;
+  for await (const chunk of req) {
+    bytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+    if (bytes > maximumBytes || bytes > 0) throw new CodexRedemptionRequestError();
+  }
+}
+
+function parsePrepareBody(value: unknown): PrepareCodexRedemptionInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new CodexRedemptionRequestError();
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.some((key) => key !== "creditId" && key !== "singleWorkspaceAttested")) {
+    throw new CodexRedemptionRequestError();
+  }
+  if (record.singleWorkspaceAttested !== true) {
+    throw new CodexRedemptionServiceError("redemption-attestation-required");
+  }
+  if (record.creditId === undefined) return { singleWorkspaceAttested: true };
+  if (
+    typeof record.creditId !== "string" ||
+    record.creditId.length === 0 ||
+    Buffer.byteLength(record.creditId, "utf8") > 512
+  ) {
+    throw new CodexRedemptionRequestError();
+  }
+  return { creditId: record.creditId, singleWorkspaceAttested: true };
+}
+
+function respondRedemptionError(res: ServerResponse, error: unknown, jsonResponse: JsonResponse): void {
+  if (error instanceof CodexRedemptionRequestError) {
+    jsonResponse(res, 400, { code: error.code, error: error.message });
+    return;
+  }
+  if (error instanceof CodexRedemptionServiceError) {
+    const status = error.code === "redemption-proposal-not-found"
+      ? 404
+      : error.code === "redemption-proposal-active" || error.code === "redemption-recovery-required"
+        ? 409
+        : error.code === "codex_read_failed" || error.code === "redemption-private-state-unavailable"
+          ? 503
+          : 400;
+    jsonResponse(res, status, { code: error.code, error: error.message });
+    return;
+  }
+  jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t prepare reset redemption." });
 }
 
 function isLoopbackHost(host: string | undefined): boolean {

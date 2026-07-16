@@ -1,9 +1,26 @@
 import type { CodexAccountUsageView, DashboardState, RateLimitState } from "../../shared/types";
+import type {
+  CodexRedemptionProposalView,
+  CodexRedemptionStateView,
+  PrepareCodexRedemptionInput,
+} from "../../shared/codex-account-types";
 
 const TOKEN_PLACEHOLDER = "__CLIPROXY_OPERATOR_TOKEN__";
 const OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";
 
 let operatorTokenPromise: Promise<string> | null = null;
+
+export class DashboardApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(status: number, message: string, code: string | null) {
+    super(message);
+    this.name = "DashboardApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 function operatorTokenFromMeta(): string {
   if (typeof document === "undefined") {
@@ -72,9 +89,12 @@ export async function requestJson<T>(
   if (!response.ok) {
     const detail =
       parsed && typeof parsed === "object" && "error" in parsed
-        ? String((parsed as { error?: unknown }).error)
-        : `request failed: ${response.status}`;
-    throw new Error(detail);
+          ? String((parsed as { error?: unknown }).error)
+          : `request failed: ${response.status}`;
+    const code = parsed && typeof parsed === "object" && "code" in parsed
+      ? String((parsed as { code?: unknown }).code)
+      : null;
+    throw new DashboardApiError(response.status, detail, code);
   }
   return parsed as T;
 }
@@ -117,6 +137,26 @@ export async function readCodexAccountUsage(): Promise<CodexAccountUsageView> {
       resetCredits: null,
     };
   }
+}
+
+export async function prepareCodexRedemption(
+  input: PrepareCodexRedemptionInput,
+): Promise<CodexRedemptionProposalView> {
+  return await postJson<CodexRedemptionProposalView>("/api/codex/reset-redemptions/proposals", input);
+}
+
+export async function readCodexRedemptionState(proposalId: string): Promise<CodexRedemptionStateView> {
+  return await requestJson<CodexRedemptionStateView>(
+    `/api/codex/reset-redemptions/${encodeURIComponent(proposalId)}`,
+    {},
+    true,
+  );
+}
+
+export async function cancelCodexRedemption(
+  proposalId: string,
+): Promise<{ status: "cancelled"; proposalId: string }> {
+  return await deleteJson(`/api/codex/reset-redemptions/proposals/${encodeURIComponent(proposalId)}`);
 }
 
 export async function putJson<T>(url: string, payload: unknown): Promise<T> {

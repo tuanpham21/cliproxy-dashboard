@@ -38,9 +38,10 @@ function windowMarkup(label: string, window: CodexAccountUsageWindow | null): st
   ].join("");
 }
 
-function creditMarkup(credit: CodexAccountResetCredit, index: number): string {
+function creditMarkup(credit: CodexAccountResetCredit, index: number, checked: boolean): string {
   const title = credit.title ?? `Reset detail ${index + 1}`;
-  const status = credit.availability === "available" ? "Available" : "Unavailable diagnostic";
+  const selectable = credit.availability === "available" && Boolean(credit.id);
+  const status = selectable ? "Available" : "Unavailable";
   const expiry =
     credit.availability === "malformed"
       ? "Expiry unavailable"
@@ -48,11 +49,46 @@ function creditMarkup(credit: CodexAccountResetCredit, index: number): string {
         ? `Expires ${formatToGmt7(credit.expiresAt)}`
         : "Does not expire";
   return [
-    `<li class="codex-credit codex-credit-${credit.availability}">`,
-    `<div class="codex-credit-title"><strong>${escapeHtml(title)}</strong><span class="badge neutral">${status}</span></div>`,
-    credit.description ? `<p>${escapeHtml(credit.description)}</p>` : "",
-    `<div class="muted small">${escapeHtml(expiry)}</div>`,
-    "</li>",
+    `<label class="codex-credit codex-credit-${credit.availability}">`,
+    `<input type="radio" name="codex-reset-selection" value="${escapeHtml(credit.id ?? `unavailable-${index}`)}"`,
+    ` data-codex-reset-credit${selectable ? "" : " disabled"}${checked ? " checked" : ""}`,
+    ` aria-describedby="codex-credit-description-${index} codex-credit-expiry-${index}">`,
+    `<span class="codex-credit-title"><strong>${escapeHtml(title)}</strong><span class="badge neutral">${status}</span></span>`,
+    `<span id="codex-credit-description-${index}">${credit.description ? escapeHtml(credit.description) : "No description provided."}</span>`,
+    `<span id="codex-credit-expiry-${index}" class="muted small">${escapeHtml(expiry)}</span>`,
+    "</label>",
+  ].join("");
+}
+
+function redemptionControls(view: CodexAccountUsageView): string {
+    if (view.activeRedemption && view.activeRedemption.status !== "not-found") return "";
+  const resetCredits = view.resetCredits;
+  if (view.state !== "usage-ready-resets-available" || !resetCredits || resetCredits.availableCount <= 0) return "";
+  const firstSelectable = resetCredits.credits.findIndex(
+    (credit) => credit.availability === "available" && Boolean(credit.id),
+  );
+  const options = resetCredits.selectionMode === "detailed"
+    ? resetCredits.credits.map((credit, index) => creditMarkup(credit, index, index === firstSelectable)).join("")
+    : [
+        '<label class="codex-credit codex-generic-reset">',
+        '<input type="radio" name="codex-reset-selection" value="generic" data-codex-reset-generic checked>',
+        '<span class="codex-credit-title"><strong>Use a reset</strong><span class="badge neutral">Available</span></span>',
+        '<span>OpenAI will select the reset because detailed credit information is unavailable.</span>',
+        "</label>",
+        ...resetCredits.credits.map((credit, index) => creditMarkup(credit, index, false)),
+      ].join("");
+  return [
+    '<form class="codex-redemption-form" data-codex-redemption-form>',
+    '<fieldset class="codex-credit-list"><legend>Choose a usage limit reset</legend>',
+    options,
+    "</fieldset>",
+    '<p class="codex-workspace-warning">If this email can switch between Personal, Business, Enterprise, or another workspace, do not continue. This dashboard cannot verify which workspace owns the reset.</p>',
+    '<label class="codex-redemption-attestation">',
+    '<input type="checkbox" data-codex-workspace-attestation>',
+    '<span>I confirm this Codex app account uses one ChatGPT workspace for Codex, and this is the workspace whose earned reset I intend to use.</span>',
+    "</label>",
+    '<button type="submit" class="primary" data-codex-redemption-prepare disabled>Review reset</button>',
+    "</form>",
   ].join("");
 }
 
@@ -79,13 +115,17 @@ function readyMarkup(view: CodexAccountUsageView): string {
     resetCredits
       ? `<div class="codex-reset-summary"><strong>${resetCredits.availableCount}</strong> earned usage limit reset${resetCredits.availableCount === 1 ? "" : "s"}</div>`
       : "",
-    credits.length ? `<ul class="codex-credit-list" aria-label="Usage limit reset details">${credits.map(creditMarkup).join("")}</ul>` : "",
-      generic
+      view.state !== "usage-ready-resets-available" && credits.length
+        ? `<div class="codex-credit-list" aria-label="Usage limit reset details">${credits.map((credit, index) => creditMarkup(credit, index, false)).join("")}</div>`
+        : "",
+      generic && view.state !== "usage-ready-resets-available"
         ? '<div class="codex-generic-reset"><strong>Use a reset</strong><span>OpenAI will select the reset because detailed credit information is unavailable.</span></div>'
         : "",
-      view.state === "usage-ready-resets-available"
-        ? '<p class="muted small codex-redemption-disabled">Redemption remains disabled.</p>'
-        : "",
+      view.activeRedemption?.status === "recovery-required" || view.activeRedemption?.status === "unavailable"
+        ? `<p class="codex-redemption-recovery" role="alert">${escapeHtml(view.activeRedemption.message)}</p>`
+        : view.activeRedemption?.status === "prepared"
+          ? '<p class="codex-redemption-active" role="status">Another reset confirmation is active. Return to its original dashboard tab or wait for expiry.</p>'
+          : redemptionControls(view),
   ].join("");
 }
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import { mutateAccountFile, normalizeAccount, parseJwtExp, promotePrimary, publicAccount, setAccountPatch } from "./accounts.js";
 import { handleCodexApi } from "./codex-api.js";
 import type { CodexAccountUsageReader } from "./codex-app-account-usage.js";
+import type { CodexRedemptionController } from "./codex-redemption-service.js";
 import { cleanupStuckOauthLogins, resolveCliProxyBin, startOauthLogin } from "./commands.js";
 import { DEFAULT_BACKUP_PRIORITY, DEFAULT_CONFIG_PATH, DEFAULT_PRIORITY, DEFAULT_TEST_MODEL, DEFAULT_TEST_OUTPUT_TOKENS, DEFAULT_TEST_PROMPT, DASHBOARD_OPERATOR_TOKEN_HEADER } from "./constants.js";
 import { publicConfig, setRoutingConfig } from "./config.js";
@@ -165,6 +166,7 @@ export async function handleApi(
   options: DashboardOptions & {
     rotationCoordinator?: RotationCoordinator | null;
     codexAccountUsageService?: CodexAccountUsageReader;
+    codexRedemptionService?: CodexRedemptionController;
   },
 ): Promise<boolean> {
   const method = (req.method ?? "GET").toUpperCase();
@@ -200,6 +202,7 @@ export async function handleApi(
       url.pathname,
       options,
       options.codexAccountUsageService,
+      options.codexRedemptionService,
       jsonResponse,
     )
   ) {

@@ -4,6 +4,7 @@ import process from "node:process";
 
 import { handleApi, isSameOriginRequest, jsonResponse } from "./api.js";
 import { CodexAppAccountUsageService } from "./codex-app-account-usage.js";
+import { CodexRedemptionService } from "./codex-redemption-service.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
 import { openExternalUrl, resolveCliProxyBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
@@ -23,15 +24,18 @@ export async function startServer(
   ): Promise<void> {
       const codexRuntimeQualifier = new CodexRuntimeQualifier();
       const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
+      const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
         const serverOptions: DashboardOptions & {
           operatorToken: string;
           rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null;
           codexAccountUsageService: CodexAppAccountUsageService;
+          codexRedemptionService: CodexRedemptionService;
         } = {
         ...options,
         operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
         rotationCoordinator: null,
         codexAccountUsageService,
+        codexRedemptionService,
       };
   const server = createServer(async (req, res) => {
     try {
@@ -114,6 +118,7 @@ export async function startServer(
       await rotationObserver.start();
       } catch (error) {
         await rotationCoordinator.close();
+        await codexRedemptionService.close().catch(() => {});
         await codexRuntimeQualifier.close();
         await new Promise<void>((resolve) => server.close(() => resolve()));
         throw error;
@@ -135,6 +140,7 @@ export async function startServer(
       process.off("SIGTERM", onSignal);
         await rotationObserver.close();
         await rotationCoordinator.close();
+        await codexRedemptionService.close().catch(() => {});
         await codexRuntimeQualifier.close();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     process.exit(0);

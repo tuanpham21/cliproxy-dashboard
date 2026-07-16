@@ -14,6 +14,7 @@ import {
 describe("Codex app-server session", () => {
   it("reuses one process for sequential JSONL requests and ignores interleaved notifications", async () => {
     const child = new FakeCodexProcess();
+    const onNotification = vi.fn();
     initializeFakeCodexProcess(child, (message, acknowledge, process) => {
       acknowledge();
       if (message.method === "account/read") {
@@ -38,6 +39,7 @@ describe("Codex app-server session", () => {
       codexBin: "C:\\Program Files\\Codex\\codex.exe",
       spawnProcess,
       platform: "win32",
+      onNotification,
     });
     const account = await session.request("account/read", { refreshToken: false });
     const usage = await session.request("account/rateLimits/read", {});
@@ -45,6 +47,7 @@ describe("Codex app-server session", () => {
 
     expect(account).toEqual({ account: null, requiresOpenaiAuth: true });
     expect(usage).toEqual({ rateLimits: {}, rateLimitResetCredits: { availableCount: 2, credits: null } });
+    expect(onNotification).toHaveBeenCalledWith({ method: "account/updated", params: {} });
     expect(child.writes.map((message) => message.id).filter(Boolean)).toEqual([1, 2, 3]);
     expect(child.writes[0]).toMatchObject({
       method: "initialize",
@@ -216,6 +219,33 @@ describe("Codex app-server session", () => {
       writeDisposition: "not-written",
     });
     await duplicateSession.close();
+  });
+
+  it("observes unexpected ready-session process closure but not deliberate close", async () => {
+    const exitedChild = new FakeCodexProcess();
+    initializeFakeCodexProcess(exitedChild, () => {});
+    const onUnexpectedProcessClose = vi.fn();
+    const exitedSession = await startCodexAppServerSession({
+      codexBin: "codex",
+      spawnProcess: createFakeCodexSpawn(exitedChild),
+      onUnexpectedProcessClose,
+    });
+
+    exitedChild.closeWith(1);
+    expect(onUnexpectedProcessClose).toHaveBeenCalledTimes(1);
+    await exitedSession.close();
+    expect(onUnexpectedProcessClose).toHaveBeenCalledTimes(1);
+
+    const closedChild = new FakeCodexProcess();
+    initializeFakeCodexProcess(closedChild, () => {});
+    const onDeliberateClose = vi.fn();
+    const closedSession = await startCodexAppServerSession({
+      codexBin: "codex",
+      spawnProcess: createFakeCodexSpawn(closedChild),
+      onUnexpectedProcessClose: onDeliberateClose,
+    });
+    await closedSession.close();
+    expect(onDeliberateClose).not.toHaveBeenCalled();
   });
 
   it("classifies an asynchronous spawn error before initialization write", async () => {

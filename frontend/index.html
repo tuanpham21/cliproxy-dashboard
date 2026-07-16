@@ -52,10 +52,31 @@
             </div>
             <button type="button" id="refresh-codex-account-btn" class="small">Refresh Codex usage</button>
           </div>
-            <div id="codex-app-account-content"></div>
-        </section>
+              <div id="codex-app-account-content"></div>
+          </section>
 
-      <section>
+          <p id="codex-redemption-page-status" class="codex-redemption-page-status" role="status" aria-live="polite" aria-atomic="true"></p>
+          <dialog
+            id="codex-redemption-dialog"
+            class="codex-redemption-dialog"
+            aria-labelledby="codex-redemption-dialog-title"
+            aria-describedby="codex-redemption-dialog-description codex-redemption-recovery-warning"
+          >
+            <div class="codex-redemption-dialog-content">
+              <h2 id="codex-redemption-dialog-title">Redeem usage limit reset?</h2>
+              <div id="codex-redemption-dialog-description" class="codex-redemption-dialog-description"></div>
+              <p id="codex-redemption-countdown" class="codex-redemption-countdown" role="timer" aria-live="off">Confirmation expires in 2:00</p>
+              <p id="codex-redemption-threshold-status" class="codex-redemption-threshold-status" role="status" aria-live="polite" aria-atomic="true"></p>
+              <p id="codex-redemption-recovery-warning" class="codex-workspace-warning">If the dashboard or Codex process stops after redemption is sent, recovery may require restoring this same Codex app account. Account email is not retained in recovery state.</p>
+              <p id="codex-redemption-dialog-error" class="codex-redemption-dialog-error" role="alert" hidden></p>
+              <div class="codex-redemption-dialog-actions">
+                <button type="button" id="codex-redemption-cancel">Cancel</button>
+                <button type="button" id="codex-redemption-confirm" class="primary" disabled>Redeem reset</button>
+              </div>
+            </div>
+          </dialog>
+
+        <section>
         <div class="section-title">
           <h2>Overview</h2>
           <div class="meta" id="refresh-meta"></div>
