@@ -1,30 +1,38 @@
-export type RotationMode = "off" | "shadow" | "active";
+export const ROTATION_MODES = ["off", "shadow", "active"] as const;
+export type RotationMode = (typeof ROTATION_MODES)[number];
 
-export type RotationLifecycle =
-  | "off"
-  | "recovering"
-  | "shadow"
-  | "active"
-  | "pending"
-  | "awaiting-confirmation"
-  | "manual-hold"
-  | "paused"
-  | "recovery-required";
+export const ROTATION_LIFECYCLES = [
+  "off",
+  "recovering",
+  "shadow",
+  "active",
+  "pending",
+  "awaiting-confirmation",
+  "manual-hold",
+  "paused",
+  "recovery-required",
+] as const;
+export type RotationLifecycle = (typeof ROTATION_LIFECYCLES)[number];
 
-export type RotationPauseReason =
-  | "no-eligible-members"
-  | "routing-incompatible"
-  | "observation-uncertain"
-  | "identity-mismatch"
-  | "mutation-failed"
-  | "mutation-verification-failed"
-  | "selection-mismatch"
-  | "switch-budget-exhausted"
-  | "external-priority-edit"
-  | "corrupt-state"
-  | "insufficient-priority-headroom"
-  | "provisional-confirmation-failed"
-  | "recovery-unverifiable";
+export const ROTATION_PAUSE_REASONS = [
+  "no-eligible-members",
+  "routing-incompatible",
+  "observation-uncertain",
+  "identity-mismatch",
+  "mutation-failed",
+  "mutation-verification-failed",
+  "selection-mismatch",
+  "switch-budget-exhausted",
+  "external-priority-edit",
+  "corrupt-state",
+  "insufficient-priority-headroom",
+  "provisional-confirmation-failed",
+  "recovery-unverifiable",
+] as const;
+export type RotationPauseReason = (typeof ROTATION_PAUSE_REASONS)[number];
+
+export const ROTATION_JOURNAL_PHASES = ["idle", "journaled", "mutating", "mutated", "verified", "committed", "restoring"] as const;
+export type RotationJournalPhase = (typeof ROTATION_JOURNAL_PHASES)[number];
 
 export type QuotaWindowKind = "weekly" | "five-hour" | "unknown";
 export type ObservationContinuity = "continuous" | "broken" | "uncertain";
@@ -104,14 +112,34 @@ export type RotationAuditEvent = {
 };
 
 export type RotationJournal = {
-  phase: "idle" | "journaled" | "mutating" | "mutated" | "verified" | "restoring";
+  phase: RotationJournalPhase;
   observationId?: string;
-  fromKey?: string;
-  targetKey?: string;
+  fromProxyAccountKey?: string;
+  routingTargetKey?: string;
   targetFingerprint?: string;
+  targetRevision?: string;
+  evidenceWatermark?: string;
   intendedPriority?: number;
-  basePriorities?: Record<string, { present: boolean; value?: number; fingerprint: string }>;
+  basePriorities?: RotationPrioritySnapshots;
+  previousPriorities?: RotationPrioritySnapshots;
+  restoreIntent?: "rollback" | "disable";
   updatedAt?: string;
+};
+
+export type RotationPrioritySnapshot = {
+  fileName: string;
+  present: boolean;
+  value?: number;
+  fingerprint: string;
+  disabled: boolean;
+  note: string;
+};
+
+export type RotationPrioritySnapshots = Record<string, RotationPrioritySnapshot>;
+
+export type RotationOverlayState = {
+  basePriorities: RotationPrioritySnapshots;
+  appliedPriorities: Record<string, number>;
 };
 
 export type RotationState = {
@@ -125,6 +153,7 @@ export type RotationState = {
   evidenceWatermark?: string;
   switchTimestamps: number[];
   journal: RotationJournal;
+  overlay?: RotationOverlayState;
   pauseReason?: RotationPauseReason;
   pauseMessage?: string;
   manualHold: boolean;
@@ -146,4 +175,5 @@ export type RotationControllerOptions = {
   sessionAffinity?: boolean;
   responseLoggingHealthy?: boolean;
   now?: () => number;
+  crashInjector?: (phase: RotationJournal["phase"]) => Promise<void> | void;
 };
