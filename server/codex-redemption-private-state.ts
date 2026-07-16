@@ -1,5 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -7,7 +6,6 @@ import {
   link,
   mkdir,
   open,
-  readFile,
   realpath,
   unlink,
 } from "node:fs/promises";
@@ -17,6 +15,7 @@ import process from "node:process";
 import {
   parsePreparedRedemptionJournal,
   parseRedemptionJournal,
+  terminalTombstoneMatchesJournal,
   type PreparedRedemptionJournal,
   type RedemptionJournal,
   type RedemptionJournalPhase,
@@ -26,19 +25,42 @@ import {
 import type { CodexRuntimeIdentity } from "./codex-runtime-qualifier.js";
 import { readPrivateFile as readPrivateFileChecked } from "./codex-redemption-private-files.js";
 import {
-  publishTombstone as publishTerminalTombstone,
-  readTombstone as readTerminalTombstone,
-  transitionJournal as transitionPrivateJournal,
+    publishTombstone as publishTerminalTombstone,
+    readTombstone as readTerminalTombstone,
+    removeActiveJournal,
+    transitionJournal as transitionPrivateJournal,
 } from "./codex-redemption-private-terminal.js";
 import {
   publicStateFromJournal,
+  recoveryRequiredPrivateState,
   type PublicPrivateRedemptionState,
+  unavailablePrivateState,
 } from "./codex-redemption-public-state.js";
 import { CodexRedemptionPrivateStateError } from "./codex-redemption-private-error.js";
+import {
+  accountCheckDigest,
+  runtimePathDigest,
+  verifyRecoveryDigests,
+} from "./codex-redemption-private-digests.js";
+import {
+  currentProcessOwner,
+  inspectProcessOwner,
+  resolveFixedRoot,
+  type ProcessOwner,
+  type ProcessOwnerStatus,
+} from "./codex-redemption-private-owner.js";
+import { activeJournalCleanupExists, initializePrivateRecovery, type RecoveryInitializationState } from "./codex-redemption-private-recovery.js";
+import { findLatestPublicTombstone, pruneExpiredPublicTombstones } from "./codex-redemption-private-tombstone-index.js";
+import {
+  claimAmbiguousRetry as claimPrivateAmbiguousRetry,
+  recoverRetryClaim as recoverPrivateRetryClaim,
+  releaseRetryClaim as releasePrivateRetryClaim,
+  retryClaimState,
+  type RetryClaimResult,
+} from "./codex-redemption-private-claim.js";
 export type { PreparedRedemptionJournal, RedemptionJournal, RedemptionSelection } from "./codex-redemption-journal.js";
 export type { PublicPrivateRedemptionState } from "./codex-redemption-public-state.js";
 export { CodexRedemptionPrivateStateError } from "./codex-redemption-private-error.js";
-
 const DIGEST_KEY_FILE = "account-digest.key";
 const ACTIVE_JOURNAL_FILE = "active-redemption.json";
 const JOURNAL_MAX_BYTES = 16 * 1024;
@@ -54,15 +76,14 @@ export type AcquirePreparedRedemptionInput = {
   createdAt: string;
   expiresAt: string;
 };
-
-
 export type PrivateRedemptionStateStoreDependencies = {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   homedir?: () => string;
   rootPathForTests?: string;
   rootAnchorForTests?: string;
-  currentOwner?: () => Promise<{ pid: number; processStartIdentity: string }>;
+  currentOwner?: () => Promise<ProcessOwner>;
+  inspectOwner?: (owner: ProcessOwner) => Promise<ProcessOwnerStatus>;
   randomBytes?: (size: number) => Buffer;
   randomUUID?: () => string;
   now?: () => number;
@@ -73,64 +94,13 @@ function isEnoent(error: unknown): boolean {
 function isEexist(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
 }
-
-
-function lengthPrefixedHmac(key: Buffer, domain: string, fields: readonly string[]): string {
-  const hmac = createHmac("sha256", key);
-  for (const field of [domain, ...fields]) {
-    const bytes = Buffer.from(field, "utf8");
-    const length = Buffer.allocUnsafe(4);
-    length.writeUInt32BE(bytes.length);
-    hmac.update(length);
-    hmac.update(bytes);
-  }
-  return hmac.digest("base64url");
-}
-
-function resolveFixedRoot(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, homedir: () => string): string {
-  if (platform === "darwin") {
-    return path.join(homedir(), "Library", "Application Support", "cliproxy-dashboard", "codex-reset-redemption");
-  }
-  if (platform === "linux") {
-    const xdg = env.XDG_STATE_HOME;
-    const parent = xdg && path.isAbsolute(xdg) ? xdg : path.join(homedir(), ".local", "state");
-    return path.join(parent, "cliproxy-dashboard", "codex-reset-redemption");
-  }
-  if (platform === "win32" && env.LOCALAPPDATA && path.win32.isAbsolute(env.LOCALAPPDATA)) {
-    return path.win32.join(env.LOCALAPPDATA, "cliproxy-dashboard", "codex-reset-redemption");
-  }
-  throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
-}
-
-async function defaultCurrentOwner(platform: NodeJS.Platform): Promise<{ pid: number; processStartIdentity: string }> {
-  if (platform === "linux") {
-    const [bootId, statText] = await Promise.all([
-      readFile("/proc/sys/kernel/random/boot_id", "utf8"),
-      readFile(`/proc/${process.pid}/stat`, "utf8"),
-    ]);
-    const closeParen = statText.lastIndexOf(")");
-    const fields = statText.slice(closeParen + 2).trim().split(/\s+/);
-    const startTicks = fields[19];
-    if (!startTicks) throw new Error("process identity unavailable");
-    return { pid: process.pid, processStartIdentity: `${bootId.trim()}:${startTicks}` };
-  }
-  if (platform === "darwin") {
-    const startedAt = await new Promise<string>((resolve, reject) => {
-      execFile("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { timeout: 5_000 }, (error, stdout) => {
-        if (error) reject(error);
-        else resolve(String(stdout).trim());
-      });
-    });
-    if (!startedAt) throw new Error("process identity unavailable");
-    return { pid: process.pid, processStartIdentity: startedAt };
-  }
-  throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
-}
+export type { RecoveryInitializationState } from "./codex-redemption-private-recovery.js";
 export class PrivateRedemptionStateStore {
   private readonly platform: NodeJS.Platform;
   private readonly rootPath: string;
   private readonly rootAnchorPath: string;
-  private readonly currentOwner: () => Promise<{ pid: number; processStartIdentity: string }>;
+  private readonly currentOwner: () => Promise<ProcessOwner>;
+  private readonly inspectOwner: (owner: ProcessOwner) => Promise<ProcessOwnerStatus>;
   private readonly randomBytes: (size: number) => Buffer;
   private readonly randomUUID: () => string;
   private readonly now: () => number;
@@ -151,7 +121,8 @@ export class PrivateRedemptionStateStore {
         : this.platform === "win32" && env.LOCALAPPDATA && path.win32.isAbsolute(env.LOCALAPPDATA)
           ? env.LOCALAPPDATA
           : home);
-    this.currentOwner = dependencies.currentOwner ?? (() => defaultCurrentOwner(this.platform));
+    this.currentOwner = dependencies.currentOwner ?? (() => currentProcessOwner(this.platform));
+    this.inspectOwner = dependencies.inspectOwner ?? ((owner) => inspectProcessOwner(this.platform, owner));
     this.randomBytes = dependencies.randomBytes ?? randomBytes;
     this.randomUUID = dependencies.randomUUID ?? randomUUID;
     this.now = dependencies.now ?? Date.now;
@@ -166,6 +137,13 @@ export class PrivateRedemptionStateStore {
       await this.readDigestKey(canonicalRoot, false);
       throw new CodexRedemptionPrivateStateError("redemption-proposal-active");
     }
+    if (await activeJournalCleanupExists(this.rootPath)) {
+      throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
+    }
+    const claimState = await retryClaimState(this.retryClaimDependencies(canonicalRoot));
+    if (claimState !== "missing") throw new CodexRedemptionPrivateStateError(
+      claimState === "active" ? "redemption-proposal-active" : "redemption-recovery-required",
+    );
 
     const key = await this.readDigestKey(canonicalRoot, true);
     const owner = await this.currentOwner();
@@ -179,17 +157,11 @@ export class PrivateRedemptionStateStore {
       proposalId: input.proposalId,
       ownerNonce,
       owner,
-      accountCheckDigest: lengthPrefixedHmac(key, "cliproxy-dashboard/account-check/v1", [
-        input.proposalId,
-        input.accountCheck.email,
-        input.accountCheck.plan,
-      ]),
+        accountCheckDigest: accountCheckDigest(key, input.proposalId, input.accountCheck.email, input.accountCheck.plan),
       idempotencyKey: input.idempotencyKey,
       selection: input.selection,
       runtimeIdentity: {
-        canonicalPathDigest: lengthPrefixedHmac(key, "cliproxy-dashboard/runtime-path/v1", [
-          input.runtimeIdentity.canonicalPath,
-        ]),
+          canonicalPathDigest: runtimePathDigest(key, input.runtimeIdentity.canonicalPath),
         version: input.runtimeIdentity.version,
         fileIdentity: input.runtimeIdentity.fileIdentity,
         schemaHash: input.runtimeIdentity.schemaHash,
@@ -224,40 +196,33 @@ export class PrivateRedemptionStateStore {
       throw new CodexRedemptionPrivateStateError("redemption-proposal-owner-mismatch");
     }
     if (existing.journal.phase !== "prepared") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    await unlink(activePath);
-    await this.syncDirectory();
+    const removed = await removeActiveJournal(this.terminalDependencies(canonicalRoot), existing.journal);
+    if (removed === "missing") throw new CodexRedemptionPrivateStateError("redemption-proposal-not-found");
   }
   async releaseTerminal(proposalId: string, ownerNonce: string, auditEventId: string): Promise<void> {
     this.assertSupportedPlatform();
     const canonicalRoot = await this.verifyExistingRoot();
     const activePath = path.join(this.rootPath, ACTIVE_JOURNAL_FILE);
     const existing = await this.readOptionalJournal(activePath, canonicalRoot);
+    const tombstone = await this.readTombstone(proposalId);
+    if (existing.kind === "missing" && tombstone?.auditEventId === auditEventId) return;
     if (existing.kind !== "journal" || existing.journal.phase !== "terminal") {
       throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
     }
-    const tombstone = await this.readTombstone(proposalId);
     if (
       existing.journal.proposalId !== proposalId || existing.journal.ownerNonce !== ownerNonce ||
       existing.journal.auditEventId !== auditEventId || tombstone?.auditEventId !== auditEventId
     ) throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    await unlink(activePath);
-    await this.syncDirectory();
+    await removeActiveJournal(this.terminalDependencies(canonicalRoot), existing.journal);
   }
   async transitionJournal(proposalId: string, ownerNonce: string, expectedPhase: RedemptionJournalPhase, next: RedemptionJournal): Promise<RedemptionJournal> {
     this.assertSupportedPlatform();
     const canonicalRoot = await this.verifyExistingRoot();
-    const existing = await this.readOptionalJournal(path.join(this.rootPath, ACTIVE_JOURNAL_FILE), canonicalRoot);
-    if (existing.kind !== "journal") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    return await transitionPrivateJournal(
-      {
-        context: { rootPath: this.rootPath, platform: this.platform },
-        canonicalRoot,
-        randomUUID: this.randomUUID,
-        syncDirectory: () => this.syncDirectory(),
-        createError: (code) => new CodexRedemptionPrivateStateError(code),
-        now: this.now,
-      }, proposalId, ownerNonce, expectedPhase, existing.journal, next,
-    );
+      const existing = await this.readOptionalJournal(path.join(this.rootPath, ACTIVE_JOURNAL_FILE), canonicalRoot);
+      if (existing.kind !== "journal") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
+      return await transitionPrivateJournal(
+        this.terminalDependencies(canonicalRoot), proposalId, ownerNonce, expectedPhase, existing.journal, next,
+      );
   }
   async readJournal(proposalId: string, ownerNonce: string): Promise<RedemptionJournal | null> {
     this.assertSupportedPlatform();
@@ -269,59 +234,104 @@ export class PrivateRedemptionStateStore {
     }
     return existing.journal;
   }
-  async publishTombstone(tombstone: TerminalRedemptionTombstone): Promise<void> {
+  async verifyRecoveryEvidence(
+    journal: RedemptionJournal,
+    evidence: { accountCheck: { email: string; plan: string }; runtimeIdentity: CodexRuntimeIdentity },
+  ): Promise<{ accountMatches: boolean; runtimeMatches: boolean }> {
     this.assertSupportedPlatform();
     const canonicalRoot = await this.verifyExistingRoot();
-    await publishTerminalTombstone(
-      {
-        context: { rootPath: this.rootPath, platform: this.platform },
-        canonicalRoot,
-        randomUUID: this.randomUUID,
+    const key = await this.readDigestKey(canonicalRoot, false);
+    return verifyRecoveryDigests(key, journal, evidence);
+  }
+  async initializeRecovery(): Promise<RecoveryInitializationState> {
+    this.assertSupportedPlatform();
+    return await initializePrivateRecovery({
+      rootPath: this.rootPath,
+      now: this.now,
+      randomUUID: this.randomUUID,
+      inspectOwner: this.inspectOwner,
+      verifyExistingRoot: () => this.verifyExistingRoot(),
+      readOptionalJournal: (activePath, canonicalRoot) => this.readOptionalJournal(activePath, canonicalRoot),
+      readOptionalKey: (canonicalRoot) => this.readOptionalKey(canonicalRoot),
+      transitionJournal: (proposalId, ownerNonce, expectedPhase, next) =>
+        this.transitionJournal(proposalId, ownerNonce, expectedPhase, next),
+      readPrivateFile: (filePath, canonicalRoot, minimumBytes, maximumBytes) =>
+        this.readPrivateFile(filePath, canonicalRoot, minimumBytes, maximumBytes),
         syncDirectory: () => this.syncDirectory(),
-        createError: (code) => new CodexRedemptionPrivateStateError(code),
-        now: this.now,
-      }, tombstone,
-    );
+        recoverRetryClaim: (canonicalRoot) => recoverPrivateRetryClaim(this.retryClaimDependencies(canonicalRoot)),
+        readTombstone: (proposalId) => this.readTombstone(proposalId),
+        pruneExpiredTombstones: () => pruneExpiredPublicTombstones(
+          this.rootPath, this.now(), (proposalId) => this.readTombstone(proposalId), () => this.syncDirectory(),
+        ),
+      });
+  }
+  async claimAmbiguousRetry(proposalId: string): Promise<RetryClaimResult> {
+    this.assertSupportedPlatform();
+    const canonicalRoot = await this.verifyExistingRoot();
+    if (await this.readOptionalKey(canonicalRoot) !== "valid") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
+    return await claimPrivateAmbiguousRetry(this.retryClaimDependencies(canonicalRoot), proposalId);
+  }
+  async releaseRetryClaim(proposalId: string, claimOwnerNonce: string): Promise<void> {
+    this.assertSupportedPlatform();
+    const canonicalRoot = await this.verifyExistingRoot();
+    await releasePrivateRetryClaim(this.retryClaimDependencies(canonicalRoot), proposalId, claimOwnerNonce);
+  }
+  async publishTombstone(tombstone: TerminalRedemptionTombstone): Promise<void> {
+      this.assertSupportedPlatform();
+      const canonicalRoot = await this.verifyExistingRoot();
+      await publishTerminalTombstone(this.terminalDependencies(canonicalRoot), tombstone);
   }
   async readTombstone(proposalId: string): Promise<TerminalRedemptionTombstone | null> {
-    if (this.platform === "win32") return null;
-    const canonicalRoot = await this.verifyExistingRoot();
-    return await readTerminalTombstone(
-      {
-        context: { rootPath: this.rootPath, platform: this.platform },
-        canonicalRoot,
-        randomUUID: this.randomUUID,
-        syncDirectory: () => this.syncDirectory(),
-        createError: (code) => new CodexRedemptionPrivateStateError(code),
-        now: this.now,
-      }, proposalId,
-    );
+      if (this.platform === "win32") return null;
+      const canonicalRoot = await this.verifyExistingRoot();
+      return await readTerminalTombstone(this.terminalDependencies(canonicalRoot), proposalId);
   }
   async readPublicState(proposalId?: string): Promise<PublicPrivateRedemptionState> {
-    if (this.platform === "win32") return this.unavailablePublic();
+    if (this.platform === "win32") return unavailablePrivateState();
     let canonicalRoot: string;
     try {
       canonicalRoot = await this.verifyExistingRoot();
     } catch (error) {
       if (isEnoent(error)) return { status: "not-found" };
       return error instanceof CodexRedemptionPrivateStateError && error.code === "redemption-private-state-unavailable"
-        ? this.unavailablePublic()
-        : this.recoveryPublic();
+        ? unavailablePrivateState()
+        : recoveryRequiredPrivateState();
     }
     const activePath = path.join(this.rootPath, ACTIVE_JOURNAL_FILE);
     const existing = await this.readOptionalJournal(activePath, canonicalRoot);
-    if (existing.kind === "invalid") return this.recoveryPublic();
+    if (existing.kind === "invalid") return recoveryRequiredPrivateState();
     if (existing.kind === "missing") {
-      const tombstone = proposalId ? await this.readTombstone(proposalId) : null;
-      if (tombstone) return { status: "terminal", tombstone };
+      const tombstone = proposalId
+        ? await this.readTombstone(proposalId)
+        : await findLatestPublicTombstone(this.rootPath, this.now(), (id) => this.readTombstone(id));
+      if (tombstone && Date.parse(tombstone.expiresAt) > this.now()) return { status: "terminal", tombstone };
       const keyState = await this.readOptionalKey(canonicalRoot);
-      return keyState === "invalid" ? this.recoveryPublic() : { status: "not-found" };
+      return keyState === "invalid" ? recoveryRequiredPrivateState() : { status: "not-found" };
     }
     const keyState = await this.readOptionalKey(canonicalRoot);
-    if (keyState !== "valid") return this.recoveryPublic();
+    if (keyState !== "valid") return recoveryRequiredPrivateState();
     if (proposalId && existing.journal.proposalId !== proposalId) return { status: "not-found" };
+    if (existing.journal.phase === "ambiguous") {
+      try {
+        const claimState = await retryClaimState(this.retryClaimDependencies(canonicalRoot));
+        if (claimState === "invalid") return recoveryRequiredPrivateState();
+        if (claimState === "active") {
+          return {
+            status: "processing",
+            proposalId: existing.journal.proposalId,
+            selectionMode: existing.journal.selection.mode,
+            phase: "retrying",
+            dispatchAt: existing.journal.dispatchAt,
+          };
+        }
+      } catch {
+        return recoveryRequiredPrivateState();
+      }
+    }
     const tombstone = existing.journal.phase === "terminal" ? await this.readTombstone(existing.journal.proposalId) : null;
-    return publicStateFromJournal(existing.journal, tombstone);
+    if (tombstone && !terminalTombstoneMatchesJournal(existing.journal, tombstone)) return recoveryRequiredPrivateState();
+    const publicTombstone = tombstone && Date.parse(tombstone.expiresAt) > this.now() ? tombstone : null;
+    return publicStateFromJournal(existing.journal, publicTombstone);
   }
 
   private assertSupportedPlatform(): void {
@@ -545,19 +555,27 @@ export class PrivateRedemptionStateStore {
       await handle.close();
     }
   }
-  private recoveryPublic(): Extract<PublicPrivateRedemptionState, { status: "recovery-required" }> {
+  private terminalDependencies(canonicalRoot: string) {
     return {
-      status: "recovery-required",
-      code: "redemption-recovery-required",
-      message: "Reset redemption recovery state requires local repair.",
+      context: { rootPath: this.rootPath, platform: this.platform },
+      canonicalRoot,
+      randomUUID: this.randomUUID,
+      syncDirectory: () => this.syncDirectory(),
+      createError: (code: "redemption-recovery-required") => new CodexRedemptionPrivateStateError(code),
+      now: this.now,
     };
   }
-
-  private unavailablePublic(): Extract<PublicPrivateRedemptionState, { status: "unavailable" }> {
+  private retryClaimDependencies(canonicalRoot: string) {
     return {
-      status: "unavailable",
-      code: "redemption-private-state-unavailable",
-      message: "Private reset redemption state is unavailable on this host.",
+      context: { rootPath: this.rootPath, platform: this.platform },
+      canonicalRoot,
+      currentOwner: this.currentOwner,
+      inspectOwner: this.inspectOwner,
+      randomBytes: this.randomBytes,
+      randomUUID: this.randomUUID,
+      now: this.now,
+      syncDirectory: () => this.syncDirectory(),
+      createError: () => new CodexRedemptionPrivateStateError("redemption-recovery-required"),
     };
   }
 }

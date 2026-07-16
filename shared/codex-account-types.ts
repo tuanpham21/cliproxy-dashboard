@@ -35,7 +35,7 @@ export type CodexRedemptionStateView =
   | {
       status: "prepared";
       proposalId: string;
-      allowedAction: "cancel";
+      allowedAction: "cancel" | "poll";
       createdAt: string;
       expiresAt: string;
       selectionMode: "specific" | "generic";
@@ -44,7 +44,7 @@ export type CodexRedemptionStateView =
   | {
       status: "ambiguous";
       proposalId: string;
-      allowedAction: "none";
+      allowedAction: "retry-same";
       selectionMode: "specific" | "generic";
       dispatchAt: string;
     }
@@ -53,7 +53,7 @@ export type CodexRedemptionStateView =
       proposalId: string;
       allowedAction: "poll";
       selectionMode: "specific" | "generic";
-      phase: "dispatch-intent" | "dispatched" | "terminal";
+        phase: "dispatch-intent" | "dispatched" | "retrying" | "terminal";
       dispatchAt: string;
     }
   | {

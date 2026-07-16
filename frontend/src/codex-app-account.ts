@@ -1,4 +1,7 @@
 import type {
+  CodexRedemptionCurrentView,
+} from "../../shared/codex-account-types";
+import type {
   CodexAccountResetCredit,
   CodexAccountUsageView,
   CodexAccountUsageWindow,
@@ -93,6 +96,27 @@ function redemptionControls(view: CodexAccountUsageView): string {
   ].join("");
 }
 
+function recoveryMarkup(state: Extract<CodexRedemptionCurrentView, { status: "ambiguous" | "processing" }>): string {
+  const mode = state.selectionMode === "specific" ? "Specific reset" : "OpenAI-selected reset";
+  const retrying = state.status === "processing" && state.phase === "retrying";
+  return [
+    '<section class="codex-redemption-recovery" aria-labelledby="codex-redemption-recovery-title">',
+    '<h3 id="codex-redemption-recovery-title">Redemption recovery</h3>',
+    `<p role="${state.status === "ambiguous" ? "alert" : "status"}">${retrying
+      ? "Retrying the same redemption. New redemptions remain blocked."
+      : "A reset request was sent, but its outcome was not confirmed. New redemptions are blocked until this same attempt is resolved."}</p>`,
+    '<dl class="codex-redemption-recovery-details">',
+    `<div><dt>Attempt</dt><dd>${escapeHtml(state.proposalId)}</dd></div>`,
+    `<div><dt>Mode</dt><dd>${escapeHtml(mode)}</dd></div>`,
+    `<div><dt>Sent</dt><dd>${escapeHtml(formatToGmt7(state.dispatchAt))}</dd></div>`,
+    "</dl>",
+    state.status === "ambiguous"
+      ? `<button type="button" class="secondary" data-codex-redemption-retry data-proposal-id="${escapeHtml(state.proposalId)}">Retry same redemption</button>`
+      : "",
+    "</section>",
+  ].join("");
+}
+
 function readyMarkup(view: CodexAccountUsageView): string {
   const account = view.account;
   const resetCredits = view.resetCredits;
@@ -125,10 +149,10 @@ function readyMarkup(view: CodexAccountUsageView): string {
         : "",
       view.activeRedemption?.status === "recovery-required" || view.activeRedemption?.status === "unavailable"
         ? `<p class="codex-redemption-recovery" role="alert">${escapeHtml(view.activeRedemption.message)}</p>`
-        : view.activeRedemption?.status === "ambiguous"
-          ? '<p class="codex-redemption-recovery" role="alert">Couldn’t confirm whether redemption completed. New redemptions remain blocked until this same attempt is resolved.</p>'
+      : view.activeRedemption?.status === "ambiguous"
+          ? recoveryMarkup(view.activeRedemption)
           : view.activeRedemption?.status === "processing"
-            ? '<p class="codex-redemption-active" role="status">Reset redemption is processing. New redemptions remain blocked.</p>'
+            ? recoveryMarkup(view.activeRedemption)
           : view.activeRedemption?.status === "terminal"
             ? `<p class="codex-redemption-active" role="status">${escapeHtml(view.activeRedemption.message)}</p>`
         : view.activeRedemption?.status === "prepared"

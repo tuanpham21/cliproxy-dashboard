@@ -6,7 +6,7 @@ import { handleApi, isSameOriginRequest, jsonResponse } from "./api.js";
 import { CodexAppAccountUsageService } from "./codex-app-account-usage.js";
 import { CodexRedemptionService } from "./codex-redemption-service.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
-import { openExternalUrl, resolveCliProxyBin } from "./commands.js";
+import { openExternalUrl, resolveCliProxyBin, resolveCodexBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
 import { defaultQuotaSnapshotStatePath } from "./paths.js";
 import { createRotationCoordinator } from "./rotation-coordinator.js";
@@ -22,9 +22,10 @@ export async function startServer(
     onRotationObservation?: (batch: RotationObservationBatch) => Promise<void> | void;
   },
   ): Promise<void> {
-      const codexRuntimeQualifier = new CodexRuntimeQualifier();
-      const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
-      const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
+        const codexRuntimeQualifier = new CodexRuntimeQualifier();
+        const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
+        const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
+        await codexRedemptionService.initializeRecovery(resolveCodexBin(options));
         const serverOptions: DashboardOptions & {
           operatorToken: string;
           rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null;

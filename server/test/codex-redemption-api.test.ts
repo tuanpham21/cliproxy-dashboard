@@ -33,13 +33,42 @@ function redemptionService() {
     prepare: vi.fn(async () => proposal),
     state: vi.fn(async () => ({ status: "not-found" as const })),
     cancel: vi.fn(async (proposalId: string) => ({ status: "cancelled" as const, proposalId })),
-    consume: vi.fn(async () => ({ status: "not-found" as const })),
+      consume: vi.fn(async () => ({ status: "not-found" as const })),
+      initializeRecovery: vi.fn(async () => {}),
     currentState: vi.fn(async () => ({ status: "not-found" as const })),
     close: vi.fn(async () => {}),
   };
 }
 
-describe("Codex reset-redemption API", () => {
+  describe("Codex reset-redemption API", () => {
+  it("discovers current recovery state through a side-effect-free loopback GET", async () => {
+    const service = redemptionService();
+    service.currentState.mockResolvedValue({
+      status: "ambiguous",
+      proposalId: proposal.proposalId,
+      allowedAction: "retry-same",
+      selectionMode: "specific",
+      dispatchAt: "2026-07-16T12:00:01.000Z",
+    });
+    const response = makeMockRes();
+
+    await handleApi(
+      request("GET", "/api/codex/reset-redemptions/current"),
+      response.res as ServerResponse,
+      {
+        host: "127.0.0.1",
+        operatorToken: TEST_OPERATOR_TOKEN,
+        codexRedemptionService: service,
+      },
+    );
+
+    expect(response.getStatus()).toBe(200);
+    expect(response.getParsed()).toMatchObject({ status: "ambiguous", allowedAction: "retry-same" });
+    expect(service.currentState).toHaveBeenCalledTimes(1);
+    expect(service.prepare).not.toHaveBeenCalled();
+    expect(service.consume).not.toHaveBeenCalled();
+  });
+
   it("prepares from the strict public body on a loopback listener and caller", async () => {
     const service = redemptionService();
     const response = makeMockRes();
@@ -142,7 +171,7 @@ describe("Codex reset-redemption API", () => {
 
     expect(response.getStatus()).toBe(200);
     expect(response.getParsed()).toMatchObject({ status: "terminal", outcome: "reset" });
-    expect(service.consume).toHaveBeenCalledWith(proposal.proposalId);
+      expect(service.consume).toHaveBeenCalledWith(proposal.proposalId, "codex");
     expect(service.prepare).not.toHaveBeenCalled();
     expect(service.cancel).not.toHaveBeenCalled();
   });

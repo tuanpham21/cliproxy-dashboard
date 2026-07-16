@@ -93,14 +93,17 @@ export async function mockApi(
     initialActiveRedemption?: CodexRedemptionCurrentView;
     pollStates?: CodexRedemptionCurrentView[];
     pollFallbackState?: CodexRedemptionCurrentView;
-    deferConsume?: boolean;
-    abortConsume?: boolean;
-    consumeError?: { status: number; code: string; error: string };
+      deferConsume?: boolean;
+      abortConsume?: boolean;
+      consumeError?: { status: number; code: string; error: string };
+      consumeResult?: CodexRedemptionCurrentView;
+      currentStatus?: number;
   } = {},
 ) {
   let usage = initial;
-  let codexCallCount = 0;
-  let releaseFirstCodex: (() => void) | null = null;
+    let codexCallCount = 0;
+    let releaseFirstCodex: (() => void) | null = null;
+    let firstCodexReleaseRequested = false;
   let releaseCancel: (() => void) | null = null;
   let releaseConsume: (() => void) | null = null;
   let activeProposal: CodexRedemptionProposalView | null = null;
@@ -125,10 +128,14 @@ export async function mockApi(
       return;
     }
     if (pathname === "/api/codex/account-usage") {
-      if (deferFirstCodex && codexCallCount++ === 0) {
-        await new Promise<void>((resolve) => {
-          releaseFirstCodex = resolve;
-        });
+        if (deferFirstCodex && codexCallCount++ === 0) {
+          await new Promise<void>((resolve) => {
+            if (firstCodexReleaseRequested) {
+              resolve();
+              return;
+            }
+            releaseFirstCodex = resolve;
+          });
       }
       await route.fulfill({
         json: {
@@ -136,6 +143,17 @@ export async function mockApi(
           activeRedemption: activeProposal ?? activeRedemption ?? { status: "not-found" },
         },
       });
+      return;
+    }
+      if (pathname === "/api/codex/reset-redemptions/current") {
+        if (redemptionOptions.currentStatus && redemptionOptions.currentStatus !== 200) {
+          await route.fulfill({
+            status: redemptionOptions.currentStatus,
+            json: { code: "recovery-state-unavailable", error: "recovery state unavailable" },
+          });
+          return;
+        }
+        await route.fulfill({ json: activeProposal ?? activeRedemption ?? { status: "not-found" } });
       return;
     }
     if (pathname === "/api/codex/reset-redemptions/proposals" && route.request().method() === "POST") {
@@ -200,25 +218,29 @@ export async function mockApi(
         await route.abort("connectionfailed");
         return;
       }
-      if (redemptionOptions.consumeError) {
-        await route.fulfill({ status: redemptionOptions.consumeError.status, json: redemptionOptions.consumeError });
-        return;
-      }
-      const createdAt = new Date().toISOString();
-      await route.fulfill({
-        json: {
-          status: "terminal",
-          proposalId: "p".repeat(43),
-          allowedAction: "none",
-          selectionMode: "generic",
-          outcome: "reset",
-          reconciliation: "reconciled",
-          message: "Usage limits reset. Checking current usage…",
-          auditEventId: "a".repeat(43),
-          createdAt,
-          expiresAt: new Date(Date.now() + 600_000).toISOString(),
-        },
-      });
+        if (redemptionOptions.consumeError) {
+          await route.fulfill({ status: redemptionOptions.consumeError.status, json: redemptionOptions.consumeError });
+          return;
+        }
+        if (redemptionOptions.consumeResult) {
+          activeRedemption = redemptionOptions.consumeResult;
+          await route.fulfill({ json: activeRedemption });
+          return;
+        }
+        const createdAt = new Date().toISOString();
+      activeRedemption = {
+        status: "terminal",
+        proposalId: "p".repeat(43),
+        allowedAction: "none",
+        selectionMode: "generic",
+        outcome: "reset",
+        reconciliation: "reconciled",
+        message: "Usage limits reset. Checking current usage…",
+        auditEventId: "a".repeat(43),
+        createdAt,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      };
+      await route.fulfill({ json: activeRedemption });
       return;
     }
     if (pathname === `/api/codex/reset-redemptions/proposals/${"p".repeat(43)}` && route.request().method() === "DELETE") {
@@ -240,9 +262,10 @@ export async function mockApi(
     setUsage(next: UsageView) {
       usage = next;
     },
-    releaseFirstCodex() {
-      releaseFirstCodex?.();
-      releaseFirstCodex = null;
+      releaseFirstCodex() {
+        if (releaseFirstCodex) releaseFirstCodex();
+        else firstCodexReleaseRequested = true;
+        releaseFirstCodex = null;
     },
     releaseCancel() {
       releaseCancel?.();

@@ -355,7 +355,7 @@ describe("Codex redemption service", () => {
     await expect(harness.service.state("p".repeat(43))).resolves.toEqual({
       status: "prepared",
       proposalId: "p".repeat(43),
-      allowedAction: "cancel",
+      allowedAction: "poll",
       selectionMode: "generic",
       createdAt: "2026-07-16T12:00:00.000Z",
       expiresAt: "2026-07-16T12:02:00.000Z",

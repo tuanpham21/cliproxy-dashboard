@@ -1,7 +1,7 @@
-import { deleteJson, postJson, putJson, readCodexAccountUsage, readDashboardState } from "./api";
+import { deleteJson, postJson, putJson, readCodexAccountUsage, readCurrentCodexRedemption, readDashboardState } from "./api";
 import { codexLoadingView } from "./codex-app-account";
 import { setupCodexRedemption } from "./codex-redemption";
-import type { CodexRedemptionUsageSnapshot } from "../../shared/codex-account-types";
+import type { CodexRedemptionCurrentView, CodexRedemptionUsageSnapshot } from "../../shared/codex-account-types";
 import { inferPlan } from "./format";
 import {
   type AppState,
@@ -89,7 +89,7 @@ async function refresh(): Promise<void> {
   }
   state.busy = true;
   try {
-    const [dashboardResult] = await Promise.allSettled([readDashboardState(), refreshCodexAccount(false)]);
+    const [dashboardResult] = await Promise.allSettled([readDashboardState(), refreshCodexAccountForMonitoring()]);
     if (dashboardResult.status === "fulfilled") {
       state.data = dashboardResult.value;
     } else {
@@ -110,16 +110,56 @@ function refreshCodexAccount(showLoading = true): Promise<void> {
     state.codexAccount = codexLoadingView();
     renderCodexAccountPanel(state, els);
   }
-  codexRefreshPromise = readCodexAccountUsage()
-      .then((result) => {
-        state.codexAccount = result;
-        renderCodexAccountPanel(state, els);
-        codexRedemptionController?.resume(result.activeRedemption);
+    codexRefreshPromise = Promise.all([
+      readCodexAccountUsage(),
+      readCurrentCodexRedemption().catch(() => undefined),
+    ])
+        .then(([result, activeRedemption]) => {
+          state.codexAccount = activeRedemption
+            ? { ...result, activeRedemption }
+            : result;
+          renderCodexAccountPanel(state, els);
+          codexRedemptionController?.resume(activeRedemption ?? result.activeRedemption);
     })
     .finally(() => {
       codexRefreshPromise = null;
     });
   return codexRefreshPromise;
+}
+
+async function refreshCodexAccountForMonitoring(): Promise<void> {
+  let activeRedemption: CodexRedemptionCurrentView;
+  try {
+    activeRedemption = await readCurrentCodexRedemption();
+  } catch {
+    state.codexAccount = {
+      ...state.codexAccount,
+      state: "read-failed",
+      message: "Reset redemption recovery state is unavailable. Codex account reads are paused.",
+    };
+    renderCodexAccountPanel(state, els);
+    return;
+  }
+  if (activeRedemption && activeRedemption.status !== "not-found") {
+    applyCodexRedemptionState(activeRedemption);
+    codexRedemptionController?.resume(activeRedemption);
+    return;
+  }
+  await refreshCodexAccount(false);
+}
+
+function applyCodexRedemptionState(activeRedemption: CodexRedemptionCurrentView): void {
+  state.codexAccount = {
+    ...state.codexAccount,
+    ...(state.codexAccount.state === "loading"
+      ? {
+          state: "identity-incomplete" as const,
+          message: "Recovery uses retained local state. Codex account reads are paused.",
+        }
+      : {}),
+    activeRedemption,
+  };
+  renderCodexAccountPanel(state, els);
 }
 
 function applyCodexRedemptionUsage(snapshot: CodexRedemptionUsageSnapshot): void {
@@ -430,6 +470,7 @@ const refreshCodexAccountButton = byId<HTMLButtonElement>("refresh-codex-account
     focusFallback: refreshCodexAccountButton,
     refreshAccount: async () => await refreshCodexAccount(false),
     applyAccountUsage: applyCodexRedemptionUsage,
+    applyRedemptionState: applyCodexRedemptionState,
     markAccountUsageStale: markCodexRedemptionUsageStale,
   });
 

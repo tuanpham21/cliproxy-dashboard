@@ -24,8 +24,27 @@ export async function handleCodexApi(
   accountUsageService: CodexAccountUsageReader | undefined,
   redemptionService: CodexRedemptionController | undefined,
   jsonResponse: JsonResponse,
-): Promise<boolean> {
-  const polledProposalId = method === "GET"
+  ): Promise<boolean> {
+    if (method === "GET" && pathname === "/api/codex/reset-redemptions/current") {
+      if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
+        jsonResponse(res, 403, {
+          code: "codex_runtime_unavailable",
+          error: "Reset redemption is available only from a loopback-local dashboard.",
+        });
+        return true;
+      }
+      if (!redemptionService) {
+        jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t load reset redemption state." });
+        return true;
+      }
+      try {
+        jsonResponse(res, 200, await redemptionService.currentState());
+      } catch (error) {
+        respondRedemptionError(res, error, jsonResponse);
+      }
+      return true;
+    }
+    const polledProposalId = method === "GET"
     ? proposalIdFromPath(pathname, "/api/codex/reset-redemptions/")
     : null;
   if (polledProposalId) {
@@ -89,7 +108,7 @@ export async function handleCodexApi(
     }
     try {
       await assertEmptyBody(req, 512);
-      jsonResponse(res, 200, await redemptionService.consume(consumeMatch[1]));
+        jsonResponse(res, 200, await redemptionService.consume(consumeMatch[1], resolveCodexBin(options)));
     } catch (error) {
       respondRedemptionError(res, error, jsonResponse, "Couldn’t redeem reset.");
     }
@@ -243,8 +262,9 @@ function respondRedemptionError(res: ServerResponse, error: unknown, jsonRespons
     const status = error.code === "redemption-proposal-not-found"
       ? 404
       : error.code === "redemption-proposal-active" || error.code === "redemption-recovery-required" ||
-          error.code === "codex_account_changed" || error.code === "codex_reset_availability_changed" ||
-          error.code === "codex_session_changed" || error.code === "codex_proposal_expired"
+            error.code === "codex_account_changed" || error.code === "codex_reset_availability_changed" ||
+            error.code === "codex_session_changed" || error.code === "codex_recovery_account_mismatch" ||
+            error.code === "codex_proposal_expired"
         ? 409
         : error.code === "codex_read_failed" || error.code === "redemption-private-state-unavailable"
           ? 503

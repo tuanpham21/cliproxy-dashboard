@@ -337,7 +337,7 @@ describe("Codex reset redemption consume", () => {
 
     await expect(harness.service.consume(proposal.proposalId)).resolves.toMatchObject({
       status: "ambiguous",
-      allowedAction: "none",
+      allowedAction: "retry-same",
     });
     expect(harness.store.transitionJournal).toHaveBeenLastCalledWith(
       proposal.proposalId,
@@ -348,7 +348,7 @@ describe("Codex reset redemption consume", () => {
     expect(harness.store.releasePrepared).not.toHaveBeenCalled();
     await expect(harness.service.state(proposal.proposalId)).resolves.toMatchObject({
       status: "ambiguous",
-      allowedAction: "none",
+      allowedAction: "retry-same",
     });
   });
 

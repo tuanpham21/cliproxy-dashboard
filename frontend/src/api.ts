@@ -154,6 +154,14 @@ export async function readCodexRedemptionState(proposalId: string): Promise<Code
   );
 }
 
+export async function readCurrentCodexRedemption(): Promise<CodexRedemptionCurrentView> {
+  return await requestJson<CodexRedemptionCurrentView>(
+    "/api/codex/reset-redemptions/current",
+    {},
+    true,
+  );
+}
+
 export async function consumeCodexRedemption(proposalId: string): Promise<CodexRedemptionCurrentView> {
   return await requestJson<CodexRedemptionCurrentView>(
     `/api/codex/reset-redemptions/proposals/${encodeURIComponent(proposalId)}/consume`,

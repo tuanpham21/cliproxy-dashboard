@@ -324,4 +324,75 @@ describe("private reset-redemption state", () => {
 
     await expect(store.readPublicState(prepared.proposalId)).resolves.toEqual({ status: "terminal", tombstone });
   });
+
+  it("fails closed when terminal tombstone conflicts with the active terminal journal", async () => {
+    const { store, rootPathForTests } = await storeHarness();
+    const prepared = await store.acquirePrepared(proposalInput);
+    const dispatchIntent = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "prepared", {
+      ...prepared,
+      phase: "dispatch-intent",
+      dispatchAt: "2026-07-16T12:00:01.000Z",
+      updatedAt: "2026-07-16T12:00:01.000Z",
+    });
+    const dispatched = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "dispatch-intent", {
+      ...dispatchIntent,
+      phase: "dispatched",
+      updatedAt: "2026-07-16T12:00:02.000Z",
+    });
+    const terminal = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "dispatched", {
+      ...dispatched,
+      phase: "terminal",
+      terminalAt: "2026-07-16T12:00:03.000Z",
+      outcome: "reset",
+      reconciliation: "reconciled",
+      auditEventId: "a".repeat(43),
+      updatedAt: "2026-07-16T12:00:03.000Z",
+    });
+    const tombstone = {
+      schemaVersion: 1 as const,
+      proposalId: terminal.proposalId,
+      selectionMode: terminal.selection.mode,
+      outcome: terminal.outcome!,
+      reconciliation: terminal.reconciliation as "reconciled",
+      auditEventId: terminal.auditEventId!,
+      message: "Usage limits reset. Checking current usage…",
+      createdAt: "2026-07-16T12:00:03.000Z",
+      expiresAt: "2026-07-16T12:10:03.000Z",
+    };
+    await store.publishTombstone(tombstone);
+    await writeFile(
+      path.join(rootPathForTests, `terminal-redemption-${prepared.proposalId}.json`),
+      `${JSON.stringify({ ...tombstone, outcome: "noCredit" })}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(store.readPublicState(prepared.proposalId)).resolves.toMatchObject({
+      status: "recovery-required",
+    });
+  });
+
+  it("verifies retained account and runtime evidence without regenerating a missing digest key", async () => {
+    const { store, rootPathForTests } = await storeHarness();
+    const journal = await store.acquirePrepared(proposalInput);
+
+    await expect(store.verifyRecoveryEvidence(journal, {
+      accountCheck: proposalInput.accountCheck,
+      runtimeIdentity: proposalInput.runtimeIdentity,
+    })).resolves.toEqual({ accountMatches: true, runtimeMatches: true });
+    await expect(store.verifyRecoveryEvidence(journal, {
+      accountCheck: { ...proposalInput.accountCheck, email: "other@example.com" },
+      runtimeIdentity: proposalInput.runtimeIdentity,
+    })).resolves.toEqual({ accountMatches: false, runtimeMatches: true });
+    await expect(store.verifyRecoveryEvidence(journal, {
+      accountCheck: proposalInput.accountCheck,
+      runtimeIdentity: { ...proposalInput.runtimeIdentity, canonicalPath: "/other/codex" },
+    })).resolves.toEqual({ accountMatches: true, runtimeMatches: false });
+
+    await unlink(path.join(rootPathForTests, "account-digest.key"));
+    await expect(store.verifyRecoveryEvidence(journal, {
+      accountCheck: proposalInput.accountCheck,
+      runtimeIdentity: proposalInput.runtimeIdentity,
+    })).rejects.toMatchObject({ code: "redemption-recovery-required" });
+    await expect(stat(path.join(rootPathForTests, "account-digest.key"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

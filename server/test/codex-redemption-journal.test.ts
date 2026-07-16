@@ -94,4 +94,20 @@ describe("prepared redemption journal codec", () => {
       expiresAt: "2026-07-16T12:10:03.000Z",
     })).not.toBeNull();
   });
+
+  it("rejects impossible terminal outcome and reconciliation combinations", () => {
+    const terminal = {
+      ...validJournal,
+      phase: "terminal",
+      dispatchAt: "2026-07-16T12:00:01.000Z",
+      terminalAt: "2026-07-16T12:00:03.000Z",
+      outcome: "reset",
+      reconciliation: "reconciled",
+      auditEventId: "a".repeat(43),
+      updatedAt: "2026-07-16T12:00:03.000Z",
+    };
+    expect(parseRedemptionJournal({ ...terminal, outcome: "nothingToReset", reconciliation: "pending" })).toBeNull();
+    expect(parseRedemptionJournal({ ...terminal, outcome: "reset", reconciliation: "not-required" })).toBeNull();
+    expect(parseRedemptionJournal({ ...terminal, outcome: "noCredit", reconciliation: "unreconciled" })).toBeNull();
+  });
 });

@@ -181,6 +181,29 @@ describe("Codex app account panel", () => {
     expect(html).not.toContain('data-codex-redemption-prepare');
   });
 
+  it("renders ambiguous recovery with only the same-attempt retry action", () => {
+    const proposalId = "p".repeat(43);
+    const html = renderCodexAppAccount(view({
+      state: "usage-ready-resets-available",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+      activeRedemption: {
+        status: "ambiguous",
+        proposalId,
+        allowedAction: "retry-same",
+        selectionMode: "generic",
+        dispatchAt: "2026-07-16T12:00:01.000Z",
+      },
+    }));
+
+    expect(html).toContain("Redemption recovery");
+    expect(html).toContain(proposalId);
+    expect(html).toContain("OpenAI-selected reset");
+    expect(html).toContain("Retry same redemption");
+    expect(html).toContain("data-codex-redemption-retry");
+    expect(html).not.toContain("Review reset");
+    expect(html).not.toContain("Cancel");
+  });
+
   it("keeps prior usage visible but blocks controls when reconciliation is stale", () => {
     const html = renderCodexAppAccount(view({
       state: "usage-ready-resets-available",

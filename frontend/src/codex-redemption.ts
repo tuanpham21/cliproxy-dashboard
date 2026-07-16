@@ -26,6 +26,7 @@ export type CodexRedemptionControllerOptions = {
   focusFallback: HTMLElement;
   refreshAccount: () => Promise<void>;
   applyAccountUsage?: (snapshot: CodexRedemptionUsageSnapshot) => void;
+  applyRedemptionState?: (state: CodexRedemptionCurrentView) => void;
   markAccountUsageStale?: (message: string) => void;
   api?: RedemptionApi;
   now?: () => number;
@@ -104,6 +105,7 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
   let consumeDeadlineTimer: number | null = null;
   let lastRemainingSeconds: number | null = null;
   let pendingProposalId = storedProposalId();
+  let recoveryRetryInFlight = false;
 
   const setPageStatus = (message: string, isError = false) => {
     options.pageStatus.setAttribute("role", isError ? "alert" : "status");
@@ -181,9 +183,10 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
     try {
       const state = await api.state(proposalId);
       if (proposal) {
-        if (active !== proposal || state.status === "prepared" || state.status === "processing") return;
-        if (state.status === "terminal") {
-          await finish(state.message, true);
+          if (active !== proposal || state.status === "prepared" || state.status === "processing") return;
+          if (state.status === "terminal") {
+            options.applyRedemptionState?.(state);
+            await finish(state.message, false);
         } else if (state.status === "ambiguous") {
           postDispatch = true;
           closePostDispatch("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.");
@@ -198,7 +201,11 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
         }
         return;
       }
-      if (pendingProposalId !== proposalId || state.status === "prepared" || state.status === "processing") return;
+        if (pendingProposalId !== proposalId) return;
+        if (state.status === "prepared" || state.status === "processing") {
+          options.applyRedemptionState?.(state);
+          return;
+        }
       pendingProposalId = null;
       stopTimers();
       try {
@@ -206,22 +213,20 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
       } catch {
         // Session storage is optional; server state remains authoritative.
       }
-      if (state.status === "terminal") {
-        if (state.accountUsage) options.applyAccountUsage?.(state.accountUsage);
-        else if (state.reconciliation === "unreconciled" || state.reconciliation === "availability-changed-unreconciled") {
-          options.markAccountUsageStale?.(state.message);
+        if (state.status === "terminal") {
+          if (state.accountUsage) options.applyAccountUsage?.(state.accountUsage);
+          else if (state.reconciliation === "unreconciled" || state.reconciliation === "availability-changed-unreconciled") {
+            options.markAccountUsageStale?.(state.message);
+          } else options.applyRedemptionState?.(state);
+          setPageStatus(state.message);
+        } else if (state.status === "ambiguous") {
+          options.applyRedemptionState?.(state);
+          setPageStatus("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.", true);
+        } else {
+          const unavailable = state.status === "recovery-required" || state.status === "unavailable";
+          options.applyRedemptionState?.(state);
+          setPageStatus(unavailable ? state.message : EXPIRY_MESSAGE, unavailable);
         }
-        setPageStatus(state.message);
-        if (!state.accountUsage && state.reconciliation !== "unreconciled" && state.reconciliation !== "availability-changed-unreconciled") {
-          await options.refreshAccount().catch(() => {});
-        }
-      } else if (state.status === "ambiguous") {
-        setPageStatus("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.", true);
-      } else {
-        const unavailable = state.status === "recovery-required" || state.status === "unavailable";
-        setPageStatus(unavailable ? state.message : EXPIRY_MESSAGE, unavailable);
-        await options.refreshAccount().catch(() => {});
-      }
     } catch (error) {
       if (error instanceof DashboardApiError && (error.status === 401 || error.status === 403)) {
         pollingBlocked = true;
@@ -299,6 +304,18 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
     options.focusFallback.focus();
   };
 
+  const handleTerminalResult = async (result: Extract<CodexRedemptionCurrentView, { status: "terminal" }>) => {
+    if (result.accountUsage) {
+      options.applyAccountUsage?.(result.accountUsage);
+      await finish(result.message, false);
+    } else if (result.reconciliation === "unreconciled" || result.reconciliation === "availability-changed-unreconciled") {
+      options.markAccountUsageStale?.(result.message);
+      await finish(result.message, false);
+    } else {
+      await finish(result.message, true);
+    }
+  };
+
   const consumeActive = async () => {
     if (!active || consuming || finishing) return;
     const proposal = active;
@@ -326,15 +343,7 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
       options.dialog.removeAttribute("aria-busy");
       if (active !== proposal) return;
       if (result.status === "terminal") {
-        if (result.accountUsage) {
-          options.applyAccountUsage?.(result.accountUsage);
-          await finish(result.message, false);
-        } else if (result.reconciliation === "unreconciled" || result.reconciliation === "availability-changed-unreconciled") {
-          options.markAccountUsageStale?.(result.message);
-          await finish(result.message, false);
-        } else {
-          await finish(result.message, true);
-        }
+        await handleTerminalResult(result);
       } else if (result.status === "ambiguous") {
         consuming = false;
         closePostDispatch("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.");
@@ -394,6 +403,39 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
     }
   };
 
+  const retryRecovery = async (button: HTMLButtonElement) => {
+    if (recoveryRetryInFlight) return;
+    const proposalId = button.dataset.proposalId;
+    if (!proposalId || !/^[A-Za-z0-9_-]{43}$/.test(proposalId)) return;
+    recoveryRetryInFlight = true;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    setPageStatus("Retrying same redemption…");
+    try {
+      const result = await api.consume(proposalId);
+      if (result.status === "terminal") {
+        await handleTerminalResult(result);
+        } else if (result.status === "processing") {
+          pendingProposalId = proposalId;
+          if (!pollingBlocked && pollTimer === null) pollTimer = window.setInterval(() => void poll(), 1_000);
+          setPageStatus("Retrying the same redemption. Polling continues.");
+          options.applyRedemptionState?.(result);
+        } else if (result.status === "ambiguous") {
+        setPageStatus("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.", true);
+      } else if (result.status === "recovery-required" || result.status === "unavailable") {
+        setPageStatus(result.message, true);
+      }
+    } catch (error) {
+      setPageStatus(error instanceof DashboardApiError ? error.message : "Couldn’t retry the same redemption.", true);
+    } finally {
+      recoveryRetryInFlight = false;
+      if (button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
+    }
+  };
+
   options.panel.addEventListener("change", (event) => {
     if (!(event.target instanceof HTMLInputElement)) return;
     const form = event.target.closest<HTMLElement>("[data-codex-redemption-form]");
@@ -405,6 +447,13 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
       button.disabled = !(attested && selected);
       button.removeAttribute("aria-disabled");
     }
+  });
+
+  options.panel.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-codex-redemption-retry]")
+      : null;
+    if (button) void retryRecovery(button);
   });
 
   options.panel.addEventListener("submit", (event) => {
@@ -466,17 +515,28 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
         setPageStatus(state.message, true);
         return;
       }
-      if (state.status === "ambiguous" || state.status === "terminal") {
-        pendingProposalId = null;
-        stopTimers();
-        try {
-          sessionStorage.removeItem(SESSION_PROPOSAL_KEY);
+        if (state.status === "ambiguous") {
+          pendingProposalId = state.proposalId;
+          if (!pollingBlocked && pollTimer === null) pollTimer = window.setInterval(() => void poll(), 1_000);
+          try {
+            sessionStorage.removeItem(SESSION_PROPOSAL_KEY);
         } catch {
           // Session storage is optional; server state remains authoritative.
         }
-        setPageStatus(state.status === "terminal" ? state.message : "Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.", state.status === "ambiguous");
-        return;
-      }
+          setPageStatus("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.", true);
+          return;
+        }
+        if (state.status === "terminal") {
+          pendingProposalId = null;
+          stopTimers();
+          try {
+            sessionStorage.removeItem(SESSION_PROPOSAL_KEY);
+          } catch {
+            // Session storage is optional; server state remains authoritative.
+          }
+          setPageStatus(state.message);
+          return;
+        }
       if (state.status === "processing") {
         pendingProposalId = state.proposalId;
         if (!pollingBlocked && pollTimer === null) pollTimer = window.setInterval(() => void poll(), 1_000);

@@ -44,6 +44,11 @@ import type {
   TerminalRedemptionTombstone,
 } from "./codex-redemption-journal.js";
 import { finishTerminalReplay } from "./codex-redemption-terminal-replay.js";
+import { recoveryRequiredPrivateState } from "./codex-redemption-public-state.js";
+import { publicRedemptionView } from "./codex-redemption-public-view.js";
+import { CodexRedemptionRecoveryManager } from "./codex-redemption-recovery-manager.js";
+import type { RecoveryCoordinatorStore } from "./codex-redemption-recovery-coordinator.js";
+import { CodexRedemptionRecoveryError } from "./codex-redemption-recovery-error.js";
 
 export type CodexRedemptionServiceErrorCode =
   | "codex_auth_required"
@@ -61,8 +66,10 @@ export type CodexRedemptionServiceErrorCode =
   | "redemption-recovery-required"
   | "codex_account_changed"
   | "codex_reset_availability_changed"
-  | "codex_session_changed"
-  | "codex_proposal_expired";
+    | "codex_session_changed"
+    | "codex_recovery_account_mismatch"
+    | "codex_recovery_session_changed"
+    | "codex_proposal_expired";
 
 const ERROR_MESSAGES: Record<CodexRedemptionServiceErrorCode, string> = {
   codex_auth_required: "Sign in to Codex with ChatGPT, then refresh.",
@@ -80,8 +87,10 @@ const ERROR_MESSAGES: Record<CodexRedemptionServiceErrorCode, string> = {
   "redemption-recovery-required": "Reset redemption recovery state requires local repair.",
   codex_account_changed: "Codex app account changed before redemption. Nothing was redeemed. Review the current account and try again.",
   codex_reset_availability_changed: "Reset availability changed before redemption. Nothing was redeemed. Refresh and review the available resets.",
-  codex_session_changed: "Codex session changed before redemption. Nothing was redeemed. Refresh the Codex app account panel and try again.",
-  codex_proposal_expired: "Confirmation expired. Account details and reset availability were refreshed. Review them and try again.",
+    codex_session_changed: "Codex session changed before redemption. Nothing was redeemed. Refresh the Codex app account panel and try again.",
+    codex_recovery_account_mismatch: "Current Codex app account does not match this redemption attempt. Restore the account used for the attempt, then retry. New redemptions remain blocked.",
+    codex_recovery_session_changed: "Codex recovery session changed. This redemption outcome remains unconfirmed. Restore the original qualified runtime and account, then retry. New redemptions remain blocked.",
+    codex_proposal_expired: "Confirmation expired. Account details and reset availability were refreshed. Review them and try again.",
 };
 
 export class CodexRedemptionServiceError extends Error {
@@ -114,6 +123,10 @@ export interface CodexRedemptionPrivateStore {
   acquirePrepared(input: AcquirePreparedRedemptionInput): Promise<PreparedRedemptionJournal>;
   releasePrepared(proposalId: string, ownerNonce: string): Promise<void>;
   readPublicState(proposalId?: string): Promise<PublicPrivateRedemptionState>;
+  initializeRecovery?: RecoveryCoordinatorStore["initializeRecovery"];
+  claimAmbiguousRetry?: RecoveryCoordinatorStore["claimAmbiguousRetry"];
+  releaseRetryClaim?: RecoveryCoordinatorStore["releaseRetryClaim"];
+  verifyRecoveryEvidence?: RecoveryCoordinatorStore["verifyRecoveryEvidence"];
   transitionJournal?: (
     proposalId: string,
     ownerNonce: string,
@@ -121,6 +134,7 @@ export interface CodexRedemptionPrivateStore {
     next: RedemptionJournal,
   ) => Promise<RedemptionJournal>;
   publishTombstone?: (tombstone: TerminalRedemptionTombstone) => Promise<void>;
+  readTombstone?: RecoveryCoordinatorStore["readTombstone"];
   readJournal?: (proposalId: string, ownerNonce: string) => Promise<RedemptionJournal | null>;
   releaseTerminal?: (proposalId: string, ownerNonce: string, auditEventId: string) => Promise<void>;
 }
@@ -148,7 +162,8 @@ export interface CodexRedemptionController {
   prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView>;
   state(proposalId: string): Promise<CodexRedemptionStateView>;
   currentState(): Promise<CodexRedemptionCurrentView>;
-  consume(proposalId: string): Promise<CodexRedemptionCurrentView>;
+  initializeRecovery(codexBin: string): Promise<void>;
+  consume(proposalId: string, codexBin?: string): Promise<CodexRedemptionCurrentView>;
   cancel(proposalId: string): Promise<{ status: "cancelled"; proposalId: string }>;
   close(): Promise<void>;
 }
@@ -205,6 +220,9 @@ function serviceError(error: unknown): CodexRedemptionServiceError {
   if (error instanceof CodexRedemptionConsumeError && error.code in ERROR_MESSAGES) {
     return new CodexRedemptionServiceError(error.code as CodexRedemptionServiceErrorCode);
   }
+  if (error instanceof CodexRedemptionRecoveryError && error.code in ERROR_MESSAGES) {
+    return new CodexRedemptionServiceError(error.code as CodexRedemptionServiceErrorCode);
+  }
   if (error instanceof CodexRedemptionPrivateStateError) {
     const code = error.code === "redemption-proposal-owner-mismatch"
       ? "redemption-recovery-required"
@@ -227,8 +245,9 @@ export class CodexRedemptionService implements CodexRedemptionController {
   private readonly newIdempotencyKey: () => string;
   private readonly schedule: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   private readonly clearScheduled: (timer: NodeJS.Timeout) => void;
-  private readonly auditSink: CodexRedemptionAuditSink;
-  private active: ActiveProposal | null = null;
+    private readonly auditSink: CodexRedemptionAuditSink;
+    private readonly recovery: CodexRedemptionRecoveryManager | null;
+    private active: ActiveProposal | null = null;
 
   constructor(dependencies: CodexRedemptionServiceDependencies) {
     this.qualifier = dependencies.qualifier;
@@ -241,13 +260,29 @@ export class CodexRedemptionService implements CodexRedemptionController {
     this.schedule = dependencies.schedule ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearScheduled = dependencies.clearScheduled ?? clearTimeout;
     this.auditSink = dependencies.auditSink ?? defaultCodexRedemptionAuditSink;
-  }
-
-  async prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
-    if (input.singleWorkspaceAttested !== true) {
-      throw new CodexRedemptionServiceError("redemption-attestation-required");
+      this.recovery = CodexRedemptionRecoveryManager.create({
+        qualifier: this.qualifier,
+        startSession: (options) => this.startSession(options as CodexRedemptionSessionOptions),
+        gatewayForSession: (session) => this.gatewayForSession(session),
+        store: this.store,
+        now: this.now,
+        auditSink: this.auditSink,
+        schedule: this.schedule,
+        clearScheduled: this.clearScheduled,
+      });
     }
-    if (this.active) throw new CodexRedemptionServiceError("redemption-proposal-active");
+
+    async initializeRecovery(codexBin: string): Promise<void> {
+      await this.recovery?.initialize(codexBin);
+    }
+
+    async prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
+      if (input.singleWorkspaceAttested !== true) {
+        throw new CodexRedemptionServiceError("redemption-attestation-required");
+      }
+      if (this.active) throw new CodexRedemptionServiceError("redemption-proposal-active");
+      await this.recovery?.initialize(codexBin);
+      if (this.recovery?.isRecoveryRequired()) throw new CodexRedemptionServiceError("redemption-recovery-required");
     const qualification = await this.qualifier.qualify(codexBin);
     if (qualification.status !== "qualified") throw new CodexRedemptionServiceError(qualification.code);
     if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
@@ -369,7 +404,8 @@ export class CodexRedemptionService implements CodexRedemptionController {
     }
   }
 
-  async state(proposalId: string): Promise<CodexRedemptionStateView> {
+    async state(proposalId: string): Promise<CodexRedemptionStateView> {
+      if (this.recovery?.isRecoveryRequired()) return publicRedemptionView(recoveryRequiredPrivateState());
     const activeAtStart = this.active?.proposal.proposalId === proposalId ? this.active : null;
     let cleanupObserved = activeAtStart?.cleanupPromise ?? null;
     if (cleanupObserved) {
@@ -401,7 +437,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
           message: "Reset redemption recovery state requires local repair.",
         };
       }
-      if (privateState.status !== "prepared") return this.publicPrivateState(privateState);
+      if (privateState.status !== "prepared") return publicRedemptionView(privateState);
       return {
         status: "prepared",
         proposalId,
@@ -411,12 +447,13 @@ export class CodexRedemptionService implements CodexRedemptionController {
         selectionMode: proposal.selection.mode,
       };
     }
-    return this.publicPrivateState(privateState);
+    return publicRedemptionView(privateState);
   }
 
-  async currentState(): Promise<CodexRedemptionCurrentView> {
-    const privateState = await this.store.readPublicState();
-    if (privateState.status !== "prepared") return this.publicPrivateState(privateState);
+    async currentState(): Promise<CodexRedemptionCurrentView> {
+      if (this.recovery?.isRecoveryRequired()) return publicRedemptionView(recoveryRequiredPrivateState());
+      const privateState = await this.store.readPublicState();
+    if (privateState.status !== "prepared") return publicRedemptionView(privateState);
     const checked = await this.state(privateState.proposalId);
     if (checked.status !== "prepared") return checked;
     return this.active?.proposal.proposalId === privateState.proposalId ? this.active.proposal : checked;
@@ -436,12 +473,22 @@ export class CodexRedemptionService implements CodexRedemptionController {
     return { status: "cancelled", proposalId };
   }
 
-  async consume(proposalId: string): Promise<CodexRedemptionCurrentView> {
+  async consume(proposalId: string, codexBin?: string): Promise<CodexRedemptionCurrentView> {
     const active = this.active?.proposal.proposalId === proposalId ? this.active : null;
     if (!active) {
-      const state = await this.store.readPublicState(proposalId);
+      let state = await this.store.readPublicState(proposalId);
+      if (
+          codexBin && this.recovery &&
+        (state.status === "terminal" || (state.status === "processing" && state.phase === "terminal"))
+      ) {
+          await this.recovery.initialize(codexBin);
+        state = await this.store.readPublicState(proposalId);
+      }
+        if (state.status === "ambiguous" && codexBin && this.recovery) {
+          return await this.recovery.retry(proposalId, codexBin).catch((error) => { throw serviceError(error); });
+      }
       if (state.status === "terminal" || state.status === "ambiguous" || state.status === "processing") {
-        return this.publicPrivateState(state);
+        return publicRedemptionView(state);
       }
       throw new CodexRedemptionServiceError("redemption-proposal-not-found");
     }
@@ -451,7 +498,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
         throw new CodexRedemptionServiceError("redemption-recovery-required");
       }
       const state = await this.store.readPublicState(proposalId);
-      if (state.status !== "terminal") return this.publicPrivateState(state);
+      if (state.status !== "terminal") return publicRedemptionView(state);
       active.consumePromise = finishTerminalReplay({
         journal: active.journal,
         tombstone: state.tombstone,
@@ -464,7 +511,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
         },
       }).then(() => {
         this.active = null;
-        return this.publicPrivateState(state);
+        return publicRedemptionView(state);
       }).catch((error) => {
         active.consumePromise = null;
         throw serviceError(error);
@@ -473,7 +520,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
     }
     if (active.journal.phase !== "prepared") {
       const state = await this.store.readPublicState(proposalId);
-      return this.publicPrivateState(state);
+      return publicRedemptionView(state);
     }
     if (!this.store.transitionJournal || !this.store.publishTombstone || !this.store.readJournal || !this.store.releaseTerminal) {
       throw new CodexRedemptionServiceError("redemption-recovery-required");
@@ -516,9 +563,10 @@ export class CodexRedemptionService implements CodexRedemptionController {
     return await active.consumePromise;
   }
 
-  async close(): Promise<void> {
-    if (this.active) await this.cleanup(this.active);
-  }
+    async close(): Promise<void> {
+      this.recovery?.close();
+      if (this.active) await this.cleanup(this.active);
+    }
 
   private async cleanup(active: ActiveProposal): Promise<void> {
     active.cleanupPromise ??= (async () => {
@@ -537,48 +585,4 @@ export class CodexRedemptionService implements CodexRedemptionController {
     await active.cleanupPromise;
   }
 
-  private publicPrivateState(state: PublicPrivateRedemptionState): CodexRedemptionStateView {
-    if (state.status === "ambiguous") {
-      return {
-        status: "ambiguous",
-        proposalId: state.proposalId,
-        allowedAction: "none",
-        selectionMode: state.selectionMode,
-        dispatchAt: state.dispatchAt,
-      };
-    }
-    if (state.status === "processing") {
-      return {
-        status: "processing",
-        proposalId: state.proposalId,
-        allowedAction: "poll",
-        selectionMode: state.selectionMode,
-        phase: state.phase,
-        dispatchAt: state.dispatchAt,
-      };
-    }
-    if (state.status === "terminal") {
-      return {
-        status: "terminal",
-        proposalId: state.tombstone.proposalId,
-        allowedAction: "none",
-        selectionMode: state.tombstone.selectionMode,
-        outcome: state.tombstone.outcome,
-        reconciliation: state.tombstone.reconciliation,
-        message: state.tombstone.message,
-        auditEventId: state.tombstone.auditEventId,
-        createdAt: state.tombstone.createdAt,
-        expiresAt: state.tombstone.expiresAt,
-      };
-    }
-    if (state.status !== "prepared") return state;
-    return {
-      status: "prepared",
-      proposalId: state.proposalId,
-      allowedAction: "cancel",
-      createdAt: state.createdAt,
-      expiresAt: state.expiresAt,
-      selectionMode: state.selectionMode,
-    };
-  }
 }

@@ -33,10 +33,26 @@ export type PublicPrivateRedemptionState =
       status: "processing";
       proposalId: string;
       selectionMode: RedemptionSelection["mode"];
-      phase: "dispatch-intent" | "dispatched" | "terminal";
+      phase: "dispatch-intent" | "dispatched" | "retrying" | "terminal";
       dispatchAt: string;
     }
   | { status: "terminal"; tombstone: TerminalRedemptionTombstone };
+
+export function recoveryRequiredPrivateState(): Extract<PublicPrivateRedemptionState, { status: "recovery-required" }> {
+  return {
+    status: "recovery-required",
+    code: "redemption-recovery-required",
+    message: "Reset redemption recovery state requires local repair.",
+  };
+}
+
+export function unavailablePrivateState(): Extract<PublicPrivateRedemptionState, { status: "unavailable" }> {
+  return {
+    status: "unavailable",
+    code: "redemption-private-state-unavailable",
+    message: "Private reset redemption state is unavailable on this host.",
+  };
+}
 
 export function publicStateFromJournal(
   journal: RedemptionJournal,

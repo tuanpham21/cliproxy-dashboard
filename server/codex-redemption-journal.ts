@@ -2,6 +2,7 @@ import {
   isCodexRedemptionIdempotencyKey,
   isCodexRedemptionProposalId,
 } from "../shared/codex-redemption-identifiers.js";
+import { terminalMessage } from "./codex-redemption-terminal-message.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -32,14 +33,33 @@ export type PreparedRedemptionJournal = {
 export type RedemptionOutcome = "reset" | "alreadyRedeemed" | "nothingToReset" | "noCredit";
 export type RedemptionReconciliation = "pending" | "reconciled" | "unreconciled" | "availability-changed-unreconciled" | "not-required";
 export type RedemptionJournalPhase = "prepared" | "dispatch-intent" | "dispatched" | "ambiguous" | "terminal";
-export type RedemptionJournal = Omit<PreparedRedemptionJournal, "phase"> & {
-  phase: RedemptionJournalPhase;
-  dispatchAt?: string;
-  terminalAt?: string;
-  outcome?: RedemptionOutcome;
-  reconciliation?: RedemptionReconciliation;
-  auditEventId?: string;
+type RedemptionJournalBase = Omit<PreparedRedemptionJournal, "phase">;
+export type DispatchIntentRedemptionJournal = RedemptionJournalBase & { phase: "dispatch-intent"; dispatchAt: string };
+export type DispatchedRedemptionJournal = RedemptionJournalBase & { phase: "dispatched"; dispatchAt: string };
+export type AmbiguousRedemptionJournal = RedemptionJournalBase & { phase: "ambiguous"; dispatchAt: string };
+export type TerminalRedemptionJournal = RedemptionJournalBase & {
+  phase: "terminal";
+  dispatchAt: string;
+  terminalAt: string;
+  outcome: RedemptionOutcome;
+  reconciliation: RedemptionReconciliation;
+  auditEventId: string;
 };
+export type RedemptionJournal =
+  | PreparedRedemptionJournal
+  | DispatchIntentRedemptionJournal
+  | DispatchedRedemptionJournal
+  | AmbiguousRedemptionJournal
+  | TerminalRedemptionJournal;
+export type RedemptionJournalPatch = Partial<{
+  phase: RedemptionJournalPhase;
+  dispatchAt: string | undefined;
+  terminalAt: string;
+  outcome: RedemptionOutcome;
+  reconciliation: RedemptionReconciliation;
+  auditEventId: string;
+  updatedAt: string;
+}>;
 
 export type TerminalRedemptionTombstone = {
   schemaVersion: 1;
@@ -79,6 +99,13 @@ function parseSelection(value: unknown): RedemptionSelection | null {
     return { mode: "specific", creditId: value.creditId };
   }
   return null;
+}
+
+function validTerminalReconciliation(outcome: RedemptionOutcome, reconciliation: RedemptionReconciliation): boolean {
+  if (reconciliation === "pending") return outcome !== "nothingToReset";
+  if (outcome === "nothingToReset") return reconciliation === "not-required";
+  if (outcome === "noCredit") return reconciliation === "reconciled" || reconciliation === "availability-changed-unreconciled";
+  return reconciliation === "reconciled" || reconciliation === "unreconciled";
 }
 
 export function parsePreparedRedemptionJournal(value: unknown): PreparedRedemptionJournal | null {
@@ -190,19 +217,21 @@ export function parseRedemptionJournal(value: unknown): RedemptionJournal | null
     if (typeof value.terminalAt !== "string" || !isIso(value.terminalAt) || Date.parse(value.terminalAt) < Date.parse(dispatchAt)) return null;
     if (value.outcome !== "reset" && value.outcome !== "alreadyRedeemed" && value.outcome !== "nothingToReset" && value.outcome !== "noCredit") return null;
     if (value.reconciliation !== "pending" && value.reconciliation !== "reconciled" && value.reconciliation !== "unreconciled" && value.reconciliation !== "availability-changed-unreconciled" && value.reconciliation !== "not-required") return null;
+    if (!validTerminalReconciliation(value.outcome, value.reconciliation)) return null;
     if (typeof value.auditEventId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.auditEventId)) return null;
-    return {
-      ...base,
-      phase: "terminal",
-      dispatchAt,
-      terminalAt: value.terminalAt,
+      return {
+        ...base,
+        phase: "terminal",
+        dispatchAt,
+        updatedAt: value.updatedAt,
+        terminalAt: value.terminalAt,
       outcome: value.outcome,
       reconciliation: value.reconciliation,
       auditEventId: value.auditEventId,
     };
   }
   if (!hasExactKeys(value, commonKeys)) return null;
-  return { ...base, phase: value.phase, dispatchAt };
+    return { ...base, phase: value.phase, dispatchAt, updatedAt: value.updatedAt };
 }
 
 export function parseTerminalRedemptionTombstone(value: unknown): TerminalRedemptionTombstone | null {
@@ -213,8 +242,25 @@ export function parseTerminalRedemptionTombstone(value: unknown): TerminalRedemp
   if (value.selectionMode !== "specific" && value.selectionMode !== "generic") return null;
   if (value.outcome !== "reset" && value.outcome !== "alreadyRedeemed" && value.outcome !== "nothingToReset" && value.outcome !== "noCredit") return null;
   if (value.reconciliation !== "reconciled" && value.reconciliation !== "unreconciled" && value.reconciliation !== "availability-changed-unreconciled" && value.reconciliation !== "not-required") return null;
+  if (!validTerminalReconciliation(value.outcome, value.reconciliation)) return null;
   if (typeof value.auditEventId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.auditEventId)) return null;
   if (typeof value.message !== "string" || value.message.length === 0 || Buffer.byteLength(value.message, "utf8") > 512) return null;
   if (!isIso(value.createdAt) || !isIso(value.expiresAt) || Date.parse(value.expiresAt) <= Date.parse(value.createdAt)) return null;
   return value as TerminalRedemptionTombstone;
+}
+
+export function terminalTombstoneMatchesJournal(
+  journal: RedemptionJournal,
+  tombstone: TerminalRedemptionTombstone,
+): boolean {
+  return journal.phase === "terminal" &&
+    journal.reconciliation !== "pending" &&
+    journal.proposalId === tombstone.proposalId &&
+    journal.selection.mode === tombstone.selectionMode &&
+    journal.outcome === tombstone.outcome &&
+    journal.reconciliation === tombstone.reconciliation &&
+    journal.auditEventId === tombstone.auditEventId &&
+    tombstone.message === terminalMessage(journal.outcome, journal.selection.mode, journal.reconciliation) &&
+      Date.parse(tombstone.createdAt) >= Date.parse(journal.terminalAt) &&
+    Date.parse(tombstone.expiresAt) > Date.parse(tombstone.createdAt);
 }
