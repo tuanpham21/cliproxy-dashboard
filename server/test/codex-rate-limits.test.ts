@@ -30,6 +30,7 @@ import {
     afterEach(() => {
       delete (globalThis as any).__mockCodexRateLimitsCount;
       delete (globalThis as any).__mockCodexAuthRequired;
+      delete (globalThis as any).__mockCodexRateLimitCredits;
       spawnCalls.length = 0;
     });
 
@@ -98,6 +99,28 @@ import {
       expect(mockRes.getStatus()).toBe(200);
       expect(mockRes.getParsed().authRequired).toBe(true);
       expect(mockRes.getParsed().ok).toBe(false);
+    });
+
+    it("preserves available count when credit details are malformed", async () => {
+      (globalThis as any).__mockCodexRateLimitsCount = 2;
+      (globalThis as any).__mockCodexRateLimitCredits = [
+        {
+          id: "credit-1",
+          resetType: "codexRateLimits",
+          status: "available",
+          grantedAt: 1_700_000_000,
+          expiresAt: "invalid",
+          title: "Reset",
+          description: null,
+        },
+      ];
+
+      const req = createMockReq("GET", "/api/codex/rate-limits");
+      const mockRes = makeRes();
+
+      await handleApi(req, mockRes.res, options);
+      expect(mockRes.getStatus()).toBe(200);
+      expect(mockRes.getParsed()).toEqual({ ok: true, availableCount: 2 });
     });
 
     it("rejects rate limit reset credit redemption as out of scope", async () => {

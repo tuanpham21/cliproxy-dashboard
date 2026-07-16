@@ -4,7 +4,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 
 import { mutateAccountFile, normalizeAccount, parseJwtExp, promotePrimary, publicAccount, setAccountPatch } from "./accounts.js";
-import { cleanupStuckOauthLogins, queryCodexAppServer, resolveCliProxyBin, resolveCodexBin, startOauthLogin } from "./commands.js";
+import { handleCodexApi } from "./codex-api.js";
+import { cleanupStuckOauthLogins, resolveCliProxyBin, startOauthLogin } from "./commands.js";
 import { DEFAULT_BACKUP_PRIORITY, DEFAULT_CONFIG_PATH, DEFAULT_PRIORITY, DEFAULT_TEST_MODEL, DEFAULT_TEST_OUTPUT_TOKENS, DEFAULT_TEST_PROMPT, DASHBOARD_OPERATOR_TOKEN_HEADER } from "./constants.js";
 import { publicConfig, setRoutingConfig } from "./config.js";
 import { readDashboardState } from "./dashboard-state.js";
@@ -187,34 +188,7 @@ export async function handleApi(
     return true;
   }
 
-  if (method === "GET" && url.pathname === "/api/codex/rate-limits") {
-    const codexBin = resolveCodexBin(options);
-    try {
-      const result = await queryCodexAppServer(codexBin, "account/rateLimits/read", {});
-      const rawResult = result as any;
-      const availableCount =
-        typeof rawResult?.rateLimitResetCredits?.availableCount === "number" ||
-        typeof rawResult?.rateLimitResetCredits?.availableCount === "bigint"
-          ? Number(rawResult.rateLimitResetCredits.availableCount)
-          : 0;
-      jsonResponse(res, 200, { ok: true, availableCount });
-    } catch (err: any) {
-      if (err.message && err.message.includes("authentication required")) {
-        jsonResponse(res, 200, { ok: false, error: err.message, authRequired: true, availableCount: 0 });
-      } else {
-        jsonResponse(res, 500, { error: err.message || String(err) });
-      }
-    }
-    return true;
-  }
-
-  if (method === "POST" && url.pathname === "/api/codex/consume-reset") {
-    jsonResponse(res, 403, {
-      ok: false,
-      error: "Reset-credit redemption is outside the retained quota snapshot story",
-    });
-    return true;
-  }
+  if (await handleCodexApi(res, method, url.pathname, options, jsonResponse)) return true;
 
   if (method === "POST" && url.pathname === "/api/routing") {
     const body = await readJsonBody(req);

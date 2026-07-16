@@ -70,6 +70,7 @@ cliproxy-dashboard/
 ### Prerequisites
 * **Node.js**: `v22.13` or higher. The LaunchAgent and validated local checks use `v24.11.1`.
 * **Go CLI Proxy**: Install `cli-proxy-api.exe` and pass it with `--cli-proxy-bin`, or set `CLI_PROXY_API_BIN`.
+* **Codex app-server**: Pass the exact binary with `--codex-bin`, or set `CODEX_BIN`. Resolution order is CLI option, environment, `codex(.exe)` beside the running Node executable, then `PATH`.
 * **Quota rotation contract build**: Use `tuanpham21/CLIProxyAPI` commit `3bbf6da7ad92545c701cdc7bce09ba2ec4db2bcf`, reporting runtime version `7.2.75`. Upstream PR: [router-for-me/CLIProxyAPI#4351](https://github.com/router-for-me/CLIProxyAPI/pull/4351).
 
 Windows migration paths:
@@ -125,14 +126,19 @@ Use explicit Windows paths and keep the dashboard on loopback:
 
 ```powershell
 $CliProxyBin = "C:\Tools\cli-proxy-api\cli-proxy-api.exe"
+$CodexBin = (Get-Command codex.exe -ErrorAction Stop).Source
 if (!(Test-Path $CliProxyBin)) {
   throw "Missing cli-proxy-api.exe at $CliProxyBin"
+}
+if (!(Test-Path -LiteralPath $CodexBin)) {
+  throw "Missing codex.exe at $CodexBin"
 }
 
 pnpm run start -- `
   --host 127.0.0.1 `
   --port 60948 `
   --cli-proxy-bin $CliProxyBin `
+  --codex-bin $CodexBin `
   --config "$env:USERPROFILE\.config\cli-proxy-api\config.yaml" `
   --auth-dir "$env:USERPROFILE\.cli-proxy-api" `
   --backup-root "$env:USERPROFILE\.cli-proxy-api-backups\cliproxy-dashboard"

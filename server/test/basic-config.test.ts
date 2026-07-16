@@ -7,7 +7,13 @@ import YAML from "yaml";
 
 import { setAccountPatch, sortAccounts } from "../accounts.js";
 import { parseCliArgs } from "../cli.js";
-import { buildOpenUrlCommand, buildStuckOauthCleanupCommand, defaultCliProxyBin, resolveCliProxyBin } from "../commands.js";
+import {
+  buildOpenUrlCommand,
+  buildStuckOauthCleanupCommand,
+  defaultCliProxyBin,
+  resolveCliProxyBin,
+  resolveCodexBin,
+} from "../commands.js";
 import { setRoutingConfig } from "../config.js";
 import { DEFAULT_DASHBOARD_PORT } from "../constants.js";
 import { readDashboardState } from "../dashboard-state.js";
@@ -35,7 +41,14 @@ describe("cliproxy dashboard basic config helpers", () => {
     expect(parseCliArgs(["--cli-proxy-bin", "D:\\Tools\\cli-proxy-api.exe"]).cliProxyBin).toBe(
       "D:\\Tools\\cli-proxy-api.exe",
     );
+    expect(parseCliArgs(["--codex-bin", "D:\\Program Files\\Codex\\codex.exe"]).codexBin).toBe(
+      "D:\\Program Files\\Codex\\codex.exe",
+    );
     expect(defaultCliProxyBin("win32")).toBe("C:\\Tools\\cli-proxy-api\\cli-proxy-api.exe");
+  });
+
+  it("rejects a missing --codex-bin path", () => {
+    expect(() => parseCliArgs(["--codex-bin"])).toThrow("--codex-bin requires a path");
   });
 
   it("resolves cli-proxy-api from explicit option before environment fallback", () => {
@@ -67,6 +80,19 @@ describe("cliproxy dashboard basic config helpers", () => {
     expect(cleanupScript).toContain("-codex-login");
     expect(cleanupScript).toContain("$PID");
     expect(cleanupScript).toContain("ProcessId -ne $self");
+  });
+
+  it("resolves Codex from explicit option, environment, Node-adjacent binary, then PATH", () => {
+    const base = {
+      env: { CODEX_BIN: "C:\\Env\\codex.exe" },
+      execPath: "C:\\Node\\node.exe",
+      platform: "win32" as const,
+      exists: (candidate: string) => candidate === "C:\\Node\\codex.exe",
+    };
+    expect(resolveCodexBin({ codexBin: "C:\\Explicit\\codex.exe" }, base)).toBe("C:\\Explicit\\codex.exe");
+    expect(resolveCodexBin({}, base)).toBe("C:\\Env\\codex.exe");
+    expect(resolveCodexBin({}, { ...base, env: {} })).toBe("C:\\Node\\codex.exe");
+    expect(resolveCodexBin({}, { ...base, env: {}, exists: () => false })).toBe("codex");
   });
 
   it("sorts accounts by higher priority first and disabled last", () => {

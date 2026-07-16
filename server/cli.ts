@@ -18,6 +18,7 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
   proxyPort?: number;
   inboundKey?: string | null;
     cliProxyBin?: string;
+    codexBin?: string;
     managementKey?: string;
 } {
   const parsed = {
@@ -33,14 +34,15 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     proxyUrl: undefined as string | undefined,
     proxyPort: undefined as number | undefined,
     inboundKey: undefined as string | null | undefined,
-      cliProxyBin: undefined as string | undefined,
-      managementKey: process.env.CLI_PROXY_MANAGEMENT_KEY,
+    cliProxyBin: undefined as string | undefined,
+    codexBin: undefined as string | undefined,
+    managementKey: process.env.CLI_PROXY_MANAGEMENT_KEY,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--no-port-fallback] [--cli-proxy-bin <path>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--open]\n",
+        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--no-port-fallback] [--cli-proxy-bin <path>] [--codex-bin <path>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--open]\n",
       );
       process.exit(0);
     }
@@ -66,6 +68,12 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     }
     if (arg === "--cli-proxy-bin") {
       parsed.cliProxyBin = argv[++index];
+      continue;
+    }
+    if (arg === "--codex-bin") {
+      const value = argv[++index];
+      if (!value) throw new Error("--codex-bin requires a path");
+      parsed.codexBin = value;
       continue;
     }
     if (arg === "--auth-dir") {

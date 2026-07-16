@@ -14,155 +14,33 @@ export function resolveCliProxyBin(options: Pick<DashboardOptions, "cliProxyBin"
   return options.cliProxyBin ?? process.env.CLI_PROXY_API_BIN ?? defaultCliProxyBin();
 }
 
-export function resolveCodexBin(options: Pick<DashboardOptions, "codexBin"> = {}): string {
+export type ResolveCodexBinDependencies = {
+  env: { CODEX_BIN?: string };
+  execPath: string;
+  platform: NodeJS.Platform;
+  exists: (candidate: string) => boolean;
+};
+
+export function resolveCodexBin(
+  options: Pick<DashboardOptions, "codexBin"> = {},
+  dependencies: ResolveCodexBinDependencies = {
+    env: process.env,
+    execPath: process.execPath,
+    platform: process.platform,
+    exists: existsSync,
+  },
+): string {
   if (options.codexBin) return options.codexBin;
-  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
-  const localBin = path.join(path.dirname(process.execPath), process.platform === "win32" ? "codex.exe" : "codex");
-  if (existsSync(localBin)) {
+  if (dependencies.env.CODEX_BIN) return dependencies.env.CODEX_BIN;
+  const pathApi = dependencies.platform === "win32" ? path.win32 : path;
+  const localBin = pathApi.join(
+    pathApi.dirname(dependencies.execPath),
+    dependencies.platform === "win32" ? "codex.exe" : "codex",
+  );
+  if (dependencies.exists(localBin)) {
     return localBin;
   }
   return "codex";
-}
-
-export async function queryCodexAppServer(
-  codexBin: string,
-  method: string,
-  params: unknown,
-  timeoutMs = 5000,
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(codexBin, ["app-server", "--stdio"]);
-
-    let stdoutText = "";
-    let stderrText = "";
-    let isFinished = false;
-    let timer: NodeJS.Timeout | null = null;
-
-    const cleanup = () => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      child.stdout.removeAllListeners();
-      child.stderr.removeAllListeners();
-      child.removeAllListeners();
-      if (!child.killed) {
-        child.kill();
-      }
-    };
-
-    const finish = (error: Error | null, result?: unknown) => {
-      if (isFinished) return;
-      isFinished = true;
-      cleanup();
-      if (error) {
-        reject(error);
-      } else {
-        resolve(result);
-      }
-    };
-
-    timer = setTimeout(() => {
-      finish(new Error("Timeout waiting for app-server response on method " + method));
-    }, timeoutMs);
-
-    child.on("error", (err) => {
-      finish(err);
-    });
-
-    child.on("exit", (code) => {
-      if (!isFinished) {
-        finish(
-          new Error(
-            "codex app-server process exited early with code " + code + ". Stderr: " + stderrText.trim()
-          )
-        );
-      }
-    });
-
-    let buffer = "";
-    const processBuffer = () => {
-      let lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const msg = JSON.parse(trimmed);
-          handleMessage(msg);
-        } catch {}
-      }
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString("utf8");
-      processBuffer();
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderrText += chunk.toString("utf8");
-    });
-
-    // Step 1: Write initialize request
-    const initReq = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        clientInfo: {
-          name: "cliproxy-dashboard",
-          title: "Cliproxy Dashboard",
-          version: "1.0.0",
-        },
-        capabilities: {
-          experimentalApi: true,
-          requestAttestation: false,
-        },
-      },
-    };
-    child.stdin.write(JSON.stringify(initReq) + "\n");
-
-    let step = "initializing";
-
-    function handleMessage(msg: any) {
-      if (step === "initializing") {
-        if (msg.id === 1) {
-          if (msg.error) {
-            finish(new Error("Initialization failed: " + (msg.error.message || JSON.stringify(msg.error))));
-            return;
-          }
-          // Initialized successfully!
-          step = "initialized";
-          // Send initialized notification
-          const initializedNotif = {
-            jsonrpc: "2.0",
-            method: "initialized",
-          };
-          child.stdin.write(JSON.stringify(initializedNotif) + "\n");
-
-          // Now send the actual request
-          const actualReq = {
-            jsonrpc: "2.0",
-            id: 2,
-            method,
-            params,
-          };
-          child.stdin.write(JSON.stringify(actualReq) + "\n");
-        }
-      } else if (step === "initialized") {
-        if (msg.id === 2) {
-          if (msg.error) {
-            const errMsg = msg.error.message || "Unknown JSON-RPC error";
-            const err = new Error(errMsg);
-            (err as any).code = msg.error.code;
-            finish(err);
-          } else {
-            finish(null, msg.result);
-          }
-        }
-      }
-    }
-  });
 }
 
 export function buildOpenUrlCommand(
