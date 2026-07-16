@@ -66,10 +66,21 @@ export type CodexAccountGatewayErrorCode =
   | "transport-failed"
   | "request-failed";
 
+export type CodexConsumeResetCreditOutcome = "reset" | "alreadyRedeemed" | "nothingToReset" | "noCredit";
+export type CodexConsumeResetCreditInput = {
+  idempotencyKey: string;
+  creditId?: string;
+  timeoutMs?: number;
+  beforeWrite?: () => Promise<void> | void;
+  afterWrite?: () => Promise<void> | void;
+};
+
 export class CodexAccountGatewayError extends Error {
   readonly code: CodexAccountGatewayErrorCode;
+  readonly writeDisposition?: "not-written" | "possibly-written";
+  readonly hookErrorCode?: string;
 
-  constructor(code: CodexAccountGatewayErrorCode) {
+  constructor(code: CodexAccountGatewayErrorCode, writeDisposition?: "not-written" | "possibly-written", hookErrorCode?: string) {
     const message =
       code === "authentication-required"
         ? "Codex authentication is required."
@@ -79,6 +90,8 @@ export class CodexAccountGatewayError extends Error {
     super(message);
     this.name = "CodexAccountGatewayError";
     this.code = code;
+    this.writeDisposition = writeDisposition;
+    this.hookErrorCode = hookErrorCode;
   }
 }
 
@@ -229,7 +242,9 @@ function mapGatewayError(error: unknown): never {
       error.category === "authentication-required" ? "authentication-required" : "request-failed",
     );
   }
-  if (error instanceof CodexAppServerTransportError) throw new CodexAccountGatewayError("transport-failed");
+  if (error instanceof CodexAppServerTransportError) {
+    throw new CodexAccountGatewayError("transport-failed", error.writeDisposition, error.hookErrorCode);
+  }
   throw new CodexAccountGatewayError("request-failed");
 }
 
@@ -268,6 +283,30 @@ export class CodexAccountGateway {
         rateLimitsByLimitId: normalizeSnapshotMap(value.rateLimitsByLimitId),
         resetCredits: normalizeResetCredits(value.rateLimitResetCredits),
       };
+    } catch (error) {
+      mapGatewayError(error);
+    }
+  }
+
+  async consumeResetCredit(input: CodexConsumeResetCreditInput): Promise<{ outcome: CodexConsumeResetCreditOutcome }> {
+    try {
+      const value = await this.session.request<unknown>(
+        "account/rateLimitResetCredit/consume",
+        input.creditId === undefined
+          ? { idempotencyKey: input.idempotencyKey }
+          : { idempotencyKey: input.idempotencyKey, creditId: input.creditId },
+        {
+          timeoutMs: input.timeoutMs ?? 20_000,
+          beforeWrite: input.beforeWrite,
+          afterWrite: input.afterWrite,
+        },
+      );
+      if (!isRecord(value)) invalidResponse();
+      const outcome = value.outcome;
+      if (outcome !== "reset" && outcome !== "alreadyRedeemed" && outcome !== "nothingToReset" && outcome !== "noCredit") {
+        invalidResponse();
+      }
+      return { outcome };
     } catch (error) {
       mapGatewayError(error);
     }

@@ -180,4 +180,15 @@ describe("Codex app account panel", () => {
     expect(html).toContain('role="alert"');
     expect(html).not.toContain('data-codex-redemption-prepare');
   });
+
+  it("keeps prior usage visible but blocks controls when reconciliation is stale", () => {
+    const html = renderCodexAppAccount(view({
+      state: "usage-ready-resets-available",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+      usageStale: true,
+      message: "Reset completed; current usage unavailable.",
+    }));
+    expect(html).toContain("Last read before redemption — no longer current");
+    expect(html).not.toContain('data-codex-redemption-prepare');
+  });
 });

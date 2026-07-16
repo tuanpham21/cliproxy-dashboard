@@ -91,18 +91,28 @@ export async function mockApi(
     pollStatus?: number;
     proposalTtlMs?: number;
     initialActiveRedemption?: CodexRedemptionCurrentView;
+    pollStates?: CodexRedemptionCurrentView[];
+    pollFallbackState?: CodexRedemptionCurrentView;
+    deferConsume?: boolean;
+    abortConsume?: boolean;
+    consumeError?: { status: number; code: string; error: string };
   } = {},
 ) {
   let usage = initial;
   let codexCallCount = 0;
   let releaseFirstCodex: (() => void) | null = null;
   let releaseCancel: (() => void) | null = null;
+  let releaseConsume: (() => void) | null = null;
   let activeProposal: CodexRedemptionProposalView | null = null;
+  let activeRedemption = redemptionOptions.initialActiveRedemption;
+  const pollStates = [...(redemptionOptions.pollStates ?? [])];
   const requests: string[] = [];
+  const requestLog: Array<{ method: string; path: string }> = [];
   const prepareBodies: unknown[] = [];
   await page.route("**/api/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     requests.push(pathname);
+    requestLog.push({ method: route.request().method(), path: pathname });
     if (pathname === "/api/bootstrap") {
       await route.fulfill({ json: { operatorToken: "browser-test-token" } });
       return;
@@ -123,7 +133,7 @@ export async function mockApi(
       await route.fulfill({
         json: {
           ...usage,
-          activeRedemption: activeProposal ?? redemptionOptions.initialActiveRedemption ?? { status: "not-found" },
+          activeRedemption: activeProposal ?? activeRedemption ?? { status: "not-found" },
         },
       });
       return;
@@ -165,17 +175,49 @@ export async function mockApi(
         return;
       }
       if (activeProposal && Date.now() >= Date.parse(activeProposal.expiresAt)) activeProposal = null;
+      const state = activeProposal
+        ? {
+            status: "prepared" as const,
+            proposalId: activeProposal.proposalId,
+            allowedAction: "cancel" as const,
+            createdAt: activeProposal.createdAt,
+            expiresAt: activeProposal.expiresAt,
+            selectionMode: activeProposal.selection.mode,
+          }
+        : pollStates.shift() ?? redemptionOptions.pollFallbackState ?? activeRedemption ?? { status: "not-found" as const };
+      if (!activeProposal) activeRedemption = state;
+      await route.fulfill({ json: state });
+      return;
+    }
+    if (pathname === `/api/codex/reset-redemptions/proposals/${"p".repeat(43)}/consume` && route.request().method() === "POST") {
+      if (redemptionOptions.deferConsume) {
+        await new Promise<void>((resolve) => {
+          releaseConsume = resolve;
+        });
+      }
+      activeProposal = null;
+      if (redemptionOptions.abortConsume) {
+        await route.abort("connectionfailed");
+        return;
+      }
+      if (redemptionOptions.consumeError) {
+        await route.fulfill({ status: redemptionOptions.consumeError.status, json: redemptionOptions.consumeError });
+        return;
+      }
+      const createdAt = new Date().toISOString();
       await route.fulfill({
-        json: activeProposal
-          ? {
-              status: "prepared",
-              proposalId: activeProposal.proposalId,
-              allowedAction: "cancel",
-              createdAt: activeProposal.createdAt,
-              expiresAt: activeProposal.expiresAt,
-              selectionMode: activeProposal.selection.mode,
-            }
-          : redemptionOptions.initialActiveRedemption ?? { status: "not-found" },
+        json: {
+          status: "terminal",
+          proposalId: "p".repeat(43),
+          allowedAction: "none",
+          selectionMode: "generic",
+          outcome: "reset",
+          reconciliation: "reconciled",
+          message: "Usage limits reset. Checking current usage…",
+          auditEventId: "a".repeat(43),
+          createdAt,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        },
       });
       return;
     }
@@ -193,6 +235,7 @@ export async function mockApi(
   });
   return {
     requests,
+    requestLog,
     prepareBodies,
     setUsage(next: UsageView) {
       usage = next;
@@ -204,6 +247,10 @@ export async function mockApi(
     releaseCancel() {
       releaseCancel?.();
       releaseCancel = null;
+    },
+    releaseConsume() {
+      releaseConsume?.();
+      releaseConsume = null;
     },
   };
 }

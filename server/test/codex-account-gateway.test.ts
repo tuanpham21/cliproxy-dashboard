@@ -162,4 +162,60 @@ describe("Codex account gateway", () => {
     });
     await session.close();
   });
+
+  it.each(["reset", "alreadyRedeemed", "nothingToReset", "noCredit"] as const)(
+    "normalizes consume outcome %s with server-owned request fields",
+    async (outcome) => {
+      const { gateway, session, child } = await gatewayFor({
+        "account/rateLimitResetCredit/consume": { outcome },
+      });
+
+      await expect(gateway.consumeResetCredit({
+        idempotencyKey: "11111111-2222-4333-8444-555555555555",
+        creditId: "credit-1",
+        timeoutMs: 20_000,
+      })).resolves.toEqual({ outcome });
+      expect(child.writes.at(-1)).toMatchObject({
+        method: "account/rateLimitResetCredit/consume",
+        params: {
+          idempotencyKey: "11111111-2222-4333-8444-555555555555",
+          creditId: "credit-1",
+        },
+      });
+      await session.close();
+    },
+  );
+
+  it("preserves consume transport write disposition and rejects unknown outcomes", async () => {
+    const unknown = await gatewayFor({
+      "account/rateLimitResetCredit/consume": { outcome: "provider-added-value" },
+    });
+    await expect(unknown.gateway.consumeResetCredit({ idempotencyKey: "key" })).rejects.toMatchObject({
+      code: "invalid-response",
+    });
+    await unknown.session.close();
+
+    const child = new FakeCodexProcess();
+    initializeFakeCodexProcess(child, (message, acknowledge, process) => {
+      acknowledge();
+      if (message.method === "account/rateLimitResetCredit/consume") process.closeWith(1);
+      else process.sendJson({ jsonrpc: "2.0", id: message.id, result: {} });
+    });
+    const session = await startCodexAppServerSession({ codexBin: "codex", spawnProcess: createFakeCodexSpawn(child) });
+    const gateway = new CodexAccountGateway(session);
+    await expect(gateway.consumeResetCredit({ idempotencyKey: "key" })).rejects.toMatchObject({
+      code: "transport-failed",
+      writeDisposition: "possibly-written",
+    });
+    await session.close();
+  });
+
+  it("omits creditId for generic consume", async () => {
+    const { gateway, session, child } = await gatewayFor({
+      "account/rateLimitResetCredit/consume": { outcome: "reset" },
+    });
+    await gateway.consumeResetCredit({ idempotencyKey: "server-key" });
+    expect(child.writes.at(-1)?.params).toEqual({ idempotencyKey: "server-key" });
+    await session.close();
+  });
 });

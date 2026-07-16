@@ -1,6 +1,7 @@
 import { deleteJson, postJson, putJson, readCodexAccountUsage, readDashboardState } from "./api";
 import { codexLoadingView } from "./codex-app-account";
 import { setupCodexRedemption } from "./codex-redemption";
+import type { CodexRedemptionUsageSnapshot } from "../../shared/codex-account-types";
 import { inferPlan } from "./format";
 import {
   type AppState,
@@ -119,6 +120,34 @@ function refreshCodexAccount(showLoading = true): Promise<void> {
       codexRefreshPromise = null;
     });
   return codexRefreshPromise;
+}
+
+function applyCodexRedemptionUsage(snapshot: CodexRedemptionUsageSnapshot): void {
+  const availableCount = snapshot.resetCredits.availableCount;
+  state.codexAccount = {
+    ...state.codexAccount,
+    state: availableCount > 0 ? "usage-ready-resets-available" : "usage-ready-no-resets",
+    errorCode: null,
+    message: availableCount > 0
+      ? `${availableCount} earned usage limit reset${availableCount === 1 ? " is" : "s are"} available.`
+      : "No earned usage limit resets available.",
+    observedAt: snapshot.observedAt,
+    usage: snapshot.usage,
+    resetCredits: snapshot.resetCredits,
+    activeRedemption: undefined,
+    usageStale: false,
+  };
+  renderCodexAccountPanel(state, els);
+}
+
+function markCodexRedemptionUsageStale(message: string): void {
+  state.codexAccount = {
+    ...state.codexAccount,
+    message,
+    activeRedemption: undefined,
+    usageStale: true,
+  };
+  renderCodexAccountPanel(state, els);
 }
 
 function accountPayload(row: HTMLTableRowElement): { priority?: number | null; note?: string | null; disabled?: boolean | null } {
@@ -400,6 +429,8 @@ const refreshCodexAccountButton = byId<HTMLButtonElement>("refresh-codex-account
     pageStatus: byId("codex-redemption-page-status"),
     focusFallback: refreshCodexAccountButton,
     refreshAccount: async () => await refreshCodexAccount(false),
+    applyAccountUsage: applyCodexRedemptionUsage,
+    markAccountUsageStale: markCodexRedemptionUsageStale,
   });
 
   const themeToggle = byId<HTMLButtonElement>("theme-toggle");

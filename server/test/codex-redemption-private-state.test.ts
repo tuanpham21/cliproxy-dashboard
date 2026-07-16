@@ -255,4 +255,73 @@ describe("private reset-redemption state", () => {
       proposalId: "q".repeat(43),
     })).rejects.toMatchObject({ code: "redemption-recovery-required" });
   });
+
+  it("atomically transitions dispatch state and replays a terminal tombstone after lease release", async () => {
+    const { store } = await storeHarness();
+    const prepared = await store.acquirePrepared(proposalInput);
+    const dispatchAt = "2026-07-16T12:00:01.000Z";
+    await expect(store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "prepared", {
+      ...prepared,
+      phase: "terminal",
+      dispatchAt,
+      terminalAt: dispatchAt,
+      outcome: "reset",
+      reconciliation: "reconciled",
+      auditEventId: "a".repeat(43),
+    })).rejects.toMatchObject({ code: "redemption-recovery-required" });
+    const dispatchIntent = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "prepared", {
+      ...prepared,
+      phase: "dispatch-intent",
+      dispatchAt,
+      updatedAt: dispatchAt,
+    });
+    const dispatched = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "dispatch-intent", {
+      ...dispatchIntent,
+      phase: "dispatched",
+      updatedAt: "2026-07-16T12:00:02.000Z",
+    });
+    const terminalPending = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "dispatched", {
+      ...dispatched,
+      phase: "terminal",
+      terminalAt: "2026-07-16T12:00:03.000Z",
+      outcome: "reset",
+      reconciliation: "pending",
+      auditEventId: "a".repeat(43),
+      updatedAt: "2026-07-16T12:00:03.000Z",
+    });
+    const terminal = await store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "terminal", {
+      ...terminalPending,
+      reconciliation: "reconciled",
+      updatedAt: "2026-07-16T12:00:04.000Z",
+    });
+    expect(terminal.phase).toBe("terminal");
+    await expect(store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "terminal", {
+      ...terminal,
+      reconciliation: "pending",
+      updatedAt: "2026-07-16T12:00:05.000Z",
+    })).rejects.toMatchObject({ code: "redemption-recovery-required" });
+    await expect(store.transitionJournal(prepared.proposalId, prepared.ownerNonce, "terminal", {
+      ...terminal,
+      reconciliation: "unreconciled",
+      updatedAt: "2026-07-16T12:00:05.000Z",
+    })).rejects.toMatchObject({ code: "redemption-recovery-required" });
+    const tombstone = {
+      schemaVersion: 1 as const,
+      proposalId: prepared.proposalId,
+      selectionMode: "specific" as const,
+      outcome: "reset" as const,
+      reconciliation: "reconciled" as const,
+      auditEventId: "a".repeat(43),
+      message: "Usage limits reset. Checking current usage…",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    };
+    await store.publishTombstone(tombstone);
+    await expect(store.publishTombstone({ ...tombstone, auditEventId: "b".repeat(43) })).rejects.toMatchObject({
+      code: "redemption-recovery-required",
+    });
+    await store.releaseTerminal(prepared.proposalId, prepared.ownerNonce, "a".repeat(43));
+
+    await expect(store.readPublicState(prepared.proposalId)).resolves.toEqual({ status: "terminal", tombstone });
+  });
 });

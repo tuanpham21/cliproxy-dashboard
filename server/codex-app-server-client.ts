@@ -17,12 +17,16 @@ export type CodexAppServerTransportErrorCode =
 export class CodexAppServerTransportError extends Error {
   readonly code: CodexAppServerTransportErrorCode;
   readonly writeDisposition: CodexAppServerWriteDisposition;
+  readonly hookErrorCode?: string;
 
-  constructor(code: CodexAppServerTransportErrorCode, writeDisposition: CodexAppServerWriteDisposition) {
+  constructor(code: CodexAppServerTransportErrorCode, writeDisposition: CodexAppServerWriteDisposition, hookCause?: unknown) {
     super("Codex app-server transport failed.");
     this.name = "CodexAppServerTransportError";
     this.code = code;
     this.writeDisposition = writeDisposition;
+    this.hookErrorCode = typeof hookCause === "object" && hookCause !== null && "code" in hookCause
+      ? String((hookCause as { code?: unknown }).code)
+      : undefined;
   }
 }
 
@@ -208,8 +212,8 @@ export class CodexAppServerSession {
     }
     try {
       await options.beforeWrite?.();
-    } catch {
-      throw new CodexAppServerTransportError("before-write-failed", "not-written");
+    } catch (error) {
+      throw new CodexAppServerTransportError("before-write-failed", "not-written", error);
     }
     if (!this.canSend(allowStarting)) {
       throw new CodexAppServerTransportError("session-closed", "not-written");
@@ -230,6 +234,7 @@ export class CodexAppServerSession {
       };
       this.pending.set(id, pending);
       try {
+        pending.writeDisposition = "possibly-written";
         this.child.stdin.write(payload, (error?: Error | null) => {
           if (!this.pending.has(id)) return;
           if (error) {
@@ -245,7 +250,6 @@ export class CodexAppServerSession {
             () => this.failTransport("write-failed"),
           );
         });
-        pending.writeDisposition = "possibly-written";
       } catch {
         this.failTransport("write-failed");
       }

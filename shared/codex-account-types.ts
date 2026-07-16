@@ -1,4 +1,14 @@
-import type { CodexAccountUsageWindow } from "./types.js";
+import type { CodexAccountResetCredit, CodexAccountUsageWindow } from "./types.js";
+
+export type CodexRedemptionUsageSnapshot = {
+  observedAt: string;
+  usage: { primary: CodexAccountUsageWindow | null; secondary: CodexAccountUsageWindow | null };
+  resetCredits: {
+    availableCount: number;
+    selectionMode: "none" | "detailed" | "generic";
+    credits: CodexAccountResetCredit[];
+  };
+};
 
 export type CodexRedemptionProposalSelection =
   | {
@@ -31,6 +41,34 @@ export type CodexRedemptionStateView =
       selectionMode: "specific" | "generic";
     }
   | { status: "not-found" }
+  | {
+      status: "ambiguous";
+      proposalId: string;
+      allowedAction: "none";
+      selectionMode: "specific" | "generic";
+      dispatchAt: string;
+    }
+  | {
+      status: "processing";
+      proposalId: string;
+      allowedAction: "poll";
+      selectionMode: "specific" | "generic";
+      phase: "dispatch-intent" | "dispatched" | "terminal";
+      dispatchAt: string;
+    }
+  | {
+      status: "terminal";
+      proposalId: string;
+      allowedAction: "none";
+      selectionMode: "specific" | "generic";
+      outcome: "reset" | "alreadyRedeemed" | "nothingToReset" | "noCredit";
+      reconciliation: "reconciled" | "unreconciled" | "availability-changed-unreconciled" | "not-required";
+      message: string;
+      auditEventId: string;
+      createdAt: string;
+      expiresAt: string;
+      accountUsage?: CodexRedemptionUsageSnapshot;
+    }
   | {
       status: "recovery-required";
       code: "redemption-recovery-required";

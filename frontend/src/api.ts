@@ -1,5 +1,6 @@
 import type { CodexAccountUsageView, DashboardState, RateLimitState } from "../../shared/types";
 import type {
+  CodexRedemptionCurrentView,
   CodexRedemptionProposalView,
   CodexRedemptionStateView,
   PrepareCodexRedemptionInput,
@@ -149,6 +150,14 @@ export async function readCodexRedemptionState(proposalId: string): Promise<Code
   return await requestJson<CodexRedemptionStateView>(
     `/api/codex/reset-redemptions/${encodeURIComponent(proposalId)}`,
     {},
+    true,
+  );
+}
+
+export async function consumeCodexRedemption(proposalId: string): Promise<CodexRedemptionCurrentView> {
+  return await requestJson<CodexRedemptionCurrentView>(
+    `/api/codex/reset-redemptions/proposals/${encodeURIComponent(proposalId)}/consume`,
+    { method: "POST" },
     true,
   );
 }

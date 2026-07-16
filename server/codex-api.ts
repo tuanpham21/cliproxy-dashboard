@@ -76,10 +76,23 @@ export async function handleCodexApi(
     ? pathname.match(/^\/api\/codex\/reset-redemptions\/proposals\/([A-Za-z0-9_-]{43})\/consume$/)
     : null;
   if (consumeMatch) {
-    jsonResponse(res, 403, {
-      code: "redemption-consume-disabled",
-      error: "Reset redemption is not enabled.",
-    });
+    if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
+      jsonResponse(res, 403, {
+        code: "codex_runtime_unavailable",
+        error: "Reset redemption is available only from a loopback-local dashboard.",
+      });
+      return true;
+    }
+    if (!redemptionService) {
+      jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t redeem reset." });
+      return true;
+    }
+    try {
+      await assertEmptyBody(req, 512);
+      jsonResponse(res, 200, await redemptionService.consume(consumeMatch[1]));
+    } catch (error) {
+      respondRedemptionError(res, error, jsonResponse, "Couldn’t redeem reset.");
+    }
     return true;
   }
 
@@ -221,7 +234,7 @@ function parsePrepareBody(value: unknown): PrepareCodexRedemptionInput {
   return { creditId: record.creditId, singleWorkspaceAttested: true };
 }
 
-function respondRedemptionError(res: ServerResponse, error: unknown, jsonResponse: JsonResponse): void {
+function respondRedemptionError(res: ServerResponse, error: unknown, jsonResponse: JsonResponse, fallback = "Couldn’t prepare reset redemption."): void {
   if (error instanceof CodexRedemptionRequestError) {
     jsonResponse(res, 400, { code: error.code, error: error.message });
     return;
@@ -229,7 +242,9 @@ function respondRedemptionError(res: ServerResponse, error: unknown, jsonRespons
   if (error instanceof CodexRedemptionServiceError) {
     const status = error.code === "redemption-proposal-not-found"
       ? 404
-      : error.code === "redemption-proposal-active" || error.code === "redemption-recovery-required"
+      : error.code === "redemption-proposal-active" || error.code === "redemption-recovery-required" ||
+          error.code === "codex_account_changed" || error.code === "codex_reset_availability_changed" ||
+          error.code === "codex_session_changed" || error.code === "codex_proposal_expired"
         ? 409
         : error.code === "codex_read_failed" || error.code === "redemption-private-state-unavailable"
           ? 503
@@ -237,7 +252,7 @@ function respondRedemptionError(res: ServerResponse, error: unknown, jsonRespons
     jsonResponse(res, status, { code: error.code, error: error.message });
     return;
   }
-  jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t prepare reset redemption." });
+  jsonResponse(res, 503, { code: "codex_read_failed", error: fallback });
 }
 
 function isLoopbackHost(host: string | undefined): boolean {

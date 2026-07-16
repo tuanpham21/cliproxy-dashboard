@@ -33,6 +33,7 @@ function redemptionService() {
     prepare: vi.fn(async () => proposal),
     state: vi.fn(async () => ({ status: "not-found" as const })),
     cancel: vi.fn(async (proposalId: string) => ({ status: "cancelled" as const, proposalId })),
+    consume: vi.fn(async () => ({ status: "not-found" as const })),
     currentState: vi.fn(async () => ({ status: "not-found" as const })),
     close: vi.fn(async () => {}),
   };
@@ -113,12 +114,24 @@ describe("Codex reset-redemption API", () => {
     expect(service.cancel).toHaveBeenCalledWith(proposal.proposalId);
   });
 
-  it("keeps proposal consumption fixed at forbidden without calling service mutation", async () => {
+  it("consumes one prepared proposal through the loopback-only empty-body route", async () => {
     const service = redemptionService();
+    service.consume.mockResolvedValue({
+      status: "terminal",
+      proposalId: proposal.proposalId,
+      allowedAction: "none",
+      selectionMode: "specific",
+      outcome: "reset",
+      reconciliation: "reconciled",
+      message: "Usage limits reset. Checking current usage…",
+      auditEventId: "a".repeat(43),
+      createdAt: "2026-07-16T12:00:01.000Z",
+      expiresAt: "2026-07-16T12:10:01.000Z",
+    });
     const response = makeMockRes();
 
     await handleApi(
-      request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`, "{}"),
+      request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`),
       response.res as ServerResponse,
       {
         host: "127.0.0.1",
@@ -127,13 +140,28 @@ describe("Codex reset-redemption API", () => {
       },
     );
 
-    expect(response.getStatus()).toBe(403);
-    expect(response.getParsed()).toEqual({
-      code: "redemption-consume-disabled",
-      error: "Reset redemption is not enabled.",
-    });
+    expect(response.getStatus()).toBe(200);
+    expect(response.getParsed()).toMatchObject({ status: "terminal", outcome: "reset" });
+    expect(service.consume).toHaveBeenCalledWith(proposal.proposalId);
     expect(service.prepare).not.toHaveBeenCalled();
     expect(service.cancel).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-empty or non-loopback consume requests before service mutation", async () => {
+    const service = redemptionService();
+    for (const req of [
+      request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`, "{}"),
+      request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`, "", "10.0.0.4"),
+    ]) {
+      const response = makeMockRes();
+      await handleApi(req, response.res as ServerResponse, {
+        host: "127.0.0.1",
+        operatorToken: TEST_OPERATOR_TOKEN,
+        codexRedemptionService: service,
+      });
+      expect([400, 403]).toContain(response.getStatus());
+    }
+    expect(service.consume).not.toHaveBeenCalled();
   });
 
   it("rejects oversized, cross-boundary, and client-supplied server fields before service work", async () => {

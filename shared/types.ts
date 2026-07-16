@@ -201,4 +201,5 @@ export type CodexAccountUsageView = {
     credits: CodexAccountResetCredit[];
   } | null;
   activeRedemption?: import("./codex-account-types.js").CodexRedemptionCurrentView;
+  usageStale?: boolean;
 };

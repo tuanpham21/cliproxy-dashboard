@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePreparedRedemptionJournal } from "../codex-redemption-journal.js";
+import {
+  parsePreparedRedemptionJournal,
+  parseRedemptionJournal,
+  parseTerminalRedemptionTombstone,
+} from "../codex-redemption-journal.js";
 
 const validJournal = {
   schemaVersion: 1,
@@ -59,5 +63,35 @@ describe("prepared redemption journal codec", () => {
       ...validJournal,
       runtimeIdentity: { ...validJournal.runtimeIdentity, version: "v".repeat(513) },
     })).toBeNull();
+  });
+
+  it("accepts strict dispatch and terminal records plus non-secret tombstones", () => {
+    const dispatched = {
+      ...validJournal,
+      phase: "dispatched",
+      dispatchAt: "2026-07-16T12:00:01.000Z",
+      updatedAt: "2026-07-16T12:00:02.000Z",
+    };
+    expect(parseRedemptionJournal(dispatched)).toMatchObject({ phase: "dispatched" });
+    expect(parseRedemptionJournal({
+      ...dispatched,
+      phase: "terminal",
+      terminalAt: "2026-07-16T12:00:03.000Z",
+      outcome: "reset",
+      reconciliation: "reconciled",
+      auditEventId: "a".repeat(43),
+      updatedAt: "2026-07-16T12:00:03.000Z",
+    })).toMatchObject({ phase: "terminal", outcome: "reset" });
+    expect(parseTerminalRedemptionTombstone({
+      schemaVersion: 1,
+      proposalId: validJournal.proposalId,
+      selectionMode: "generic",
+      outcome: "nothingToReset",
+      reconciliation: "not-required",
+      auditEventId: "a".repeat(43),
+      message: "No eligible usage limit needs a reset right now. No reset was applied.",
+      createdAt: "2026-07-16T12:00:03.000Z",
+      expiresAt: "2026-07-16T12:10:03.000Z",
+    })).not.toBeNull();
   });
 });

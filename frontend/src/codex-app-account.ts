@@ -61,6 +61,7 @@ function creditMarkup(credit: CodexAccountResetCredit, index: number, checked: b
 }
 
 function redemptionControls(view: CodexAccountUsageView): string {
+    if (view.usageStale) return "";
     if (view.activeRedemption && view.activeRedemption.status !== "not-found") return "";
   const resetCredits = view.resetCredits;
   if (view.state !== "usage-ready-resets-available" || !resetCredits || resetCredits.availableCount <= 0) return "";
@@ -111,6 +112,7 @@ function readyMarkup(view: CodexAccountUsageView): string {
     "</div>",
     "</div>",
     view.observedAt ? `<div class="muted small codex-observed">Observed ${escapeHtml(formatToGmt7(view.observedAt))}</div>` : "",
+    view.usageStale ? '<p class="codex-redemption-recovery" role="alert">Last read before redemption — no longer current</p>' : "",
     '<p class="codex-workspace-warning">Email and plan help identify the account but do not prove which ChatGPT workspace owns a reset.</p>',
     resetCredits
       ? `<div class="codex-reset-summary"><strong>${resetCredits.availableCount}</strong> earned usage limit reset${resetCredits.availableCount === 1 ? "" : "s"}</div>`
@@ -123,6 +125,12 @@ function readyMarkup(view: CodexAccountUsageView): string {
         : "",
       view.activeRedemption?.status === "recovery-required" || view.activeRedemption?.status === "unavailable"
         ? `<p class="codex-redemption-recovery" role="alert">${escapeHtml(view.activeRedemption.message)}</p>`
+        : view.activeRedemption?.status === "ambiguous"
+          ? '<p class="codex-redemption-recovery" role="alert">Couldn’t confirm whether redemption completed. New redemptions remain blocked until this same attempt is resolved.</p>'
+          : view.activeRedemption?.status === "processing"
+            ? '<p class="codex-redemption-active" role="status">Reset redemption is processing. New redemptions remain blocked.</p>'
+          : view.activeRedemption?.status === "terminal"
+            ? `<p class="codex-redemption-active" role="status">${escapeHtml(view.activeRedemption.message)}</p>`
         : view.activeRedemption?.status === "prepared"
           ? '<p class="codex-redemption-active" role="status">Another reset confirmation is active. Return to its original dashboard tab or wait for expiry.</p>'
           : redemptionControls(view),

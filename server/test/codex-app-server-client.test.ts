@@ -93,7 +93,7 @@ describe("Codex app-server session", () => {
     await session.close();
   });
 
-  it("classifies pre-write barrier and synchronous write failures as not written", async () => {
+  it("classifies pre-write barriers as not written and write-call failures as possibly written", async () => {
     const child = new FakeCodexProcess();
     initializeFakeCodexProcess(child, () => {});
     const session = await startCodexAppServerSession({
@@ -107,7 +107,7 @@ describe("Codex app-server session", () => {
 
     child.throwOnWrite = new Error("closed stdin");
     await expect(session.request("account/read", {})).rejects.toMatchObject({
-      writeDisposition: "not-written",
+      writeDisposition: "possibly-written",
       code: "write-failed",
     });
     await session.close();

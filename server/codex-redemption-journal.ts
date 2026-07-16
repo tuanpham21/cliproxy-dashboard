@@ -29,6 +29,30 @@ export type PreparedRedemptionJournal = {
   updatedAt: string;
 };
 
+export type RedemptionOutcome = "reset" | "alreadyRedeemed" | "nothingToReset" | "noCredit";
+export type RedemptionReconciliation = "pending" | "reconciled" | "unreconciled" | "availability-changed-unreconciled" | "not-required";
+export type RedemptionJournalPhase = "prepared" | "dispatch-intent" | "dispatched" | "ambiguous" | "terminal";
+export type RedemptionJournal = Omit<PreparedRedemptionJournal, "phase"> & {
+  phase: RedemptionJournalPhase;
+  dispatchAt?: string;
+  terminalAt?: string;
+  outcome?: RedemptionOutcome;
+  reconciliation?: RedemptionReconciliation;
+  auditEventId?: string;
+};
+
+export type TerminalRedemptionTombstone = {
+  schemaVersion: 1;
+  proposalId: string;
+  selectionMode: RedemptionSelection["mode"];
+  outcome: RedemptionOutcome;
+  reconciliation: Exclude<RedemptionReconciliation, "pending">;
+  auditEventId: string;
+  message: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -128,4 +152,69 @@ export function parsePreparedRedemptionJournal(value: unknown): PreparedRedempti
     expiresAt: value.expiresAt,
     updatedAt: value.updatedAt,
   };
+}
+
+export function parseRedemptionJournal(value: unknown): RedemptionJournal | null {
+  if (!isRecord(value) || typeof value.phase !== "string" || value.phase === "prepared") {
+    return parsePreparedRedemptionJournal(value);
+  }
+  if (
+    value.phase !== "dispatch-intent" &&
+    value.phase !== "dispatched" &&
+    value.phase !== "ambiguous" &&
+    value.phase !== "terminal"
+  ) return null;
+  const base = parsePreparedRedemptionJournal({
+    schemaVersion: value.schemaVersion,
+    phase: "prepared",
+    proposalId: value.proposalId,
+    ownerNonce: value.ownerNonce,
+    owner: value.owner,
+    accountCheckDigest: value.accountCheckDigest,
+    idempotencyKey: value.idempotencyKey,
+    selection: value.selection,
+    runtimeIdentity: value.runtimeIdentity,
+    createdAt: value.createdAt,
+    expiresAt: value.expiresAt,
+    updatedAt: value.createdAt,
+  });
+  if (!base || !isIso(value.updatedAt) || Date.parse(value.updatedAt) < Date.parse(base.createdAt) || typeof value.dispatchAt !== "string" || !isIso(value.dispatchAt)) return null;
+  const dispatchAt = value.dispatchAt;
+  if (Date.parse(dispatchAt) < Date.parse(base.createdAt)) return null;
+  const commonKeys = [
+    "schemaVersion", "phase", "proposalId", "ownerNonce", "owner", "accountCheckDigest", "idempotencyKey",
+    "selection", "runtimeIdentity", "createdAt", "expiresAt", "updatedAt", "dispatchAt",
+  ];
+  if (value.phase === "terminal") {
+    if (!hasExactKeys(value, [...commonKeys, "terminalAt", "outcome", "reconciliation", "auditEventId"])) return null;
+    if (typeof value.terminalAt !== "string" || !isIso(value.terminalAt) || Date.parse(value.terminalAt) < Date.parse(dispatchAt)) return null;
+    if (value.outcome !== "reset" && value.outcome !== "alreadyRedeemed" && value.outcome !== "nothingToReset" && value.outcome !== "noCredit") return null;
+    if (value.reconciliation !== "pending" && value.reconciliation !== "reconciled" && value.reconciliation !== "unreconciled" && value.reconciliation !== "availability-changed-unreconciled" && value.reconciliation !== "not-required") return null;
+    if (typeof value.auditEventId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.auditEventId)) return null;
+    return {
+      ...base,
+      phase: "terminal",
+      dispatchAt,
+      terminalAt: value.terminalAt,
+      outcome: value.outcome,
+      reconciliation: value.reconciliation,
+      auditEventId: value.auditEventId,
+    };
+  }
+  if (!hasExactKeys(value, commonKeys)) return null;
+  return { ...base, phase: value.phase, dispatchAt };
+}
+
+export function parseTerminalRedemptionTombstone(value: unknown): TerminalRedemptionTombstone | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "schemaVersion", "proposalId", "selectionMode", "outcome", "reconciliation", "auditEventId", "message", "createdAt", "expiresAt",
+  ])) return null;
+  if (value.schemaVersion !== 1 || !isCodexRedemptionProposalId(value.proposalId)) return null;
+  if (value.selectionMode !== "specific" && value.selectionMode !== "generic") return null;
+  if (value.outcome !== "reset" && value.outcome !== "alreadyRedeemed" && value.outcome !== "nothingToReset" && value.outcome !== "noCredit") return null;
+  if (value.reconciliation !== "reconciled" && value.reconciliation !== "unreconciled" && value.reconciliation !== "availability-changed-unreconciled" && value.reconciliation !== "not-required") return null;
+  if (typeof value.auditEventId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.auditEventId)) return null;
+  if (typeof value.message !== "string" || value.message.length === 0 || Buffer.byteLength(value.message, "utf8") > 512) return null;
+  if (!isIso(value.createdAt) || !isIso(value.expiresAt) || Date.parse(value.expiresAt) <= Date.parse(value.createdAt)) return null;
+  return value as TerminalRedemptionTombstone;
 }
