@@ -189,6 +189,30 @@ describe("active rotation coordinator", () => {
     await coordinator.close();
   });
 
+  it("mutates when an in-flight shadow decision crosses into active mode", async () => {
+    const { coordinator, writer } = await activeCoordinator();
+    try {
+      await coordinator.setMode("shadow");
+      const observedAt = "2026-07-16T00:00:00.000Z";
+      const handling = coordinator.handleObservation(observationBatch("account-a", observedAt, [
+        quotaSnapshot("account-a", 80, observedAt),
+        quotaSnapshot("account-b", 20, observedAt),
+      ]));
+
+      await coordinator.setMode("active");
+      await handling;
+
+      expect(writer.setCalls).toEqual([{ proxyAccountKey: "account-b", priority: 11 }]);
+      expect(coordinator.publicState()).toMatchObject({
+        mode: "active",
+        lifecycle: "awaiting-confirmation",
+        journal: { phase: "verified", routingTargetKey: "account-b", intendedPriority: 11 },
+      });
+    } finally {
+      await coordinator.close();
+    }
+  });
+
   it("feeds persisted least-recent selection into equal-usage production decisions", async () => {
     const accountC = managedAccount("account-c", "codex-account-c.json", 1);
     const { coordinator, writer } = await activeCoordinator({ canMutate: true }, [accountC]);

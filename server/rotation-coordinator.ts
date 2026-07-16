@@ -410,18 +410,18 @@ export class RotationCoordinator {
         provisionalCount,
         ...(provisionalResetAttemptUpdate === undefined ? {} : { provisionalResetAttempt: provisionalResetAttemptUpdate }),
       });
+      const currentControllerState = this.#controller.state();
       if (
         decision.kind === "switch"
         && selectedTarget
-        && controllerState.mode === "active"
-        && controllerState.lifecycle === "active"
+        && currentControllerState.mode === "active"
+        && currentControllerState.lifecycle === "active"
       ) {
+        const fromProxyAccountKey = currentControllerState.routingTargetKey ?? observedRoutedAccountKey;
         await this.#controller.beginPendingRotation({
           observationId: observation!.observationId,
           evidenceWatermark: observation!.observationAt,
-          ...(controllerState.routingTargetKey ?? observedRoutedAccountKey
-            ? { fromProxyAccountKey: controllerState.routingTargetKey ?? observedRoutedAccountKey }
-            : {}),
+          ...(fromProxyAccountKey ? { fromProxyAccountKey } : {}),
           routingTargetKey: selectedTarget.proxyAccountKey,
           targetFingerprint: selectedTarget.identityFingerprint,
         });
