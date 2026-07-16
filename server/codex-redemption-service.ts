@@ -30,7 +30,7 @@ import {
   type RedemptionJournal,
   type PublicPrivateRedemptionState,
 } from "./codex-redemption-private-state.js";
-import type { CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
+import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
 import {
   defaultCodexRedemptionAuditSink,
   type CodexRedemptionAuditSink,
@@ -44,7 +44,7 @@ import type {
   TerminalRedemptionTombstone,
 } from "./codex-redemption-journal.js";
 import { finishTerminalReplay } from "./codex-redemption-terminal-replay.js";
-import { recoveryRequiredPrivateState } from "./codex-redemption-public-state.js";
+import { recoveryRequiredPrivateState, unavailablePrivateState } from "./codex-redemption-public-state.js";
 import { publicRedemptionView } from "./codex-redemption-public-view.js";
 import { CodexRedemptionRecoveryManager } from "./codex-redemption-recovery-manager.js";
 import type { RecoveryCoordinatorStore } from "./codex-redemption-recovery-coordinator.js";
@@ -74,7 +74,7 @@ export type CodexRedemptionServiceErrorCode =
 const ERROR_MESSAGES: Record<CodexRedemptionServiceErrorCode, string> = {
   codex_auth_required: "Sign in to Codex with ChatGPT, then refresh.",
   codex_runtime_unavailable: "Codex runtime unavailable. Check the configured Codex path.",
-  codex_runtime_incompatible: "Installed Codex does not expose the required usage-reset methods.",
+  codex_runtime_incompatible: "Codex runtime or local state does not meet the required safety contract.",
   codex_identity_incomplete: "Codex did not provide an email and known plan. Redemption is unavailable.",
   codex_read_failed: "Couldn’t load Codex app usage.",
   "redemption-attestation-required": "Confirm the single-workspace boundary before continuing.",
@@ -141,6 +141,7 @@ export interface CodexRedemptionPrivateStore {
 
 export type CodexRedemptionSessionOptions = {
   codexBin: string;
+  codexHome: string;
   onNotification: (notification: CodexAppServerNotification) => Promise<void> | void;
   onUnexpectedProcessClose: () => Promise<void> | void;
 };
@@ -171,7 +172,7 @@ export interface CodexRedemptionController {
 type ActiveProposal = {
   proposal: CodexRedemptionProposalView;
   journal: RedemptionJournal;
-  runtimeIdentity: { canonicalPath: string; version: string; fileIdentity: string; schemaHash: string };
+  runtimeIdentity: CodexRuntimeIdentity;
   session: CodexRedemptionSession;
   timer: NodeJS.Timeout;
   cleanupPromise: Promise<void> | null;
@@ -245,9 +246,9 @@ export class CodexRedemptionService implements CodexRedemptionController {
   private readonly newIdempotencyKey: () => string;
   private readonly schedule: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   private readonly clearScheduled: (timer: NodeJS.Timeout) => void;
-    private readonly auditSink: CodexRedemptionAuditSink;
-    private readonly recovery: CodexRedemptionRecoveryManager | null;
-    private active: ActiveProposal | null = null;
+  private readonly auditSink: CodexRedemptionAuditSink;
+  private readonly recovery: CodexRedemptionRecoveryManager | null;
+  private active: ActiveProposal | null = null;
 
   constructor(dependencies: CodexRedemptionServiceDependencies) {
     this.qualifier = dependencies.qualifier;
@@ -260,29 +261,30 @@ export class CodexRedemptionService implements CodexRedemptionController {
     this.schedule = dependencies.schedule ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearScheduled = dependencies.clearScheduled ?? clearTimeout;
     this.auditSink = dependencies.auditSink ?? defaultCodexRedemptionAuditSink;
-      this.recovery = CodexRedemptionRecoveryManager.create({
-        qualifier: this.qualifier,
-        startSession: (options) => this.startSession(options as CodexRedemptionSessionOptions),
-        gatewayForSession: (session) => this.gatewayForSession(session),
-        store: this.store,
-        now: this.now,
-        auditSink: this.auditSink,
-        schedule: this.schedule,
-        clearScheduled: this.clearScheduled,
-      });
-    }
+    this.recovery = CodexRedemptionRecoveryManager.create({
+      qualifier: this.qualifier,
+      startSession: (options) => this.startSession(options as CodexRedemptionSessionOptions),
+      gatewayForSession: (session) => this.gatewayForSession(session),
+      store: this.store,
+      now: this.now,
+      auditSink: this.auditSink,
+      schedule: this.schedule,
+      clearScheduled: this.clearScheduled,
+    });
+  }
 
-    async initializeRecovery(codexBin: string): Promise<void> {
-      await this.recovery?.initialize(codexBin);
-    }
+  async initializeRecovery(codexBin: string): Promise<void> {
+    await this.recovery?.initialize(codexBin);
+  }
 
-    async prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
-      if (input.singleWorkspaceAttested !== true) {
-        throw new CodexRedemptionServiceError("redemption-attestation-required");
-      }
-      if (this.active) throw new CodexRedemptionServiceError("redemption-proposal-active");
-      await this.recovery?.initialize(codexBin);
-      if (this.recovery?.isRecoveryRequired()) throw new CodexRedemptionServiceError("redemption-recovery-required");
+  async prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
+    if (input.singleWorkspaceAttested !== true) {
+      throw new CodexRedemptionServiceError("redemption-attestation-required");
+    }
+    if (this.active) throw new CodexRedemptionServiceError("redemption-proposal-active");
+    await this.recovery?.initialize(codexBin);
+    const recoveryBlock = this.recovery?.blockingErrorCode();
+    if (recoveryBlock) throw new CodexRedemptionServiceError(recoveryBlock);
     const qualification = await this.qualifier.qualify(codexBin);
     if (qualification.status !== "qualified") throw new CodexRedemptionServiceError(qualification.code);
     if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
@@ -303,6 +305,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
     try {
       session = await this.startSession({
         codexBin: qualification.identity.canonicalPath,
+        codexHome: qualification.identity.codexStateRoot,
         onNotification: (notification) => {
           if (notification.method === "account/updated") invalidate();
         },
@@ -404,8 +407,11 @@ export class CodexRedemptionService implements CodexRedemptionController {
     }
   }
 
-    async state(proposalId: string): Promise<CodexRedemptionStateView> {
-      if (this.recovery?.isRecoveryRequired()) return publicRedemptionView(recoveryRequiredPrivateState());
+  async state(proposalId: string): Promise<CodexRedemptionStateView> {
+    const recoveryBlock = this.recovery?.blockingErrorCode();
+    if (recoveryBlock) return publicRedemptionView(
+      recoveryBlock === "redemption-private-state-unavailable" ? unavailablePrivateState() : recoveryRequiredPrivateState(),
+    );
     const activeAtStart = this.active?.proposal.proposalId === proposalId ? this.active : null;
     let cleanupObserved = activeAtStart?.cleanupPromise ?? null;
     if (cleanupObserved) {
@@ -450,9 +456,12 @@ export class CodexRedemptionService implements CodexRedemptionController {
     return publicRedemptionView(privateState);
   }
 
-    async currentState(): Promise<CodexRedemptionCurrentView> {
-      if (this.recovery?.isRecoveryRequired()) return publicRedemptionView(recoveryRequiredPrivateState());
-      const privateState = await this.store.readPublicState();
+  async currentState(): Promise<CodexRedemptionCurrentView> {
+    const recoveryBlock = this.recovery?.blockingErrorCode();
+    if (recoveryBlock) return publicRedemptionView(
+      recoveryBlock === "redemption-private-state-unavailable" ? unavailablePrivateState() : recoveryRequiredPrivateState(),
+    );
+    const privateState = await this.store.readPublicState();
     if (privateState.status !== "prepared") return publicRedemptionView(privateState);
     const checked = await this.state(privateState.proposalId);
     if (checked.status !== "prepared") return checked;
@@ -478,14 +487,14 @@ export class CodexRedemptionService implements CodexRedemptionController {
     if (!active) {
       let state = await this.store.readPublicState(proposalId);
       if (
-          codexBin && this.recovery &&
+        codexBin && this.recovery &&
         (state.status === "terminal" || (state.status === "processing" && state.phase === "terminal"))
       ) {
-          await this.recovery.initialize(codexBin);
+        await this.recovery.initialize(codexBin);
         state = await this.store.readPublicState(proposalId);
       }
-        if (state.status === "ambiguous" && codexBin && this.recovery) {
-          return await this.recovery.retry(proposalId, codexBin).catch((error) => { throw serviceError(error); });
+      if (state.status === "ambiguous" && codexBin && this.recovery) {
+        return await this.recovery.retry(proposalId, codexBin).catch((error) => { throw serviceError(error); });
       }
       if (state.status === "terminal" || state.status === "ambiguous" || state.status === "processing") {
         return publicRedemptionView(state);
@@ -563,10 +572,10 @@ export class CodexRedemptionService implements CodexRedemptionController {
     return await active.consumePromise;
   }
 
-    async close(): Promise<void> {
-      this.recovery?.close();
-      if (this.active) await this.cleanup(this.active);
-    }
+  async close(): Promise<void> {
+    this.recovery?.close();
+    if (this.active) await this.cleanup(this.active);
+  }
 
   private async cleanup(active: ActiveProposal): Promise<void> {
     active.cleanupPromise ??= (async () => {

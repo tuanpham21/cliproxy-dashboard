@@ -18,7 +18,7 @@ test("renders every stable read-only state with fixed text", async ({ page }) =>
   const states = [
     ["signed-out", "Sign in to Codex with ChatGPT, then refresh.", "codex_auth_required"],
     ["runtime-unavailable", "Codex runtime unavailable. Check the configured Codex path.", "codex_runtime_unavailable"],
-    ["runtime-incompatible", "Installed Codex does not expose the required usage-reset methods.", "codex_runtime_incompatible"],
+    ["runtime-incompatible", "Codex runtime or local state does not meet the required safety contract.", "codex_runtime_incompatible"],
     ["identity-incomplete", "Codex did not provide an email and known plan. Redemption is unavailable.", "codex_identity_incomplete"],
     ["read-failed", "Couldn’t load Codex app usage.", "codex_read_failed"],
     ["usage-ready-no-resets", "No earned usage limit resets available.", null],
@@ -45,6 +45,26 @@ test("renders every stable read-only state with fixed text", async ({ page }) =>
     await expect(panel).toBeVisible();
     await expect(panel).toContainText(message);
   }
+});
+
+test("shows unavailable Windows private state and removes reset controls", async ({ page }) => {
+  await mockApi(page, view({
+    state: "usage-ready-resets-available",
+    resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+  }), 200, false, {
+    initialActiveRedemption: {
+      status: "unavailable",
+      code: "redemption-private-state-unavailable",
+      message: "Private reset redemption state is unavailable on this host.",
+    },
+  });
+  await page.goto("/");
+
+  const panel = page.locator("#codex-app-account-content");
+  await expect(panel.getByRole("alert")).toContainText(
+    "Private reset redemption state is unavailable on this host.",
+  );
+  await expect(panel.getByRole("button", { name: "Review reset" })).toHaveCount(0);
 });
 
 test("keeps credit context visible and offers generic proposal selection without consume", async ({ page }) => {

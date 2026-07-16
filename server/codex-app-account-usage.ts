@@ -13,7 +13,7 @@ export interface CodexAccountUsageReader {
 
 export type CodexAppAccountUsageServiceDependencies = {
   qualifier: CodexRuntimeQualifierLike;
-  startSession?: (options: { codexBin: string }) => Promise<CodexAppServerSession>;
+  startSession?: (options: { codexBin: string; codexHome: string }) => Promise<CodexAppServerSession>;
   now?: () => Date;
 };
 
@@ -86,7 +86,7 @@ function resetCredit(credit: CodexResetCredit): CodexAccountResetCredit {
 
 export class CodexAppAccountUsageService implements CodexAccountUsageReader {
   private readonly qualifier: CodexRuntimeQualifierLike;
-  private readonly startSession: (options: { codexBin: string }) => Promise<CodexAppServerSession>;
+  private readonly startSession: (options: { codexBin: string; codexHome: string }) => Promise<CodexAppServerSession>;
   private readonly now: () => Date;
 
   constructor(dependencies: CodexAppAccountUsageServiceDependencies) {
@@ -101,30 +101,33 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
     if (qualification.status === "runtime-unavailable") {
       return emptyView("runtime-unavailable", qualification.code, qualification.message, runtime);
     }
-      if (qualification.status === "runtime-incompatible") {
-        return emptyView("runtime-incompatible", qualification.code, qualification.message, runtime);
-      }
+    if (qualification.status === "runtime-incompatible") {
+      return emptyView("runtime-incompatible", qualification.code, qualification.message, runtime);
+    }
+    if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
+      return emptyView(
+        "runtime-incompatible",
+        "codex_runtime_incompatible",
+        "Codex runtime or local state does not meet the required safety contract.",
+        { status: "incompatible", version: null },
+      );
+    }
+
+    let session: CodexAppServerSession | null = null;
+    try {
+      session = await this.startSession({
+        codexBin: qualification.identity.canonicalPath,
+        codexHome: qualification.identity.codexStateRoot,
+      });
       if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
         return emptyView(
           "runtime-incompatible",
           "codex_runtime_incompatible",
-          "Installed Codex does not expose the required usage-reset methods.",
+          "Codex runtime or local state does not meet the required safety contract.",
           { status: "incompatible", version: null },
         );
       }
-
-      let session: CodexAppServerSession | null = null;
-      try {
-        session = await this.startSession({ codexBin: qualification.identity.canonicalPath });
-        if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
-          return emptyView(
-            "runtime-incompatible",
-            "codex_runtime_incompatible",
-            "Installed Codex does not expose the required usage-reset methods.",
-            { status: "incompatible", version: null },
-          );
-        }
-        const gateway = new CodexAccountGateway(session);
+      const gateway = new CodexAccountGateway(session);
       const accountRead = await gateway.readAccount();
       if (accountRead.requiresOpenAiAuth || accountRead.account === null) {
         return emptyView(
@@ -140,20 +143,20 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
         accountRead.account.type === "chatgpt"
           ? { email: accountRead.account.email, plan: accountRead.account.plan }
           : { email: null, plan: null };
-        const observedAt = this.now().toISOString();
-        const credits = (rateLimits.resetCredits?.credits ?? []).map(resetCredit);
-        credits.sort((left, right) => {
-          const leftAvailable = left.availability === "available";
-          const rightAvailable = right.availability === "available";
-          if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
-          if (!leftAvailable) return 0;
-          if (left.expiresAt === null && right.expiresAt === null) return (left.id ?? "").localeCompare(right.id ?? "");
-          if (left.expiresAt === null) return 1;
-          if (right.expiresAt === null) return -1;
-          return left.expiresAt.localeCompare(right.expiresAt) || (left.id ?? "").localeCompare(right.id ?? "");
-        });
-        credits.splice(128);
-        const availableCount = rateLimits.resetCredits?.availableCount ?? 0;
+      const observedAt = this.now().toISOString();
+      const credits = (rateLimits.resetCredits?.credits ?? []).map(resetCredit);
+      credits.sort((left, right) => {
+        const leftAvailable = left.availability === "available";
+        const rightAvailable = right.availability === "available";
+        if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
+        if (!leftAvailable) return 0;
+        if (left.expiresAt === null && right.expiresAt === null) return (left.id ?? "").localeCompare(right.id ?? "");
+        if (left.expiresAt === null) return 1;
+        if (right.expiresAt === null) return -1;
+        return left.expiresAt.localeCompare(right.expiresAt) || (left.id ?? "").localeCompare(right.id ?? "");
+      });
+      credits.splice(128);
+      const availableCount = rateLimits.resetCredits?.availableCount ?? 0;
       const selectionMode =
         availableCount <= 0
           ? "none"

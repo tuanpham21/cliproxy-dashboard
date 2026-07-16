@@ -16,7 +16,7 @@ import {
     type RedemptionJournalPhase,
   type TerminalRedemptionTombstone,
 } from "./codex-redemption-journal.js";
-import type { CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
+import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
 import { finalizeRedemptionOutcome } from "./codex-redemption-terminal-finalize.js";
 import { CodexRedemptionConsumeError } from "./codex-redemption-consume-error.js";
 export { CodexRedemptionConsumeError } from "./codex-redemption-consume-error.js";
@@ -61,7 +61,7 @@ export type ConsumeDependencies = {
   gateway: ConsumeGateway;
   store: ConsumeStore;
   qualifier: CodexRuntimeQualifierLike;
-  runtimeIdentity: { canonicalPath: string; version: string; fileIdentity: string; schemaHash: string };
+  runtimeIdentity: CodexRuntimeIdentity;
   now: () => Date;
   auditSink: CodexRedemptionAuditSink;
   codexVersion: string;

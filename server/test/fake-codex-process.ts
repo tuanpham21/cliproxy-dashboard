@@ -14,6 +14,8 @@ export class FakeCodexProcess extends EventEmitter {
   readonly stderr = new PassThrough();
   readonly writes: Array<Record<string, unknown>> = [];
   killed = false;
+  closeOnKill = true;
+  readonly killSignals: Array<NodeJS.Signals | number | undefined> = [];
   writeHandler: FakeCodexWriteHandler | null = null;
   throwOnWrite: Error | null = null;
 
@@ -27,7 +29,7 @@ export class FakeCodexProcess extends EventEmitter {
       }
       const message = JSON.parse(data.trim()) as Record<string, unknown>;
       this.writes.push(message);
-        const acknowledge = (error?: Error | null) => queueMicrotask(() => callback?.(error));
+      const acknowledge = (error?: Error | null) => queueMicrotask(() => callback?.(error));
       this.writeHandler?.(message, acknowledge, this);
       if (!this.writeHandler) acknowledge();
       return true;
@@ -35,15 +37,17 @@ export class FakeCodexProcess extends EventEmitter {
     end: vi.fn(() => {
       this.stdin.destroyed = true;
     }),
-    });
+  });
 
-  kill(): boolean {
-    if (this.killed) return true;
+  kill(signal?: NodeJS.Signals | number): boolean {
     this.killed = true;
-    queueMicrotask(() => {
-      this.emit("exit", 0, null);
-      this.emit("close", 0, null);
-    });
+    this.killSignals.push(signal);
+    if (this.closeOnKill) {
+      queueMicrotask(() => {
+        this.emit("exit", 0, null);
+        this.emit("close", 0, null);
+      });
+    }
     return true;
   }
 

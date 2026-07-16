@@ -4,8 +4,10 @@ const spawnCalls = vi.hoisted((): Array<{ command: string; args: string[]; optio
 
 export { spawnCalls };
 
-vi.mock("node:child_process", () => {
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
   return {
+    ...actual,
     spawn: (command: string, args: string[], options: any) => {
       spawnCalls.push({ command, args, options });
       if (command === "pkill" || command === "powershell.exe") {

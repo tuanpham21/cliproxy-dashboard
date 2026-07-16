@@ -38,11 +38,11 @@ describe("Codex app account panel", () => {
         view({
           state: "runtime-incompatible",
           errorCode: "codex_runtime_incompatible",
-          message: "Installed Codex does not expose the required usage-reset methods.",
+          message: "Codex runtime or local state does not meet the required safety contract.",
           runtime: { status: "incompatible", version: null },
         }),
       ),
-    ).toContain("Installed Codex does not expose the required usage-reset methods.");
+    ).toContain('role="alert"');
     expect(
       renderCodexAppAccount(
         view({ state: "read-failed", errorCode: "codex_read_failed", message: "Couldn’t load Codex app usage." }),
@@ -177,6 +177,22 @@ describe("Codex app account panel", () => {
     }));
 
     expect(html).toContain("Reset redemption recovery state requires local repair.");
+    expect(html).toContain('role="alert"');
+    expect(html).not.toContain('data-codex-redemption-prepare');
+  });
+
+  it("shows an alert and no reset controls when Windows private state privacy is unavailable", () => {
+    const html = renderCodexAppAccount(view({
+      state: "usage-ready-resets-available",
+      resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
+      activeRedemption: {
+        status: "unavailable",
+        code: "redemption-private-state-unavailable",
+        message: "Private reset redemption state is unavailable on this host.",
+      },
+    }));
+
+    expect(html).toContain("Private reset redemption state is unavailable on this host.");
     expect(html).toContain('role="alert"');
     expect(html).not.toContain('data-codex-redemption-prepare');
   });

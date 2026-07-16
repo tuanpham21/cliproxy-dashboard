@@ -46,6 +46,7 @@ export async function recoverTerminalJournal(dependencies: {
   qualifier: CodexRuntimeQualifierLike;
   startSession: (options: {
     codexBin: string;
+    codexHome: string;
     onNotification: (notification: { method: string; params?: unknown }) => Promise<void> | void;
     onUnexpectedProcessClose: () => Promise<void> | void;
   }) => Promise<TerminalRecoverySession>;
@@ -86,6 +87,7 @@ export async function recoverTerminalJournal(dependencies: {
         let invalidated = false;
         session = await dependencies.startSession({
           codexBin: qualification.identity.canonicalPath,
+          codexHome: qualification.identity.codexStateRoot,
           onNotification: (notification) => {
             if (notification.method === "account/updated") invalidated = true;
           },

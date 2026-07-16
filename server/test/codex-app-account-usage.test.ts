@@ -14,6 +14,7 @@ const qualified: CodexRuntimeQualification = {
   version: "codex-cli 0.144.4",
   identity: {
     canonicalPath: "/opt/codex/bin/codex",
+    codexStateRoot: "/home/operator/.codex",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4",
     schemaHash: "a".repeat(64),
@@ -106,7 +107,10 @@ describe("Codex app account usage service", () => {
         ],
       },
     });
-    expect(startSession).toHaveBeenCalledWith({ codexBin: "/opt/codex/bin/codex" });
+    expect(startSession).toHaveBeenCalledWith({
+      codexBin: "/opt/codex/bin/codex",
+      codexHome: "/home/operator/.codex",
+    });
     expect(child.killed).toBe(true);
   });
 
@@ -270,7 +274,7 @@ describe("Codex app account usage service", () => {
     const incompatible = await serviceHarness({}, {
       status: "runtime-incompatible",
       code: "codex_runtime_incompatible",
-      message: "Installed Codex does not expose the required usage-reset methods.",
+      message: "Codex runtime or local state does not meet the required safety contract.",
     });
     await expect(incompatible.service.read("codex")).resolves.toMatchObject({
       state: "runtime-incompatible",

@@ -37,6 +37,7 @@ describe("Codex app-server session", () => {
 
     const session = await startCodexAppServerSession({
       codexBin: "C:\\Program Files\\Codex\\codex.exe",
+      codexHome: "C:\\Users\\Operator Name\\Codex State",
       spawnProcess,
       platform: "win32",
       onNotification,
@@ -57,7 +58,12 @@ describe("Codex app-server session", () => {
     expect(spawnProcess).toHaveBeenCalledWith(
       "C:\\Program Files\\Codex\\codex.exe",
       ["app-server", "--stdio"],
-      expect.objectContaining({ shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }),
+      expect.objectContaining({
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: expect.objectContaining({ CODEX_HOME: "C:\\Users\\Operator Name\\Codex State" }),
+      }),
     );
     expect(child.killed).toBe(true);
   });
@@ -91,6 +97,25 @@ describe("Codex app-server session", () => {
     await expect(request).rejects.not.toHaveProperty("message", expect.stringContaining("provider-secret-body"));
     expect(events).toEqual(["dispatch-intent", "dispatched"]);
     await session.close();
+  });
+
+  it("fails cleanup when the direct app-server child survives TERM and KILL deadlines", async () => {
+    const child = new FakeCodexProcess();
+    child.closeOnKill = false;
+    initializeFakeCodexProcess(child, () => {});
+    const session = await startCodexAppServerSession({
+      codexBin: "C:\\Program Files\\Codex\\codex.exe",
+      spawnProcess: createFakeCodexSpawn(child),
+      platform: "win32",
+      closeTimeoutMs: 1,
+    });
+
+    await expect(session.close()).rejects.toMatchObject({
+      name: "CodexAppServerTransportError",
+      code: "process-close-timeout",
+      writeDisposition: "not-written",
+    });
+    expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
   it("classifies pre-write barriers as not written and write-call failures as possibly written", async () => {

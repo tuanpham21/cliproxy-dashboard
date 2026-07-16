@@ -34,7 +34,7 @@ function isRecoveryCoordinatorStore(store: unknown): store is RecoveryCoordinato
 export class CodexRedemptionRecoveryManager {
   private readonly coordinator: CodexRedemptionRecoveryCoordinator;
   private timer: NodeJS.Timeout | null = null;
-  private recoveryRequired = false;
+  private recoveryBlock: "redemption-private-state-unavailable" | "redemption-recovery-required" | null = null;
   private generation = 0;
 
   private constructor(private readonly dependencies: RecoveryManagerDependencies & { store: RecoveryCoordinatorStore }) {
@@ -56,14 +56,19 @@ export class CodexRedemptionRecoveryManager {
       state = await this.coordinator.initialize(codexBin);
     } catch (error) {
       if (generation === this.generation) {
-        this.recoveryRequired = true;
+        this.recoveryBlock = "redemption-recovery-required";
         this.scheduleRecheck(codexBin, RECOVERY_RECHECK_MS, generation);
       }
       throw error;
     }
     if (generation !== this.generation) return;
-    this.recoveryRequired = state.status === "recovery-required";
-    if (state.status === "processing" || state.status === "retry-finalizing" || state.status === "recovery-required") {
+    this.recoveryBlock = state.status === "unavailable"
+      ? "redemption-private-state-unavailable"
+      : state.status === "recovery-required" ? "redemption-recovery-required" : null;
+    if (
+      state.status === "processing" || state.status === "retry-finalizing" ||
+      state.status === "unavailable" || state.status === "recovery-required"
+    ) {
       this.scheduleRecheck(codexBin, RECOVERY_RECHECK_MS, generation);
       return;
     }
@@ -81,8 +86,8 @@ export class CodexRedemptionRecoveryManager {
     }, delayMs);
   }
 
-  isRecoveryRequired(): boolean {
-    return this.recoveryRequired;
+  blockingErrorCode(): "redemption-private-state-unavailable" | "redemption-recovery-required" | null {
+    return this.recoveryBlock;
   }
 
   async retry(proposalId: string, codexBin: string): Promise<CodexRedemptionCurrentView> {

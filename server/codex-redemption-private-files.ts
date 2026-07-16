@@ -9,6 +9,7 @@ const READ_ONLY_NO_FOLLOW = constants.O_RDONLY | ((constants as { O_NOFOLLOW?: n
 export type PrivateFileContext = {
   rootPath: string;
   platform: NodeJS.Platform;
+  verifyPrivatePath?: (filePath: string) => Promise<void>;
 };
 
 function isInsideRoot(root: string, candidate: string): boolean {
@@ -27,6 +28,7 @@ export async function readPrivateFile(
   maximumBytes: number,
   publicationCandidatePattern?: RegExp,
 ): Promise<Buffer> {
+  await context.verifyPrivatePath?.(filePath);
   const handle = await open(filePath, READ_ONLY_NO_FOLLOW);
   try {
     const metadata = await handle.stat();

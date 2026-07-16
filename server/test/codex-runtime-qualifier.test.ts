@@ -159,14 +159,51 @@ async function qualifierHarness(
     platform: process.platform,
     tempParent,
     runCommand,
+    verifyCodexStateRoot: vi.fn(async () => root),
+    windowsSecurity: {
+      secureCreatedDirectory: vi.fn(async () => {}),
+      verifyPrivatePath: vi.fn(async () => {}),
+    },
     ...dependencyOverrides,
   });
   return { qualifier, binaryPath, canonicalBinaryPath: await realpath(binaryPath), calls, root, tempParent, runCommand };
 }
 
 describe("Codex runtime qualifier", () => {
-    it("qualifies one exact PATH-resolved binary and caches by file identity", async () => {
-    const { qualifier, canonicalBinaryPath, calls, tempParent } = await qualifierHarness();
+  it("fails closed before Codex execution when current-user Codex state privacy cannot be verified", async () => {
+    const verifyCodexStateRoot = vi.fn(async () => { throw new Error("shared CODEX_HOME"); });
+    const harness = await qualifierHarness(undefined, { verifyCodexStateRoot });
+
+    await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({ status: "runtime-incompatible" });
+    expect(verifyCodexStateRoot).toHaveBeenCalledTimes(1);
+    expect(harness.runCommand).not.toHaveBeenCalled();
+    await harness.qualifier.close();
+  });
+
+  it("rechecks Codex state privacy when validating a cached runtime identity", async () => {
+    const verifyCodexStateRoot = vi.fn(async () => "/private/codex-home");
+    const harness = await qualifierHarness(undefined, { verifyCodexStateRoot });
+    const qualification = await harness.qualifier.qualify(harness.binaryPath);
+    if (qualification.status !== "qualified") throw new Error("fixture did not qualify");
+    verifyCodexStateRoot.mockRejectedValueOnce(new Error("CODEX_HOME became shared"));
+
+    await expect(harness.qualifier.matchesIdentity(qualification.identity)).resolves.toBe(false);
+    await harness.qualifier.close();
+  });
+
+  it("rejects a runtime identity when the canonical Codex state root changes", async () => {
+    const verifyCodexStateRoot = vi.fn(async () => "/private/codex-home-a");
+    const harness = await qualifierHarness(undefined, { verifyCodexStateRoot });
+    const qualification = await harness.qualifier.qualify(harness.binaryPath);
+    if (qualification.status !== "qualified") throw new Error("fixture did not qualify");
+    verifyCodexStateRoot.mockResolvedValue("/private/codex-home-b");
+
+    await expect(harness.qualifier.matchesIdentity(qualification.identity)).resolves.toBe(false);
+    await harness.qualifier.close();
+  });
+
+  it("qualifies one exact PATH-resolved binary and caches by file identity", async () => {
+    const { qualifier, canonicalBinaryPath, calls, tempParent, root } = await qualifierHarness();
 
     const first = await qualifier.qualify("codex");
     const second = await qualifier.qualify("codex");
@@ -174,47 +211,47 @@ describe("Codex runtime qualifier", () => {
     expect(first).toMatchObject({
       status: "qualified",
       version: "codex-cli 0.144.4",
-      identity: { canonicalPath: canonicalBinaryPath },
+      identity: { canonicalPath: canonicalBinaryPath, codexStateRoot: root },
     });
     expect(first.status === "qualified" ? first.identity.schemaHash : "").toMatch(/^[a-f0-9]{64}$/);
     expect(second).toEqual(first);
-      expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(3);
     expect(calls[0]).toEqual({ binary: canonicalBinaryPath, args: ["--version"], timeoutMs: 15_000 });
-      expect(calls[1].binary).toBe(canonicalBinaryPath);
-      expect(calls[1].args.slice(0, 3)).toEqual(["app-server", "generate-json-schema", "--out"]);
-      expect(calls[1].args).not.toContain("--experimental");
-      expect(calls[2]).toEqual({ binary: canonicalBinaryPath, args: ["--version"], timeoutMs: 15_000 });
+    expect(calls[1].binary).toBe(canonicalBinaryPath);
+    expect(calls[1].args.slice(0, 3)).toEqual(["app-server", "generate-json-schema", "--out"]);
+    expect(calls[1].args).not.toContain("--experimental");
+    expect(calls[2]).toEqual({ binary: canonicalBinaryPath, args: ["--version"], timeoutMs: 15_000 });
     expect(await readdir(tempParent)).toEqual([]);
-      await qualifier.close();
+    await qualifier.close();
+  });
+
+  it("coalesces concurrent qualification for one binary identity", async () => {
+    let releaseVersion!: () => void;
+    const versionGate = new Promise<void>((resolve) => {
+      releaseVersion = resolve;
     });
-
-    it("coalesces concurrent qualification for one binary identity", async () => {
-      let releaseVersion!: () => void;
-      const versionGate = new Promise<void>((resolve) => {
-        releaseVersion = resolve;
-      });
-      const runCommand = vi.fn(async (_binary: string, args: string[]) => {
-        if (args[0] === "--version") {
-          await versionGate;
-          return { stdout: "codex-cli 0.144.4\n" };
-        }
-        await writeSchemaBundle(args[args.indexOf("--out") + 1]);
-        return { stdout: "" };
-      });
-      const harness = await qualifierHarness(undefined, { runCommand });
-      const firstPromise = harness.qualifier.qualify(harness.binaryPath);
-      const secondPromise = harness.qualifier.qualify(harness.binaryPath);
-      await vi.waitFor(() => expect(runCommand).toHaveBeenCalledTimes(1));
-      releaseVersion();
-      const [first, second] = await Promise.all([firstPromise, secondPromise]);
-
-      expect(first).toMatchObject({ status: "qualified" });
-      expect(second).toEqual(first);
-      expect(runCommand).toHaveBeenCalledTimes(2);
-      await harness.qualifier.close();
+    const runCommand = vi.fn(async (_binary: string, args: string[]) => {
+      if (args[0] === "--version") {
+        await versionGate;
+        return { stdout: "codex-cli 0.144.4\n" };
+      }
+      await writeSchemaBundle(args[args.indexOf("--out") + 1]);
+      return { stdout: "" };
     });
+    const harness = await qualifierHarness(undefined, { runCommand });
+    const firstPromise = harness.qualifier.qualify(harness.binaryPath);
+    const secondPromise = harness.qualifier.qualify(harness.binaryPath);
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalledTimes(1));
+    releaseVersion();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
 
-    it("invalidates cache when the binary file identity changes", async () => {
+    expect(first).toMatchObject({ status: "qualified" });
+    expect(second).toEqual(first);
+    expect(runCommand).toHaveBeenCalledTimes(2);
+    await harness.qualifier.close();
+  });
+
+  it("invalidates cache when the binary file identity changes", async () => {
     const { qualifier, binaryPath, calls } = await qualifierHarness();
     await qualifier.qualify(binaryPath);
     await writeFile(binaryPath, "#!/bin/sh\n# changed\n");
@@ -222,49 +259,49 @@ describe("Codex runtime qualifier", () => {
 
     await qualifier.qualify(binaryPath);
     expect(calls).toHaveLength(4);
-      await qualifier.close();
-    });
+    await qualifier.close();
+  });
 
-    it("rejects a binary changed during cached version recheck", async () => {
-      const harness = await qualifierHarness();
-      await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({ status: "qualified" });
-      let mutated = false;
-      harness.runCommand.mockImplementation(async (binary: string, args: string[]) => {
-        if (args[0] === "--version") {
-          if (!mutated) {
-            mutated = true;
-            await writeFile(binary, "#!/bin/sh\n# replaced during version recheck\n");
-          }
-          return { stdout: "codex-cli 0.144.4\n" };
+  it("rejects a binary changed during cached version recheck", async () => {
+    const harness = await qualifierHarness();
+    await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({ status: "qualified" });
+    let mutated = false;
+    harness.runCommand.mockImplementation(async (binary: string, args: string[]) => {
+      if (args[0] === "--version") {
+        if (!mutated) {
+          mutated = true;
+          await writeFile(binary, "#!/bin/sh\n# replaced during version recheck\n");
         }
-        return { stdout: "" };
-      });
-
-      await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({
-        status: "runtime-incompatible",
-      });
-      await harness.qualifier.close();
+        return { stdout: "codex-cli 0.144.4\n" };
+      }
+      return { stdout: "" };
     });
 
-    it("fails incompatible when the binary changes during qualification", async () => {
-      const runCommand = vi.fn(async (binary: string, args: string[]) => {
-        if (args[0] === "--version") {
-          await writeFile(binary, "#!/bin/sh\n# replaced during qualification\n");
-          return { stdout: "codex-cli 0.144.4\n" };
-        }
-        return { stdout: "" };
-      });
-      const { qualifier, binaryPath } = await qualifierHarness(undefined, { runCommand });
-
-      await expect(qualifier.qualify(binaryPath)).resolves.toMatchObject({
-        status: "runtime-incompatible",
-        code: "codex_runtime_incompatible",
-      });
-      expect(runCommand).toHaveBeenCalledTimes(1);
-      await qualifier.close();
+    await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({
+      status: "runtime-incompatible",
     });
+    await harness.qualifier.close();
+  });
 
-    it("fails incompatible for missing schema contract, symlink output, or size overflow", async () => {
+  it("fails incompatible when the binary changes during qualification", async () => {
+    const runCommand = vi.fn(async (binary: string, args: string[]) => {
+      if (args[0] === "--version") {
+        await writeFile(binary, "#!/bin/sh\n# replaced during qualification\n");
+        return { stdout: "codex-cli 0.144.4\n" };
+      }
+      return { stdout: "" };
+    });
+    const { qualifier, binaryPath } = await qualifierHarness(undefined, { runCommand });
+
+    await expect(qualifier.qualify(binaryPath)).resolves.toMatchObject({
+      status: "runtime-incompatible",
+      code: "codex_runtime_incompatible",
+    });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    await qualifier.close();
+  });
+
+  it("fails incompatible for missing schema contract, symlink output, or size overflow", async () => {
     const missing = await qualifierHarness(async (outDir) => {
       await writeSchemaBundle(outDir, schemaFixtures(["reset", "nothingToReset", "noCredit"]));
     });
@@ -274,15 +311,17 @@ describe("Codex runtime qualifier", () => {
     });
     await missing.qualifier.close();
 
-    const symlinked = await qualifierHarness(async (outDir) => {
-      const target = path.join(outDir, "target.json");
-      await writeFile(target, "{}");
-      await symlink(target, path.join(outDir, "unexpected-link.json"));
-    });
-    await expect(symlinked.qualifier.qualify(symlinked.binaryPath)).resolves.toMatchObject({
-      status: "runtime-incompatible",
-    });
-    await symlinked.qualifier.close();
+    if (process.platform !== "win32") {
+      const symlinked = await qualifierHarness(async (outDir) => {
+        const target = path.join(outDir, "target.json");
+        await writeFile(target, "{}");
+        await symlink(target, path.join(outDir, "unexpected-link.json"));
+      });
+      await expect(symlinked.qualifier.qualify(symlinked.binaryPath)).resolves.toMatchObject({
+        status: "runtime-incompatible",
+      });
+      await symlinked.qualifier.close();
+    }
 
     const oversized = await qualifierHarness(
       async (outDir) => writeFile(path.join(outDir, REQUIRED_SCHEMA_FILES[0]), "x".repeat(129)),
@@ -291,42 +330,40 @@ describe("Codex runtime qualifier", () => {
     await expect(oversized.qualifier.qualify(oversized.binaryPath)).resolves.toMatchObject({
       status: "runtime-incompatible",
     });
-      await oversized.qualifier.close();
-    });
+    await oversized.qualifier.close();
+  });
 
   it("enforces entry, bundle-size, and hard-link caps", async () => {
-      const tooManyEntries = await qualifierHarness(
-        async (outDir) => {
-          await writeFile(path.join(outDir, "extra-a.json"), "{}");
-          await writeFile(path.join(outDir, "extra-b.json"), "{}");
-        },
-        { limits: { maxEntries: 6, maxTotalBytes: 16 * 1024 * 1024, maxInspectedFileBytes: 2 * 1024 * 1024 } },
-      );
-      await expect(tooManyEntries.qualifier.qualify(tooManyEntries.binaryPath)).resolves.toMatchObject({
-        status: "runtime-incompatible",
-      });
-      await tooManyEntries.qualifier.close();
-
-      const tooLarge = await qualifierHarness(undefined, {
-        limits: { maxEntries: 4096, maxTotalBytes: 32, maxInspectedFileBytes: 2 * 1024 * 1024 },
-      });
-      await expect(tooLarge.qualifier.qualify(tooLarge.binaryPath)).resolves.toMatchObject({
-        status: "runtime-incompatible",
-      });
-      await tooLarge.qualifier.close();
-
-      if (process.platform !== "win32") {
-        const hardLinked = await qualifierHarness(async (outDir) => {
-          const target = path.join(outDir, "hard-link-target.json");
-          await writeFile(target, "{}");
-          await link(target, path.join(outDir, "hard-link.json"));
-        });
-        await expect(hardLinked.qualifier.qualify(hardLinked.binaryPath)).resolves.toMatchObject({
-          status: "runtime-incompatible",
-        });
-        await hardLinked.qualifier.close();
-      }
+    const tooManyEntries = await qualifierHarness(
+      async (outDir) => {
+        await writeFile(path.join(outDir, "extra-a.json"), "{}");
+        await writeFile(path.join(outDir, "extra-b.json"), "{}");
+      },
+      { limits: { maxEntries: 6, maxTotalBytes: 16 * 1024 * 1024, maxInspectedFileBytes: 2 * 1024 * 1024 } },
+    );
+    await expect(tooManyEntries.qualifier.qualify(tooManyEntries.binaryPath)).resolves.toMatchObject({
+      status: "runtime-incompatible",
     });
+    await tooManyEntries.qualifier.close();
+
+    const tooLarge = await qualifierHarness(undefined, {
+      limits: { maxEntries: 4096, maxTotalBytes: 32, maxInspectedFileBytes: 2 * 1024 * 1024 },
+    });
+    await expect(tooLarge.qualifier.qualify(tooLarge.binaryPath)).resolves.toMatchObject({
+      status: "runtime-incompatible",
+    });
+    await tooLarge.qualifier.close();
+
+    const hardLinked = await qualifierHarness(async (outDir) => {
+      const target = path.join(outDir, "hard-link-target.json");
+      await writeFile(target, "{}");
+      await link(target, path.join(outDir, "hard-link.json"));
+    });
+    await expect(hardLinked.qualifier.qualify(hardLinked.binaryPath)).resolves.toMatchObject({
+      status: "runtime-incompatible",
+    });
+    await hardLinked.qualifier.close();
+  });
 
     it("rejects method and outcome enums that live outside exact contract nodes", async () => {
       const decoy = await qualifierHarness(async (outDir) => {

@@ -23,8 +23,9 @@ export type RecoveryInitializationState =
   | { status: "prepared"; journal: PreparedRedemptionJournal }
   | { status: "processing"; journal: RedemptionJournal }
   | { status: "retry-finalizing" }
-    | { status: "ambiguous"; journal: RedemptionJournal }
+  | { status: "ambiguous"; journal: RedemptionJournal }
   | { status: "terminal"; journal: RedemptionJournal }
+  | { status: "unavailable" }
   | { status: "recovery-required" };
 
 export type PrivateRecoveryDependencies = {

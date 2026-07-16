@@ -1,12 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
 import {
   chmod,
-  lstat,
   link,
-  mkdir,
   open,
-  realpath,
   unlink,
 } from "node:fs/promises";
 import os from "node:os";
@@ -23,12 +19,15 @@ import {
   type RedemptionSelection,
 } from "./codex-redemption-journal.js";
 import type { CodexRuntimeIdentity } from "./codex-runtime-qualifier.js";
-import { readPrivateFile as readPrivateFileChecked } from "./codex-redemption-private-files.js";
 import {
-    publishTombstone as publishTerminalTombstone,
-    readTombstone as readTerminalTombstone,
-    removeActiveJournal,
-    transitionJournal as transitionPrivateJournal,
+  readPrivateFile as readPrivateFileChecked,
+  type PrivateFileContext,
+} from "./codex-redemption-private-files.js";
+import {
+  publishTombstone as publishTerminalTombstone,
+  readTombstone as readTerminalTombstone,
+  removeActiveJournal,
+  transitionJournal as transitionPrivateJournal,
 } from "./codex-redemption-private-terminal.js";
 import {
   publicStateFromJournal,
@@ -37,6 +36,15 @@ import {
   unavailablePrivateState,
 } from "./codex-redemption-public-state.js";
 import { CodexRedemptionPrivateStateError } from "./codex-redemption-private-error.js";
+import {
+  createPrivateFilesystemCapability,
+  type PrivateFilesystemCapability,
+} from "./codex-redemption-private-filesystem.js";
+import { ensureWritablePrivateRoot, verifyExistingPrivateRoot } from "./codex-redemption-private-root.js";
+import {
+  createWindowsPrivatePathSecurity,
+  type WindowsPrivatePathSecurity,
+} from "./codex-redemption-windows-security.js";
 import {
   accountCheckDigest,
   runtimePathDigest,
@@ -66,7 +74,6 @@ const ACTIVE_JOURNAL_FILE = "active-redemption.json";
 const JOURNAL_MAX_BYTES = 16 * 1024;
 const DIGEST_KEY_CANDIDATE = /^\.account-digest\.[A-Za-z0-9-]+\.candidate$/;
 const ACTIVE_JOURNAL_CANDIDATE = /^\.active-redemption\.[A-Za-z0-9-]+\.candidate$/;
-const READ_ONLY_NO_FOLLOW = constants.O_RDONLY | ((constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0);
 export type AcquirePreparedRedemptionInput = {
   proposalId: string;
   idempotencyKey: string;
@@ -87,6 +94,9 @@ export type PrivateRedemptionStateStoreDependencies = {
   randomBytes?: (size: number) => Buffer;
   randomUUID?: () => string;
   now?: () => number;
+  windowsSecurity?: WindowsPrivatePathSecurity;
+  filesystem?: PrivateFilesystemCapability;
+  windowsLocalApplicationData?: () => string;
 };
 function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
@@ -97,39 +107,55 @@ function isEexist(error: unknown): boolean {
 export type { RecoveryInitializationState } from "./codex-redemption-private-recovery.js";
 export class PrivateRedemptionStateStore {
   private readonly platform: NodeJS.Platform;
-  private readonly rootPath: string;
-  private readonly rootAnchorPath: string;
+  private rootPath: string;
+  private rootAnchorPath: string;
   private readonly currentOwner: () => Promise<ProcessOwner>;
   private readonly inspectOwner: (owner: ProcessOwner) => Promise<ProcessOwnerStatus>;
   private readonly randomBytes: (size: number) => Buffer;
   private readonly randomUUID: () => string;
   private readonly now: () => number;
+  private readonly windowsSecurity?: WindowsPrivatePathSecurity;
+  private readonly filesystem: PrivateFilesystemCapability;
+  private rootResolutionFailed: boolean;
+  private readonly retryRootResolution: (() => string) | null;
 
   constructor(dependencies: PrivateRedemptionStateStoreDependencies = {}) {
     const env = dependencies.env ?? process.env;
     const homedir = dependencies.homedir ?? os.homedir;
-    this.platform = dependencies.platform ?? process.platform;
-    this.rootPath = dependencies.rootPathForTests ?? resolveFixedRoot(
-      this.platform,
-      env,
-      homedir,
-    );
     const home = homedir();
+    this.platform = dependencies.platform ?? process.platform;
+    const resolveRoot = () => resolveFixedRoot(this.platform, env, homedir, dependencies.windowsLocalApplicationData);
+    this.retryRootResolution = this.platform === "win32" && !dependencies.rootPathForTests ? resolveRoot : null;
+    let rootResolutionFailed = false;
+    let resolvedRootPath = dependencies.rootPathForTests;
+    if (resolvedRootPath === undefined) {
+      try {
+        resolvedRootPath = resolveRoot();
+      } catch {
+        resolvedRootPath = path.join(home, ".cliproxy-dashboard-private-state-unavailable");
+        rootResolutionFailed = true;
+      }
+    }
+    this.rootPath = resolvedRootPath;
+    this.rootResolutionFailed = rootResolutionFailed;
     this.rootAnchorPath = dependencies.rootAnchorForTests
       ?? (this.platform === "linux" && env.XDG_STATE_HOME && path.isAbsolute(env.XDG_STATE_HOME)
         ? env.XDG_STATE_HOME
-        : this.platform === "win32" && env.LOCALAPPDATA && path.win32.isAbsolute(env.LOCALAPPDATA)
-          ? env.LOCALAPPDATA
+        : this.platform === "win32" && !dependencies.rootPathForTests && !this.rootResolutionFailed
+          ? path.win32.dirname(path.win32.dirname(this.rootPath))
           : home);
     this.currentOwner = dependencies.currentOwner ?? (() => currentProcessOwner(this.platform));
     this.inspectOwner = dependencies.inspectOwner ?? ((owner) => inspectProcessOwner(this.platform, owner));
     this.randomBytes = dependencies.randomBytes ?? randomBytes;
     this.randomUUID = dependencies.randomUUID ?? randomUUID;
     this.now = dependencies.now ?? Date.now;
+    this.windowsSecurity = dependencies.windowsSecurity ?? (this.platform === "win32" ? createWindowsPrivatePathSecurity() : undefined);
+    this.filesystem = dependencies.filesystem ?? createPrivateFilesystemCapability({ platform: this.platform });
   }
   async acquirePrepared(input: AcquirePreparedRedemptionInput): Promise<PreparedRedemptionJournal> {
     this.assertSupportedPlatform();
     const canonicalRoot = await this.ensureWritableRoot();
+    await this.qualifyFilesystem();
     const activePath = path.join(this.rootPath, ACTIVE_JOURNAL_FILE);
     const existing = await this.readOptionalJournal(activePath, canonicalRoot);
     if (existing.kind === "invalid") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
@@ -141,12 +167,19 @@ export class PrivateRedemptionStateStore {
       throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
     }
     const claimState = await retryClaimState(this.retryClaimDependencies(canonicalRoot));
-    if (claimState !== "missing") throw new CodexRedemptionPrivateStateError(
-      claimState === "active" ? "redemption-proposal-active" : "redemption-recovery-required",
-    );
+    if (claimState !== "missing") {
+      throw new CodexRedemptionPrivateStateError(
+        claimState === "active" ? "redemption-proposal-active" : "redemption-recovery-required",
+      );
+    }
 
     const key = await this.readDigestKey(canonicalRoot, true);
-    const owner = await this.currentOwner();
+    let owner: ProcessOwner;
+    try {
+      owner = await this.currentOwner();
+    } catch {
+      throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
+    }
     if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !owner.processStartIdentity) {
       throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
     }
@@ -157,11 +190,15 @@ export class PrivateRedemptionStateStore {
       proposalId: input.proposalId,
       ownerNonce,
       owner,
-        accountCheckDigest: accountCheckDigest(key, input.proposalId, input.accountCheck.email, input.accountCheck.plan),
+      accountCheckDigest: accountCheckDigest(key, input.proposalId, input.accountCheck.email, input.accountCheck.plan),
       idempotencyKey: input.idempotencyKey,
       selection: input.selection,
       runtimeIdentity: {
-          canonicalPathDigest: runtimePathDigest(key, input.runtimeIdentity.canonicalPath),
+        canonicalPathDigest: runtimePathDigest(
+          key,
+          input.runtimeIdentity.canonicalPath,
+          input.runtimeIdentity.codexStateRoot,
+        ),
         version: input.runtimeIdentity.version,
         fileIdentity: input.runtimeIdentity.fileIdentity,
         schemaHash: input.runtimeIdentity.schemaHash,
@@ -184,7 +221,7 @@ export class PrivateRedemptionStateStore {
   }
   async releasePrepared(proposalId: string, ownerNonce: string): Promise<void> {
     this.assertSupportedPlatform();
-    const canonicalRoot = await this.verifyExistingRoot();
+    const canonicalRoot = await this.verifyMutableRoot();
     const activePath = path.join(this.rootPath, ACTIVE_JOURNAL_FILE);
     const existing = await this.readOptionalJournal(activePath, canonicalRoot);
     if (existing.kind === "missing") throw new CodexRedemptionPrivateStateError("redemption-proposal-not-found");
@@ -201,7 +238,7 @@ export class PrivateRedemptionStateStore {
   }
   async releaseTerminal(proposalId: string, ownerNonce: string, auditEventId: string): Promise<void> {
     this.assertSupportedPlatform();
-    const canonicalRoot = await this.verifyExistingRoot();
+    const canonicalRoot = await this.verifyMutableRoot();
     const activePath = path.join(this.rootPath, ACTIVE_JOURNAL_FILE);
     const existing = await this.readOptionalJournal(activePath, canonicalRoot);
     const tombstone = await this.readTombstone(proposalId);
@@ -217,12 +254,12 @@ export class PrivateRedemptionStateStore {
   }
   async transitionJournal(proposalId: string, ownerNonce: string, expectedPhase: RedemptionJournalPhase, next: RedemptionJournal): Promise<RedemptionJournal> {
     this.assertSupportedPlatform();
-    const canonicalRoot = await this.verifyExistingRoot();
-      const existing = await this.readOptionalJournal(path.join(this.rootPath, ACTIVE_JOURNAL_FILE), canonicalRoot);
-      if (existing.kind !== "journal") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-      return await transitionPrivateJournal(
-        this.terminalDependencies(canonicalRoot), proposalId, ownerNonce, expectedPhase, existing.journal, next,
-      );
+    const canonicalRoot = await this.verifyMutableRoot();
+    const existing = await this.readOptionalJournal(path.join(this.rootPath, ACTIVE_JOURNAL_FILE), canonicalRoot);
+    if (existing.kind !== "journal") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
+    return await transitionPrivateJournal(
+      this.terminalDependencies(canonicalRoot), proposalId, ownerNonce, expectedPhase, existing.journal, next,
+    );
   }
   async readJournal(proposalId: string, ownerNonce: string): Promise<RedemptionJournal | null> {
     this.assertSupportedPlatform();
@@ -244,19 +281,21 @@ export class PrivateRedemptionStateStore {
     return verifyRecoveryDigests(key, journal, evidence);
   }
   async initializeRecovery(): Promise<RecoveryInitializationState> {
-    this.assertSupportedPlatform();
-    return await initializePrivateRecovery({
-      rootPath: this.rootPath,
-      now: this.now,
-      randomUUID: this.randomUUID,
-      inspectOwner: this.inspectOwner,
-      verifyExistingRoot: () => this.verifyExistingRoot(),
-      readOptionalJournal: (activePath, canonicalRoot) => this.readOptionalJournal(activePath, canonicalRoot),
-      readOptionalKey: (canonicalRoot) => this.readOptionalKey(canonicalRoot),
-      transitionJournal: (proposalId, ownerNonce, expectedPhase, next) =>
-        this.transitionJournal(proposalId, ownerNonce, expectedPhase, next),
-      readPrivateFile: (filePath, canonicalRoot, minimumBytes, maximumBytes) =>
-        this.readPrivateFile(filePath, canonicalRoot, minimumBytes, maximumBytes),
+    this.retryUnavailableRoot();
+    try {
+      this.assertSupportedPlatform();
+      return await initializePrivateRecovery({
+        rootPath: this.rootPath,
+        now: this.now,
+        randomUUID: this.randomUUID,
+        inspectOwner: this.inspectOwner,
+        verifyExistingRoot: () => this.verifyMutableRoot(),
+        readOptionalJournal: (activePath, canonicalRoot) => this.readOptionalJournal(activePath, canonicalRoot),
+        readOptionalKey: (canonicalRoot) => this.readOptionalKey(canonicalRoot),
+        transitionJournal: (proposalId, ownerNonce, expectedPhase, next) =>
+          this.transitionJournal(proposalId, ownerNonce, expectedPhase, next),
+        readPrivateFile: (filePath, canonicalRoot, minimumBytes, maximumBytes) =>
+          this.readPrivateFile(filePath, canonicalRoot, minimumBytes, maximumBytes),
         syncDirectory: () => this.syncDirectory(),
         recoverRetryClaim: (canonicalRoot) => recoverPrivateRetryClaim(this.retryClaimDependencies(canonicalRoot)),
         readTombstone: (proposalId) => this.readTombstone(proposalId),
@@ -264,30 +303,34 @@ export class PrivateRedemptionStateStore {
           this.rootPath, this.now(), (proposalId) => this.readTombstone(proposalId), () => this.syncDirectory(),
         ),
       });
+    } catch (error) {
+      if (error instanceof CodexRedemptionPrivateStateError && error.code === "redemption-private-state-unavailable") {
+        return { status: "unavailable" };
+      }
+      throw error;
+    }
   }
   async claimAmbiguousRetry(proposalId: string): Promise<RetryClaimResult> {
     this.assertSupportedPlatform();
-    const canonicalRoot = await this.verifyExistingRoot();
+    const canonicalRoot = await this.verifyMutableRoot();
     if (await this.readOptionalKey(canonicalRoot) !== "valid") throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
     return await claimPrivateAmbiguousRetry(this.retryClaimDependencies(canonicalRoot), proposalId);
   }
   async releaseRetryClaim(proposalId: string, claimOwnerNonce: string): Promise<void> {
     this.assertSupportedPlatform();
-    const canonicalRoot = await this.verifyExistingRoot();
+    const canonicalRoot = await this.verifyMutableRoot();
     await releasePrivateRetryClaim(this.retryClaimDependencies(canonicalRoot), proposalId, claimOwnerNonce);
   }
   async publishTombstone(tombstone: TerminalRedemptionTombstone): Promise<void> {
-      this.assertSupportedPlatform();
-      const canonicalRoot = await this.verifyExistingRoot();
-      await publishTerminalTombstone(this.terminalDependencies(canonicalRoot), tombstone);
+    this.assertSupportedPlatform();
+    const canonicalRoot = await this.verifyMutableRoot();
+    await publishTerminalTombstone(this.terminalDependencies(canonicalRoot), tombstone);
   }
   async readTombstone(proposalId: string): Promise<TerminalRedemptionTombstone | null> {
-      if (this.platform === "win32") return null;
-      const canonicalRoot = await this.verifyExistingRoot();
-      return await readTerminalTombstone(this.terminalDependencies(canonicalRoot), proposalId);
+    const canonicalRoot = await this.verifyExistingRoot();
+    return await readTerminalTombstone(this.terminalDependencies(canonicalRoot), proposalId);
   }
   async readPublicState(proposalId?: string): Promise<PublicPrivateRedemptionState> {
-    if (this.platform === "win32") return unavailablePrivateState();
     let canonicalRoot: string;
     try {
       canonicalRoot = await this.verifyExistingRoot();
@@ -333,75 +376,45 @@ export class PrivateRedemptionStateStore {
     const publicTombstone = tombstone && Date.parse(tombstone.expiresAt) > this.now() ? tombstone : null;
     return publicStateFromJournal(existing.journal, publicTombstone);
   }
-
+  private retryUnavailableRoot(): void {
+    if (!this.rootResolutionFailed || !this.retryRootResolution) return;
+    try {
+      this.rootPath = this.retryRootResolution();
+      this.rootAnchorPath = path.win32.dirname(path.win32.dirname(this.rootPath));
+      this.rootResolutionFailed = false;
+    } catch {}
+  }
   private assertSupportedPlatform(): void {
-    if (this.platform === "win32") {
+    if (this.rootResolutionFailed || (this.platform !== "darwin" && this.platform !== "linux" && this.platform !== "win32")) {
       throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
     }
   }
 
   private async ensureWritableRoot(): Promise<string> {
-    await this.assertNoSymlinkAncestors();
-    await mkdir(this.rootPath, { recursive: true, mode: 0o700 });
-    let handle;
-    try {
-      handle = await open(this.rootPath, READ_ONLY_NO_FOLLOW);
-      const metadata = await handle.stat();
-      if (!metadata.isDirectory() || (typeof process.getuid === "function" && metadata.uid !== process.getuid())) {
-        throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-      }
-      await handle.chmod(0o700);
-    } catch (error) {
-      if (error instanceof CodexRedemptionPrivateStateError) throw error;
-      throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    } finally {
-      await handle?.close();
-    }
-    return await this.verifyExistingRoot();
-  }
-  private async assertNoSymlinkAncestors(): Promise<void> {
-    const relative = path.relative(this.rootAnchorPath, this.rootPath);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    }
-    try {
-      const anchorMetadata = await lstat(this.rootAnchorPath);
-      if (!anchorMetadata.isDirectory() || anchorMetadata.isSymbolicLink()) {
-        throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-      }
-    } catch (error) {
-      if (isEnoent(error)) return;
-      if (error instanceof CodexRedemptionPrivateStateError) throw error;
-      throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    }
-    let current = this.rootAnchorPath;
-    for (const segment of relative.split(path.sep)) {
-      current = path.join(current, segment);
-      try {
-        const metadata = await lstat(current);
-        if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-          throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-        }
-      } catch (error) {
-        if (isEnoent(error)) return;
-        if (error instanceof CodexRedemptionPrivateStateError) throw error;
-        throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-      }
-    }
+    if (this.rootResolutionFailed) throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
+    return await ensureWritablePrivateRoot(this.rootContext());
   }
   private async verifyExistingRoot(): Promise<string> {
-    await this.assertNoSymlinkAncestors();
-    const metadata = await lstat(this.rootPath);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-    }
-    if (this.platform !== "win32") {
-      if ((metadata.mode & 0o777) !== 0o700) throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-      if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
-        throw new CodexRedemptionPrivateStateError("redemption-recovery-required");
-      }
-    }
-    return await realpath(this.rootPath);
+    if (this.rootResolutionFailed) throw new CodexRedemptionPrivateStateError("redemption-private-state-unavailable");
+    return await verifyExistingPrivateRoot(this.rootContext());
+  }
+  private async verifyMutableRoot(): Promise<string> {
+    const canonicalRoot = await this.verifyExistingRoot();
+    await this.qualifyFilesystem();
+    return canonicalRoot;
+  }
+  private rootContext() {
+    return {
+      platform: this.platform,
+      rootPath: this.rootPath,
+      rootAnchorPath: this.rootAnchorPath,
+      windowsSecurity: this.windowsSecurity,
+    };
+  }
+  private async qualifyFilesystem(): Promise<void> {
+    await this.filesystem.qualifyRoot(this.rootPath, async (filePath) => {
+      if (this.platform === "win32") await this.windowsSecurity!.verifyPrivatePath(filePath, false);
+    });
   }
   private async readDigestKey(canonicalRoot: string, createIfMissing: boolean): Promise<Buffer> {
     const keyPath = path.join(this.rootPath, DIGEST_KEY_FILE);
@@ -474,7 +487,7 @@ export class PrivateRedemptionStateStore {
     publicationCandidatePattern?: RegExp,
   ): Promise<Buffer> {
     return await readPrivateFileChecked(
-      { rootPath: this.rootPath, platform: this.platform },
+      this.privateFileContext(),
       filePath,
       canonicalRoot,
       minimumBytes,
@@ -489,13 +502,13 @@ export class PrivateRedemptionStateStore {
   ): Promise<{ kind: "missing" } | { kind: "invalid" } | { kind: "journal"; journal: RedemptionJournal }> {
     let content: Buffer;
     try {
-          content = await this.readPrivateFile(
-            activePath,
-            canonicalRoot,
-            2,
-            JOURNAL_MAX_BYTES,
-            ACTIVE_JOURNAL_CANDIDATE,
-          );
+      content = await this.readPrivateFile(
+        activePath,
+        canonicalRoot,
+        2,
+        JOURNAL_MAX_BYTES,
+        ACTIVE_JOURNAL_CANDIDATE,
+      );
     } catch (error) {
       if (isEnoent(error)) return { kind: "missing" };
       return { kind: "invalid" };
@@ -548,16 +561,20 @@ export class PrivateRedemptionStateStore {
     }
   }
   private async syncDirectory(): Promise<void> {
-    const handle = await open(this.rootPath, READ_ONLY_NO_FOLLOW);
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await this.filesystem.syncDirectory(this.rootPath);
+  }
+  private privateFileContext(): PrivateFileContext {
+    return {
+      rootPath: this.rootPath,
+      platform: this.platform,
+      verifyPrivatePath: this.platform === "win32"
+        ? async (targetPath) => await this.windowsSecurity!.verifyPrivatePath(targetPath, false)
+        : undefined,
+    };
   }
   private terminalDependencies(canonicalRoot: string) {
     return {
-      context: { rootPath: this.rootPath, platform: this.platform },
+      context: this.privateFileContext(),
       canonicalRoot,
       randomUUID: this.randomUUID,
       syncDirectory: () => this.syncDirectory(),
@@ -567,7 +584,7 @@ export class PrivateRedemptionStateStore {
   }
   private retryClaimDependencies(canonicalRoot: string) {
     return {
-      context: { rootPath: this.rootPath, platform: this.platform },
+      context: this.privateFileContext(),
       canonicalRoot,
       currentOwner: this.currentOwner,
       inspectOwner: this.inspectOwner,

@@ -10,11 +10,17 @@ import {
   readdir,
   realpath,
   rm,
-  stat,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+
+import { verifyCodexStateRoot } from "./codex-state-privacy.js";
+import {
+  createWindowsPrivatePathSecurity,
+  type WindowsPrivatePathSecurity,
+} from "./codex-redemption-windows-security.js";
+import { readCodexFileIdentity, resolveCodexExecutable } from "./codex-runtime-executable.js";
 
 const REQUIRED_SCHEMA_FILES = [
   "ClientRequest.json",
@@ -28,6 +34,7 @@ const READ_ONLY_NO_FOLLOW = constants.O_RDONLY | ((constants as { O_NOFOLLOW?: n
 
 export type CodexRuntimeIdentity = {
   canonicalPath: string;
+  codexStateRoot: string;
   version: string;
   fileIdentity: string;
   schemaHash: string;
@@ -47,7 +54,7 @@ export type CodexRuntimeQualification =
   | {
       status: "runtime-incompatible";
       code: "codex_runtime_incompatible";
-      message: "Installed Codex does not expose the required usage-reset methods.";
+      message: "Codex runtime or local state does not meet the required safety contract.";
     };
 
 export interface CodexRuntimeQualifierLike {
@@ -63,11 +70,13 @@ export type CodexRuntimeQualifierLimits = {
 };
 
 export type CodexRuntimeQualifierDependencies = {
-  env?: { PATH?: string; PATHEXT?: string };
+  env?: { PATH?: string; PATHEXT?: string; CODEX_HOME?: string };
   platform?: NodeJS.Platform;
   tempParent?: string;
   runCommand?: (binary: string, args: string[], timeoutMs: number) => Promise<{ stdout: string }>;
   removeTree?: (root: string) => Promise<void>;
+  verifyCodexStateRoot?: () => Promise<string>;
+  windowsSecurity?: WindowsPrivatePathSecurity;
   limits?: CodexRuntimeQualifierLimits;
 };
 
@@ -285,11 +294,13 @@ function isInsideRoot(root: string, candidate: string): boolean {
 }
 
 export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
-  private readonly env: { PATH?: string; PATHEXT?: string };
+  private readonly env: { PATH?: string; PATHEXT?: string; CODEX_HOME?: string };
   private readonly platform: NodeJS.Platform;
   private readonly tempParent: string;
   private readonly runCommand: CodexRuntimeQualifierDependencies["runCommand"];
   private readonly removeTree: (root: string) => Promise<void>;
+  private readonly verifyCodexState: () => Promise<string>;
+  private readonly windowsSecurity: WindowsPrivatePathSecurity;
   private readonly limits: CodexRuntimeQualifierLimits;
   private readonly cache = new Map<string, Extract<CodexRuntimeQualification, { status: "qualified" }>>();
   private readonly inFlight = new Map<string, Promise<CodexRuntimeQualification>>();
@@ -301,6 +312,13 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     this.tempParent = dependencies.tempParent ?? os.tmpdir();
     this.runCommand = dependencies.runCommand ?? defaultRunCommand;
     this.removeTree = dependencies.removeTree ?? (async (root) => await rm(root, { recursive: true, force: true }));
+    this.windowsSecurity = dependencies.windowsSecurity ?? createWindowsPrivatePathSecurity();
+    this.verifyCodexState = dependencies.verifyCodexStateRoot ?? (() => verifyCodexStateRoot({
+      platform: this.platform,
+      env: this.env,
+      homedir: os.homedir,
+      windowsSecurity: this.windowsSecurity,
+    }));
     this.limits = dependencies.limits ?? DEFAULT_LIMITS;
   }
 
@@ -308,22 +326,30 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     if (this.pendingCleanup.size > 0) return this.incompatible();
     let canonicalPath: string;
     let fileIdentity: string;
+    let codexStateRoot: string;
     try {
-      canonicalPath = await this.resolveExecutable(codexBin);
-      fileIdentity = await this.readFileIdentity(canonicalPath);
+      canonicalPath = await resolveCodexExecutable(codexBin, this.platform, this.env);
+      fileIdentity = await readCodexFileIdentity(canonicalPath);
     } catch {
       return this.unavailable();
     }
-    const cacheKey = `${this.platform === "win32" ? canonicalPath.toLowerCase() : canonicalPath}|${fileIdentity}`;
+    try {
+      codexStateRoot = await this.verifyCodexState();
+    } catch {
+      return this.incompatible();
+    }
+    const cachePath = this.platform === "win32" ? canonicalPath.toLowerCase() : canonicalPath;
+    const cacheStateRoot = this.platform === "win32" ? codexStateRoot.toLowerCase() : codexStateRoot;
+    const cacheKey = `${cachePath}|${fileIdentity}|${cacheStateRoot}`;
     const cached = this.cache.get(cacheKey);
     if (cached) {
-      if (await this.matchesIdentity(cached.identity)) return cached;
+      if (await this.matchesIdentity(cached.identity, true, false)) return cached;
       this.cache.delete(cacheKey);
     }
     const running = this.inFlight.get(cacheKey);
     if (running) return running;
 
-    const operation = this.qualifyResolved(canonicalPath, fileIdentity, cacheKey);
+    const operation = this.qualifyResolved(canonicalPath, codexStateRoot, fileIdentity, cacheKey);
     this.inFlight.set(cacheKey, operation);
     try {
       return await operation;
@@ -334,6 +360,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
 
   private async qualifyResolved(
     canonicalPath: string,
+    codexStateRoot: string,
     fileIdentity: string,
     cacheKey: string,
   ): Promise<CodexRuntimeQualification> {
@@ -343,7 +370,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
       const versionResult = await this.runCommand!(canonicalPath, ["--version"], 15_000);
       version = versionResult.stdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
       if (!version || Buffer.byteLength(version, "utf8") > 256) throw new Error("invalid version");
-      if (!(await this.matchesIdentity({ canonicalPath, version: "", fileIdentity, schemaHash: "" }, false))) {
+      if (!(await this.matchesIdentity({ canonicalPath, codexStateRoot, version: "", fileIdentity, schemaHash: "" }, false, false))) {
         identityChanged = true;
         throw new Error("runtime changed");
       }
@@ -357,7 +384,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     try {
       schemaRoot = await mkdtemp(path.join(this.tempParent, "cliproxy-codex-schema-"));
       await this.verifyPrivateDirectory(schemaRoot);
-      if (!(await this.matchesIdentity({ canonicalPath, version, fileIdentity, schemaHash: "" }, false))) {
+      if (!(await this.matchesIdentity({ canonicalPath, codexStateRoot, version, fileIdentity, schemaHash: "" }, false, false))) {
         throw new Error("runtime changed");
       }
       await this.runCommand!(
@@ -365,14 +392,14 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
         ["app-server", "generate-json-schema", "--out", schemaRoot],
         15_000,
       );
-      if (!(await this.matchesIdentity({ canonicalPath, version, fileIdentity, schemaHash: "" }, false))) {
+      if (!(await this.matchesIdentity({ canonicalPath, codexStateRoot, version, fileIdentity, schemaHash: "" }, false, false))) {
         throw new Error("runtime changed");
       }
       const schemaHash = await this.inspectSchemaRoot(schemaRoot);
       result = {
         status: "qualified",
         version,
-        identity: { canonicalPath, version, fileIdentity, schemaHash },
+        identity: { canonicalPath, codexStateRoot, version, fileIdentity, schemaHash },
       };
     } catch {
       result = this.incompatible();
@@ -390,16 +417,22 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     return result;
   }
 
-  async matchesIdentity(identity: CodexRuntimeIdentity, verifyVersion = true): Promise<boolean> {
+  async matchesIdentity(identity: CodexRuntimeIdentity, verifyVersion = true, verifyState = true): Promise<boolean> {
     try {
+      if (verifyState) {
+        const codexStateRoot = await this.verifyCodexState();
+        const expectedState = this.platform === "win32" ? identity.codexStateRoot.toLowerCase() : identity.codexStateRoot;
+        const actualState = this.platform === "win32" ? codexStateRoot.toLowerCase() : codexStateRoot;
+        if (actualState !== expectedState) return false;
+      }
       const canonical = await realpath(identity.canonicalPath);
       const expected = this.platform === "win32" ? identity.canonicalPath.toLowerCase() : identity.canonicalPath;
       const actual = this.platform === "win32" ? canonical.toLowerCase() : canonical;
-      if (actual !== expected || (await this.readFileIdentity(canonical)) !== identity.fileIdentity) return false;
+      if (actual !== expected || (await readCodexFileIdentity(canonical)) !== identity.fileIdentity) return false;
       if (!verifyVersion) return true;
       const result = await this.runCommand!(canonical, ["--version"], 15_000);
       const version = result.stdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
-      return version === identity.version && (await this.matchesIdentity(identity, false));
+      return version === identity.version && (await this.matchesIdentity(identity, false, false));
     } catch {
       return false;
     }
@@ -428,56 +461,13 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     return {
       status: "runtime-incompatible",
       code: "codex_runtime_incompatible",
-      message: "Installed Codex does not expose the required usage-reset methods.",
+      message: "Codex runtime or local state does not meet the required safety contract.",
     };
   }
 
-  private async resolveExecutable(codexBin: string): Promise<string> {
-    const pathApi = this.platform === "win32" ? path.win32 : path;
-    const containsSeparator = codexBin.includes("/") || codexBin.includes("\\");
-    const candidates: string[] = [];
-    if (pathApi.isAbsolute(codexBin) || containsSeparator) {
-      candidates.push(pathApi.resolve(codexBin));
-    } else {
-        const separator = this.platform === "win32" ? ";" : path.delimiter;
-        const extensions =
-          this.platform === "win32"
-            ? [
-                "",
-                ...(this.env.PATHEXT ?? ".EXE")
-                  .split(";")
-                  .map((extension) => extension.toLowerCase())
-                  .filter((extension) => extension === ".exe" || extension === ".com"),
-              ]
-            : [""];
-        for (const directory of (this.env.PATH ?? "").split(separator).filter(Boolean)) {
-          for (const extension of extensions) candidates.push(pathApi.join(directory, `${codexBin}${extension}`));
-        }
-      }
-      for (const candidate of candidates) {
-        try {
-          if (this.platform === "win32") {
-            const extension = path.win32.extname(candidate).toLowerCase();
-            if (extension === ".cmd" || extension === ".bat" || extension === ".js") continue;
-          }
-          const canonical = await realpath(candidate);
-        const metadata = await stat(canonical);
-        if (metadata.isFile()) return canonical;
-      } catch {
-        // Try the next exact candidate.
-      }
-    }
-    throw new Error("runtime unavailable");
-  }
-
-  private async readFileIdentity(canonicalPath: string): Promise<string> {
-    const metadata = await stat(canonicalPath);
-    if (!metadata.isFile()) throw new Error("not a regular executable");
-      return `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeMs}:${metadata.ctimeMs}`;
-  }
-
   private async verifyPrivateDirectory(root: string): Promise<void> {
-    await chmod(root, 0o700);
+    if (this.platform === "win32") await this.windowsSecurity.secureCreatedDirectory(root);
+    else await chmod(root, 0o700);
     const metadata = await lstat(root);
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("invalid temp root");
     if (this.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw new Error("temp root is not private");

@@ -10,6 +10,7 @@ import {
 } from "../codex-redemption-private-state.js";
 import { transitionJournal as transitionPrivateJournal } from "../codex-redemption-private-terminal.js";
 import { makeTempRoot } from "./helpers.js";
+import { PRIVATE_STATE_TEST_PLATFORM, privateStatePlatformDependencies } from "./private-state-platform.js";
 
 const preparedInput: AcquirePreparedRedemptionInput = {
   proposalId: "p".repeat(43),
@@ -18,6 +19,7 @@ const preparedInput: AcquirePreparedRedemptionInput = {
   selection: { mode: "specific", creditId: "credit-secret-id" },
   runtimeIdentity: {
     canonicalPath: "/opt/codex/bin/codex",
+    codexStateRoot: "/home/operator/.codex",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4:5",
     schemaHash: "a".repeat(64),
@@ -30,7 +32,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
   const parent = await makeTempRoot();
   const rootPathForTests = path.join(parent, "state with spaces", "codex-reset-redemption");
   const dependencies = {
-    platform: "darwin" as const,
+    ...privateStatePlatformDependencies(),
     rootPathForTests,
     rootAnchorForTests: parent,
     currentOwner: async () => ({ pid: 2000, processStartIdentity: "boot-a:start-2000" }),
@@ -181,7 +183,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
     const { originalStore, parent, rootPathForTests } = await recoveryHarness("dead");
     await originalStore.acquirePrepared(preparedInput);
     const earlyRecovery = new PrivateRedemptionStateStore({
-      platform: "darwin",
+      ...privateStatePlatformDependencies(),
       rootPathForTests,
       rootAnchorForTests: parent,
       currentOwner: async () => ({ pid: 3000, processStartIdentity: "boot-a:start-3000" }),
@@ -267,7 +269,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
       if (staleClaim.status !== "claimed") throw new Error("stale retry claim missing");
 
       const replacementStore = new PrivateRedemptionStateStore({
-        platform: "darwin",
+        ...privateStatePlatformDependencies(),
         rootPathForTests,
         rootAnchorForTests: parent,
         currentOwner: async () => ({ pid: 3000, processStartIdentity: "boot-a:start-3000" }),
@@ -276,7 +278,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
       });
       let replacementClaim: Awaited<ReturnType<typeof replacementStore.claimAmbiguousRetry>> | null = null;
       const racingStore = new PrivateRedemptionStateStore({
-        platform: "darwin",
+        ...privateStatePlatformDependencies(),
         rootPathForTests,
         rootAnchorForTests: parent,
         currentOwner: async () => ({ pid: 4000, processStartIdentity: "boot-a:start-4000" }),
@@ -319,7 +321,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
     });
     await expect(store.claimAmbiguousRetry(prepared.proposalId)).resolves.toMatchObject({ status: "claimed" });
     const restarted = new PrivateRedemptionStateStore({
-      platform: "darwin",
+      ...privateStatePlatformDependencies(),
       rootPathForTests,
       rootAnchorForTests: parent,
       currentOwner: async () => ({ pid: 3000, processStartIdentity: "boot-a:start-3000" }),
@@ -351,7 +353,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
       await expect(claimantStore.claimAmbiguousRetry(prepared.proposalId)).resolves.toMatchObject({ status: "claimed" });
       let claimantAlive = true;
       const observerStore = new PrivateRedemptionStateStore({
-        platform: "darwin",
+        ...privateStatePlatformDependencies(),
         rootPathForTests,
         rootAnchorForTests: parent,
         currentOwner: async () => ({ pid: 3000, processStartIdentity: "boot-a:start-3000" }),
@@ -396,7 +398,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
         updatedAt: "2026-07-16T12:03:00.000Z",
       });
       const observerStore = new PrivateRedemptionStateStore({
-        platform: "darwin",
+        ...privateStatePlatformDependencies(),
         rootPathForTests,
         rootAnchorForTests: parent,
         currentOwner: async () => ({ pid: 3000, processStartIdentity: "boot-a:start-3000" }),
@@ -446,7 +448,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
       if (claim.status !== "claimed") throw new Error("retry claim missing");
       let syncCalls = 0;
       const dependencies = {
-        context: { rootPath: rootPathForTests, platform: "darwin" as const },
+        context: { rootPath: rootPathForTests, platform: PRIVATE_STATE_TEST_PLATFORM },
         canonicalRoot: await realpath(rootPathForTests),
         currentOwner: async () => ({ pid: 2000, processStartIdentity: "boot-a:start-2000" }),
         inspectOwner: async () => "alive" as const,
@@ -491,7 +493,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
       let syncCalls = 0;
 
       await expect(transitionPrivateJournal({
-        context: { rootPath: rootPathForTests, platform: "darwin" },
+        context: { rootPath: rootPathForTests, platform: PRIVATE_STATE_TEST_PLATFORM },
         canonicalRoot: await realpath(rootPathForTests),
         randomUUID: () => "transition-race",
         syncDirectory: async () => {
@@ -527,7 +529,7 @@ async function recoveryHarness(ownerStatus: "alive" | "dead" | "pid-reused" | "u
       let syncCalls = 0;
 
       await expect(transitionPrivateJournal({
-        context: { rootPath: rootPathForTests, platform: "darwin" },
+        context: { rootPath: rootPathForTests, platform: PRIVATE_STATE_TEST_PLATFORM },
         canonicalRoot: await realpath(rootPathForTests),
         randomUUID: () => "observer-cleanup-race",
         syncDirectory: async () => {

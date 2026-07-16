@@ -18,12 +18,18 @@ const proposal: CodexRedemptionProposalView = {
   selection: { mode: "specific", title: "Early reset", description: null, expiresAt: null },
 };
 
-function request(method: string, url: string, body = "", remoteAddress = "127.0.0.1"): IncomingMessage {
+function request(
+  method: string,
+  url: string,
+  body = "",
+  remoteAddress = "127.0.0.1",
+  headers = sameOriginHeaders(true),
+): IncomingMessage {
   const req = Readable.from(body ? [Buffer.from(body)] : []);
   return Object.assign(req, {
     method,
     url,
-    headers: sameOriginHeaders(true),
+    headers,
     socket: { remoteAddress },
   }) as unknown as IncomingMessage;
 }
@@ -33,14 +39,14 @@ function redemptionService() {
     prepare: vi.fn(async () => proposal),
     state: vi.fn(async () => ({ status: "not-found" as const })),
     cancel: vi.fn(async (proposalId: string) => ({ status: "cancelled" as const, proposalId })),
-      consume: vi.fn(async () => ({ status: "not-found" as const })),
-      initializeRecovery: vi.fn(async () => {}),
+    consume: vi.fn(async () => ({ status: "not-found" as const })),
+    initializeRecovery: vi.fn(async () => {}),
     currentState: vi.fn(async () => ({ status: "not-found" as const })),
     close: vi.fn(async () => {}),
   };
 }
 
-  describe("Codex reset-redemption API", () => {
+describe("Codex reset-redemption API", () => {
   it("discovers current recovery state through a side-effect-free loopback GET", async () => {
     const service = redemptionService();
     service.currentState.mockResolvedValue({
@@ -67,6 +73,29 @@ function redemptionService() {
     expect(service.currentState).toHaveBeenCalledTimes(1);
     expect(service.prepare).not.toHaveBeenCalled();
     expect(service.consume).not.toHaveBeenCalled();
+  });
+
+  it("preserves unavailable private-state diagnostics through the current-state endpoint", async () => {
+    const service = redemptionService();
+    service.currentState.mockResolvedValue({
+      status: "unavailable",
+      code: "redemption-private-state-unavailable",
+      message: "Private reset redemption state is unavailable on this host.",
+    });
+    const response = makeMockRes();
+
+    await handleApi(
+      request("GET", "/api/codex/reset-redemptions/current"),
+      response.res as ServerResponse,
+      { host: "127.0.0.1", operatorToken: TEST_OPERATOR_TOKEN, codexRedemptionService: service },
+    );
+
+    expect(response.getStatus()).toBe(200);
+    expect(response.getParsed()).toEqual({
+      status: "unavailable",
+      code: "redemption-private-state-unavailable",
+      message: "Private reset redemption state is unavailable on this host.",
+    });
   });
 
   it("prepares from the strict public body on a loopback listener and caller", async () => {
@@ -171,7 +200,7 @@ function redemptionService() {
 
     expect(response.getStatus()).toBe(200);
     expect(response.getParsed()).toMatchObject({ status: "terminal", outcome: "reset" });
-      expect(service.consume).toHaveBeenCalledWith(proposal.proposalId, "codex");
+    expect(service.consume).toHaveBeenCalledWith(proposal.proposalId, "codex");
     expect(service.prepare).not.toHaveBeenCalled();
     expect(service.cancel).not.toHaveBeenCalled();
   });
@@ -191,6 +220,68 @@ function redemptionService() {
       expect([400, 403]).toContain(response.getStatus());
     }
     expect(service.consume).not.toHaveBeenCalled();
+  });
+
+  it("enforces listener, IPv4/IPv6 caller, Origin, Host, and operator-token boundaries", async () => {
+    const service = redemptionService();
+    const validBody = JSON.stringify({ singleWorkspaceAttested: true, creditId: "credit-1" });
+    const invalidCases = [
+      {
+        req: request("POST", "/api/codex/reset-redemptions/proposals", validBody, "127.0.0.1", sameOriginHeaders(false)),
+        host: "127.0.0.1",
+      },
+      {
+        req: request("POST", "/api/codex/reset-redemptions/proposals", validBody, "127.0.0.1", {
+          ...sameOriginHeaders(true),
+          "x-cliproxy-dashboard-token": "wrong-token",
+        }),
+        host: "127.0.0.1",
+      },
+      {
+        req: request("POST", "/api/codex/reset-redemptions/proposals", validBody, "127.0.0.1", {
+          ...sameOriginHeaders(true),
+          origin: "http://attacker.invalid",
+        }),
+        host: "127.0.0.1",
+      },
+      {
+        req: request("POST", "/api/codex/reset-redemptions/proposals", validBody),
+        host: "0.0.0.0",
+      },
+      {
+        req: request("POST", "/api/codex/reset-redemptions/proposals", validBody, "127.0.0.1", {
+          host: "attacker.invalid:60948",
+          origin: "http://attacker.invalid:60948",
+          "sec-fetch-site": "same-origin",
+          "x-cliproxy-dashboard-token": TEST_OPERATOR_TOKEN,
+        }),
+        host: "127.0.0.1",
+      },
+    ];
+    for (const testCase of invalidCases) {
+      const response = makeMockRes();
+      await handleApi(testCase.req, response.res as ServerResponse, {
+        host: testCase.host,
+        operatorToken: TEST_OPERATOR_TOKEN,
+        codexRedemptionService: service,
+      });
+      expect(response.getStatus()).toBe(403);
+    }
+    expect(service.prepare).not.toHaveBeenCalled();
+
+    const ipv6Response = makeMockRes();
+    await handleApi(
+      request("POST", "/api/codex/reset-redemptions/proposals", validBody, "::1", {
+        host: "[::1]:60948",
+        origin: "http://[::1]:60948",
+        "sec-fetch-site": "same-origin",
+        "x-cliproxy-dashboard-token": TEST_OPERATOR_TOKEN,
+      }),
+      ipv6Response.res as ServerResponse,
+      { host: "::1", operatorToken: TEST_OPERATOR_TOKEN, codexRedemptionService: service },
+    );
+    expect(ipv6Response.getStatus()).toBe(201);
+    expect(service.prepare).toHaveBeenCalledTimes(1);
   });
 
   it("rejects oversized, cross-boundary, and client-supplied server fields before service work", async () => {

@@ -7,9 +7,11 @@ import { PrivateRedemptionStateStore } from "../codex-redemption-private-state.j
 import { CodexRedemptionService } from "../codex-redemption-service.js";
 import type { TerminalRedemptionTombstone } from "../codex-redemption-journal.js";
 import { makeTempRoot } from "./helpers.js";
+import { privateStatePlatformDependencies } from "./private-state-platform.js";
 
 const runtimeIdentity = {
   canonicalPath: "/opt/codex/bin/codex",
+  codexStateRoot: "/home/operator/.codex",
   version: "codex-cli 0.144.4",
   fileIdentity: "1:2:3:4:5",
   schemaHash: "a".repeat(64),
@@ -31,7 +33,7 @@ async function terminalRecoveryHarness(reconciliation: "pending" | "reconciled")
   const parent = await makeTempRoot();
   const rootPathForTests = path.join(parent, "state with spaces", "codex-reset-redemption");
   const dependencies = {
-    platform: "darwin" as const,
+    ...privateStatePlatformDependencies(),
     rootPathForTests,
     rootAnchorForTests: parent,
     currentOwner: async () => ({ pid: 1000, processStartIdentity: "boot-a:start-1000" }),

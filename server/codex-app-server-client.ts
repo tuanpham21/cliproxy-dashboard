@@ -12,6 +12,7 @@ export type CodexAppServerTransportErrorCode =
   | "protocol-error"
   | "stdout-overflow"
   | "timeout"
+  | "process-close-timeout"
   | "session-closed";
 
 export class CodexAppServerTransportError extends Error {
@@ -45,11 +46,12 @@ export class CodexAppServerRpcError extends Error {
 export type CodexAppServerSpawn = (
   command: string,
   args: string[],
-  options: { shell: false; windowsHide: boolean; stdio: ["pipe", "pipe", "pipe"] },
+  options: { shell: false; windowsHide: boolean; stdio: ["pipe", "pipe", "pipe"]; env: NodeJS.ProcessEnv },
 ) => ChildProcessWithoutNullStreams;
 
 export type CodexAppServerSessionOptions = {
   codexBin: string;
+  codexHome?: string;
   spawnProcess?: CodexAppServerSpawn;
   platform?: NodeJS.Platform;
   requestTimeoutMs?: number;
@@ -149,6 +151,7 @@ export class CodexAppServerSession {
         shell: false,
         windowsHide: (options.platform ?? process.platform) === "win32",
         stdio: ["pipe", "pipe", "pipe"],
+        env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env,
       });
     } catch {
       this.state = "failed";
@@ -441,7 +444,9 @@ export class CodexAppServerSession {
     if (!this.processClosed && !this.child.killed) this.child.kill("SIGTERM");
     if (!this.processClosed && !(await this.waitForProcessClose(this.closeTimeoutMs))) {
       this.child.kill("SIGKILL");
-      await this.waitForProcessClose(this.closeTimeoutMs);
+      if (!(await this.waitForProcessClose(this.closeTimeoutMs))) {
+        throw new CodexAppServerTransportError("process-close-timeout", "not-written");
+      }
     }
     this.child.stdout.off("data", this.onStdout);
     this.child.stderr.off("data", this.onStderr);

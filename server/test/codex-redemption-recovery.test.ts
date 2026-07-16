@@ -7,12 +7,14 @@ import { PrivateRedemptionStateStore } from "../codex-redemption-private-state.j
 import { CodexRedemptionService, type CodexRedemptionSessionOptions } from "../codex-redemption-service.js";
 import type { CodexRuntimeQualification } from "../codex-runtime-qualifier.js";
 import { makeTempRoot } from "./helpers.js";
+import { privateStatePlatformDependencies } from "./private-state-platform.js";
 
 const qualified: CodexRuntimeQualification = {
   status: "qualified",
   version: "codex-cli 0.144.4",
   identity: {
     canonicalPath: "/opt/codex/bin/codex",
+    codexStateRoot: "/home/operator/.codex",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4:5",
     schemaHash: "a".repeat(64),
@@ -35,7 +37,7 @@ async function recoveryServiceHarness(selection: { mode: "specific"; creditId: s
   const parent = await makeTempRoot();
   const rootPathForTests = path.join(parent, "state with spaces", "codex-reset-redemption");
   const common = {
-    platform: "darwin" as const,
+    ...privateStatePlatformDependencies(),
     rootPathForTests,
     rootAnchorForTests: parent,
     now: () => Date.parse("2026-07-16T12:03:00.000Z"),
@@ -245,7 +247,7 @@ describe("ambiguous reset-redemption recovery", () => {
       return { outcome: "alreadyRedeemed" as const };
     });
     const secondStore = new PrivateRedemptionStateStore({
-      platform: "darwin",
+      ...privateStatePlatformDependencies(),
       rootPathForTests: harness.rootPathForTests,
       rootAnchorForTests: harness.parent,
       currentOwner: async () => ({ pid: 3000, processStartIdentity: "boot-a:start-3000" }),
@@ -323,7 +325,7 @@ describe("prepared reset-redemption restart recovery", () => {
       let nowMs = Date.parse("2026-07-16T12:01:00.000Z");
       let ownerAlive = true;
     const originalStore = new PrivateRedemptionStateStore({
-      platform: "darwin",
+      ...privateStatePlatformDependencies(),
       rootPathForTests,
       rootAnchorForTests: parent,
       currentOwner: async () => ({ pid: 1000, processStartIdentity: "boot-a:start-1000" }),
@@ -331,7 +333,7 @@ describe("prepared reset-redemption restart recovery", () => {
       now: () => nowMs,
     });
     const restartedStore = new PrivateRedemptionStateStore({
-      platform: "darwin",
+      ...privateStatePlatformDependencies(),
       rootPathForTests,
       rootAnchorForTests: parent,
       currentOwner: async () => ({ pid: 2000, processStartIdentity: "boot-a:start-2000" }),
@@ -379,7 +381,85 @@ describe("prepared reset-redemption restart recovery", () => {
       ownerAlive = false;
       scheduledRecoveries[1].callback();
       await vi.waitFor(async () => {
-      await expect(service.currentState()).resolves.toEqual({ status: "not-found" });
+        await expect(service.currentState()).resolves.toEqual({ status: "not-found" });
+      });
+    });
+
+    it("preserves unavailable Windows private state through startup and mutation blocking", async () => {
+      const store = new PrivateRedemptionStateStore({
+        platform: "win32",
+        homedir: () => "C:\\Users\\Operator Name",
+        windowsLocalApplicationData: () => { throw new Error("PowerShell blocked"); },
+      });
+      const service = new CodexRedemptionService({
+        qualifier: {
+          qualify: vi.fn(async () => qualified),
+          matchesIdentity: vi.fn(async () => true),
+          close: vi.fn(async () => {}),
+        },
+        store,
+        schedule: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+        clearScheduled: vi.fn(),
+      });
+
+      await service.initializeRecovery("codex");
+
+      await expect(service.currentState()).resolves.toEqual({
+        status: "unavailable",
+        code: "redemption-private-state-unavailable",
+        message: "Private reset redemption state is unavailable on this host.",
+      });
+      await expect(service.prepare("codex", {
+        singleWorkspaceAttested: true,
+        selection: { mode: "generic" },
+      })).rejects.toMatchObject({ code: "redemption-private-state-unavailable" });
+      await service.close();
+    });
+
+    it("rechecks unavailable private state after five seconds and clears the block", async () => {
+      const parent = await makeTempRoot();
+      const store = new PrivateRedemptionStateStore({
+        ...privateStatePlatformDependencies(),
+        rootPathForTests: path.join(parent, "recheck-state"),
+        rootAnchorForTests: parent,
+      });
+      let available = false;
+      vi.spyOn(store, "initializeRecovery").mockImplementation(async () => (
+        available ? { status: "idle" } : { status: "unavailable" }
+      ));
+      vi.spyOn(store, "readPublicState").mockImplementation(async () => (
+        available
+          ? { status: "not-found" }
+          : {
+              status: "unavailable",
+              code: "redemption-private-state-unavailable",
+              message: "Private reset redemption state is unavailable on this host.",
+            }
+      ));
+      const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+      const service = new CodexRedemptionService({
+        qualifier: {
+          qualify: vi.fn(async () => qualified),
+          matchesIdentity: vi.fn(async () => true),
+          close: vi.fn(async () => {}),
+        },
+        store,
+        schedule: (callback, delayMs) => {
+          scheduled.push({ callback, delayMs });
+          return scheduled.length as unknown as NodeJS.Timeout;
+        },
+        clearScheduled: vi.fn(),
+      });
+
+      await service.initializeRecovery("codex");
+      expect(scheduled).toMatchObject([{ delayMs: 5_000 }]);
+      await expect(service.currentState()).resolves.toMatchObject({ status: "unavailable" });
+
+      available = true;
+      scheduled[0].callback();
+      await vi.waitFor(async () => {
+        await expect(service.currentState()).resolves.toEqual({ status: "not-found" });
+      });
+      await service.close();
     });
   });
-});

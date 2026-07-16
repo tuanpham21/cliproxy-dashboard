@@ -19,8 +19,8 @@ export function accountCheckDigest(key: Buffer, proposalId: string, email: strin
   return lengthPrefixedHmac(key, "cliproxy-dashboard/account-check/v1", [proposalId, email, plan]);
 }
 
-export function runtimePathDigest(key: Buffer, canonicalPath: string): string {
-  return lengthPrefixedHmac(key, "cliproxy-dashboard/runtime-path/v1", [canonicalPath]);
+export function runtimePathDigest(key: Buffer, canonicalPath: string, codexStateRoot: string): string {
+  return lengthPrefixedHmac(key, "cliproxy-dashboard/runtime-context/v2", [canonicalPath, codexStateRoot]);
 }
 
 export function equalDigest(left: string, right: string): boolean {
@@ -41,7 +41,7 @@ export function verifyRecoveryDigests(
     ),
     runtimeMatches: equalDigest(
       journal.runtimeIdentity.canonicalPathDigest,
-      runtimePathDigest(key, evidence.runtimeIdentity.canonicalPath),
+      runtimePathDigest(key, evidence.runtimeIdentity.canonicalPath, evidence.runtimeIdentity.codexStateRoot),
     ) && journal.runtimeIdentity.version === evidence.runtimeIdentity.version &&
       journal.runtimeIdentity.fileIdentity === evidence.runtimeIdentity.fileIdentity &&
       journal.runtimeIdentity.schemaHash === evidence.runtimeIdentity.schemaHash,

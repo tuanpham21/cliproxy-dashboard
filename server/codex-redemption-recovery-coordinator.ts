@@ -56,6 +56,7 @@ export type RecoveryCoordinatorDependencies = {
   qualifier: CodexRuntimeQualifierLike;
   startSession: (options: {
     codexBin: string;
+    codexHome: string;
     onNotification: (notification: { method: string; params?: unknown }) => Promise<void> | void;
     onUnexpectedProcessClose: () => Promise<void> | void;
   }) => Promise<RecoverySession>;
@@ -72,22 +73,22 @@ export class CodexRedemptionRecoveryCoordinator {
     const state = await this.dependencies.store.initializeRecovery();
     if (state.status === "terminal") {
       try {
-          const recovered = await recoverTerminalJournal({
+        const recovered = await recoverTerminalJournal({
           journal: state.journal,
           codexBin,
           qualifier: this.dependencies.qualifier,
           startSession: this.dependencies.startSession,
           gatewayForSession: this.dependencies.gatewayForSession,
-            store: this.dependencies.store,
-            now: this.dependencies.now,
-            auditSink: this.dependencies.auditSink,
-          });
-          if (!recovered) return { status: "recovery-required" };
-          return await this.dependencies.store.initializeRecovery();
-        } catch {
-          return { status: "recovery-required" };
-        }
+          store: this.dependencies.store,
+          now: this.dependencies.now,
+          auditSink: this.dependencies.auditSink,
+        });
+        if (!recovered) return { status: "recovery-required" };
+        return await this.dependencies.store.initializeRecovery();
+      } catch {
+        return { status: "recovery-required" };
       }
+    }
     return state;
   }
 
@@ -98,9 +99,9 @@ export class CodexRedemptionRecoveryCoordinator {
     }
     let session: RecoverySession | null = null;
     try {
-        const qualification = await this.dependencies.qualifier.qualify(codexBin);
-        if (qualification.status !== "qualified" || !(await this.dependencies.qualifier.matchesIdentity(qualification.identity))) {
-          throw new CodexRedemptionRecoveryError("codex_recovery_session_changed");
+      const qualification = await this.dependencies.qualifier.qualify(codexBin);
+      if (qualification.status !== "qualified" || !(await this.dependencies.qualifier.matchesIdentity(qualification.identity))) {
+        throw new CodexRedemptionRecoveryError("codex_recovery_session_changed");
       }
       const active = {
         journal: claim.journal,
@@ -109,6 +110,7 @@ export class CodexRedemptionRecoveryCoordinator {
       };
       session = await this.dependencies.startSession({
         codexBin: qualification.identity.canonicalPath,
+        codexHome: qualification.identity.codexStateRoot,
         onNotification: (notification) => {
           if (notification.method === "account/updated") active.invalidated = true;
         },
@@ -127,7 +129,7 @@ export class CodexRedemptionRecoveryCoordinator {
         accountCheck: { email: account.email, plan: account.plan },
         runtimeIdentity: qualification.identity,
       });
-        if (!evidence.runtimeMatches) throw new CodexRedemptionRecoveryError("codex_recovery_session_changed");
+      if (!evidence.runtimeMatches) throw new CodexRedemptionRecoveryError("codex_recovery_session_changed");
       if (!evidence.accountMatches) throw new CodexRedemptionRecoveryError("codex_recovery_account_mismatch");
       return await retryAmbiguousRedemption({
         active,

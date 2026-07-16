@@ -149,21 +149,21 @@ function readyMarkup(view: CodexAccountUsageView): string {
         : "",
       view.activeRedemption?.status === "recovery-required" || view.activeRedemption?.status === "unavailable"
         ? `<p class="codex-redemption-recovery" role="alert">${escapeHtml(view.activeRedemption.message)}</p>`
-      : view.activeRedemption?.status === "ambiguous"
+        : view.activeRedemption?.status === "ambiguous"
           ? recoveryMarkup(view.activeRedemption)
           : view.activeRedemption?.status === "processing"
             ? recoveryMarkup(view.activeRedemption)
-          : view.activeRedemption?.status === "terminal"
-            ? `<p class="codex-redemption-active" role="status">${escapeHtml(view.activeRedemption.message)}</p>`
-        : view.activeRedemption?.status === "prepared"
-          ? '<p class="codex-redemption-active" role="status">Another reset confirmation is active. Return to its original dashboard tab or wait for expiry.</p>'
-          : redemptionControls(view),
+            : view.activeRedemption?.status === "terminal"
+              ? `<p class="codex-redemption-active" role="status">${escapeHtml(view.activeRedemption.message)}</p>`
+              : view.activeRedemption?.status === "prepared"
+                ? '<p class="codex-redemption-active" role="status">Another reset confirmation is active. Return to its original dashboard tab or wait for expiry.</p>'
+                : redemptionControls(view),
   ].join("");
 }
 
 export function renderCodexAppAccount(view: CodexAccountUsageView): string {
   const messageAttributes =
-    view.state === "read-failed"
+    view.state === "read-failed" || view.state === "runtime-incompatible"
       ? ' role="alert" aria-atomic="true"'
       : ' role="status" aria-live="polite" aria-atomic="true"';
   const ready =

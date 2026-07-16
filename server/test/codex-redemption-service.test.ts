@@ -13,6 +13,7 @@ const qualified: CodexRuntimeQualification = {
   version: "codex-cli 0.144.4",
   identity: {
     canonicalPath: "/opt/codex/bin/codex",
+    codexStateRoot: "/home/operator/.codex",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4",
     schemaHash: "a".repeat(64),
