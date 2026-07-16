@@ -70,8 +70,10 @@ export type RotationDecisionInput = {
   nowMs: number;
   recentAutomaticSwitches: number[];
   observationId: string;
+  observationAt: string;
   mode: RotationMode;
   seenObservationIds?: string[];
+  evidenceWatermark?: string;
 };
 
 export type RotationDecision = {
