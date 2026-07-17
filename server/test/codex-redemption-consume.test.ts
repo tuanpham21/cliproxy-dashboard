@@ -53,7 +53,7 @@ function consumeHarness() {
   const gateway = {
     readAccount: vi.fn(async () => ({
       account: { type: "chatgpt" as const, email: "operator@example.com", plan: "pro" as const },
-      requiresOpenAiAuth: false,
+      providerRequiresOpenAiAuth: true,
     })),
     readRateLimits: vi.fn(async () => rateLimits),
     consumeResetCredit: vi.fn(async (input: {
@@ -305,7 +305,7 @@ describe("Codex reset redemption consume", () => {
     const proposal = await prepare(harness);
     harness.gateway.readAccount.mockResolvedValue({
       account: { type: "chatgpt", email: "other@example.com", plan: "pro" },
-      requiresOpenAiAuth: false,
+      providerRequiresOpenAiAuth: false,
     });
 
     await expect(harness.service.consume(proposal.proposalId)).rejects.toMatchObject({ code: "codex_account_changed" });

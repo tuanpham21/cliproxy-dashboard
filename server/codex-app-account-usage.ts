@@ -129,7 +129,7 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
       }
       const gateway = new CodexAccountGateway(session);
       const accountRead = await gateway.readAccount();
-      if (accountRead.requiresOpenAiAuth || accountRead.account === null) {
+      if (accountRead.account === null) {
         return emptyView(
           "signed-out",
           "codex_auth_required",

@@ -84,7 +84,7 @@ import {
 
       expect(spawnCalls.length).toBe(1);
       expect(spawnCalls[0].command).toBe("codex-test-bin");
-      expect(spawnCalls[0].args).toEqual(["app-server", "--stdio"]);
+      expect(spawnCalls[0].args).toEqual(["app-server", "-c", 'model_provider="openai"', "--stdio"]);
     });
 
     it("returns authRequired true when Codex rate limits read fails with authentication required", async () => {

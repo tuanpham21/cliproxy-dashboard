@@ -98,7 +98,7 @@ export async function recoverTerminalJournal(dependencies: {
         const gateway = dependencies.gatewayForSession(session);
         const accountRead = await gateway.readAccount();
         const account = accountRead.account;
-        if (!invalidated && !accountRead.requiresOpenAiAuth && account?.type === "chatgpt" && account.email && account.plan !== "unknown") {
+        if (!invalidated && account?.type === "chatgpt" && account.email && account.plan !== "unknown") {
           const evidence = await dependencies.store.verifyRecoveryEvidence(journal, {
             accountCheck: { email: account.email, plan: account.plan },
             runtimeIdentity: qualification.identity,

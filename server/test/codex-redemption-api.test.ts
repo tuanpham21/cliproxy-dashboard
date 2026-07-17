@@ -193,6 +193,7 @@ describe("Codex reset-redemption API", () => {
       response.res as ServerResponse,
       {
         host: "127.0.0.1",
+        codexBin: "codex",
         operatorToken: TEST_OPERATOR_TOKEN,
         codexRedemptionService: service,
       },

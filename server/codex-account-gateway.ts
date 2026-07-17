@@ -26,7 +26,7 @@ export type CodexAppAccount =
 
 export type CodexAccountRead = {
   account: CodexAppAccount | null;
-  requiresOpenAiAuth: boolean;
+  providerRequiresOpenAiAuth: boolean;
 };
 
 export type CodexRateLimitWindow = {
@@ -255,19 +255,19 @@ export class CodexAccountGateway {
     try {
       const value = await this.session.request<unknown>("account/read", { refreshToken: false });
       if (!isRecord(value) || typeof value.requiresOpenaiAuth !== "boolean") invalidResponse();
-      if (value.account === null) return { account: null, requiresOpenAiAuth: value.requiresOpenaiAuth };
+      if (value.account === null) return { account: null, providerRequiresOpenAiAuth: value.requiresOpenaiAuth };
       if (!isRecord(value.account) || typeof value.account.type !== "string") invalidResponse();
       if (value.account.type === "apiKey") {
-        return { account: { type: "apiKey" }, requiresOpenAiAuth: value.requiresOpenaiAuth };
+        return { account: { type: "apiKey" }, providerRequiresOpenAiAuth: value.requiresOpenaiAuth };
       }
       if (value.account.type === "amazonBedrock") {
-        return { account: { type: "amazonBedrock" }, requiresOpenAiAuth: value.requiresOpenaiAuth };
+        return { account: { type: "amazonBedrock" }, providerRequiresOpenAiAuth: value.requiresOpenaiAuth };
       }
       if (value.account.type !== "chatgpt") invalidResponse();
       const email = nullableString(value.account.email)?.trim() || null;
       return {
         account: { type: "chatgpt", email, plan: normalizePlan(value.account.planType) },
-        requiresOpenAiAuth: value.requiresOpenaiAuth,
+        providerRequiresOpenAiAuth: value.requiresOpenaiAuth,
       };
     } catch (error) {
       mapGatewayError(error);

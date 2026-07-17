@@ -317,7 +317,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
       const gateway = this.gatewayForSession(session);
       const accountRead = await gateway.readAccount();
       const account = accountRead.account;
-      if (accountRead.requiresOpenAiAuth || account === null) {
+      if (account === null) {
         throw new CodexRedemptionServiceError("codex_auth_required");
       }
       if (account.type !== "chatgpt" || !account.email || account.plan === "unknown") {

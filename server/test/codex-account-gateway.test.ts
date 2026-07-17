@@ -56,7 +56,7 @@ describe("Codex account gateway", () => {
 
     await expect(gateway.readAccount()).resolves.toEqual({
       account: { type: "chatgpt", email: "operator@example.com", plan: "pro" },
-      requiresOpenAiAuth: false,
+      providerRequiresOpenAiAuth: false,
     });
     await expect(gateway.readRateLimits()).resolves.toMatchObject({
       rateLimits: {
@@ -87,7 +87,7 @@ describe("Codex account gateway", () => {
       },
     });
 
-    await expect(gateway.readAccount()).resolves.toEqual({ account: null, requiresOpenAiAuth: true });
+    await expect(gateway.readAccount()).resolves.toEqual({ account: null, providerRequiresOpenAiAuth: true });
     await expect(gateway.readRateLimits()).resolves.toMatchObject({ resetCredits: null });
     await session.close();
   });

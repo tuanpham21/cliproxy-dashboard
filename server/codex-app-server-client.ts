@@ -87,6 +87,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 1_000;
 const DEFAULT_MAX_STDOUT_LINE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_STDERR_BYTES = 16 * 1024;
+const CODEX_APP_ACCOUNT_PROVIDER_OVERRIDE = 'model_provider="openai"';
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -147,12 +148,16 @@ export class CodexAppServerSession {
     });
     const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     try {
-      this.child = spawnProcess(options.codexBin, ["app-server", "--stdio"], {
-        shell: false,
-        windowsHide: (options.platform ?? process.platform) === "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-        env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env,
-      });
+      this.child = spawnProcess(
+        options.codexBin,
+        ["app-server", "-c", CODEX_APP_ACCOUNT_PROVIDER_OVERRIDE, "--stdio"],
+        {
+          shell: false,
+          windowsHide: (options.platform ?? process.platform) === "win32",
+          stdio: ["pipe", "pipe", "pipe"],
+          env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env,
+        },
+      );
     } catch {
       this.state = "failed";
       throw new CodexAppServerTransportError("spawn-failed", "not-written");
@@ -318,7 +323,7 @@ export class CodexAppServerSession {
       this.failTransport("protocol-error");
       return;
     }
-    if (parsed.jsonrpc !== "2.0") {
+    if (parsed.jsonrpc !== undefined && parsed.jsonrpc !== "2.0") {
       this.failTransport("protocol-error");
       return;
     }

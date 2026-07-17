@@ -122,7 +122,7 @@ export class CodexRedemptionRecoveryCoordinator {
       const gateway = this.dependencies.gatewayForSession(session);
       const accountRead = await gateway.readAccount();
       const account = accountRead.account;
-      if (active.invalidated || accountRead.requiresOpenAiAuth || !account || account.type !== "chatgpt" || !account.email || account.plan === "unknown") {
+      if (active.invalidated || !account || account.type !== "chatgpt" || !account.email || account.plan === "unknown") {
         throw new CodexRedemptionRecoveryError("codex_recovery_account_mismatch");
       }
       const evidence = await this.dependencies.store.verifyRecoveryEvidence(claim.journal, {

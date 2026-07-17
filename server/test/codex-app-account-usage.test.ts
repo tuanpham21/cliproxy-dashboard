@@ -59,7 +59,7 @@ describe("Codex app account usage service", () => {
     const { service, child, startSession } = await serviceHarness({
       "account/read": {
         account: { type: "chatgpt", email: "operator@example.com", planType: "pro" },
-        requiresOpenaiAuth: false,
+        requiresOpenaiAuth: true,
       },
       "account/rateLimits/read": {
         rateLimits: {

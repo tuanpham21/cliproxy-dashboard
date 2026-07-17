@@ -77,7 +77,7 @@ async function terminalRecoveryHarness(reconciliation: "pending" | "reconciled")
   const gateway = {
     readAccount: vi.fn(async () => ({
       account: { type: "chatgpt" as const, email: "operator@example.com", plan: "pro" as const },
-      requiresOpenAiAuth: false,
+      providerRequiresOpenAiAuth: true,
     })),
     readRateLimits: vi.fn(async () => rateLimits),
     consumeResetCredit: vi.fn(),

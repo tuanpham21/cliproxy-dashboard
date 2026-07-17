@@ -12,6 +12,33 @@ import {
 } from "./fake-codex-process.js";
 
 describe("Codex app-server session", () => {
+  it("accepts Codex JSONL envelopes that omit the optional jsonrpc marker", async () => {
+    const child = new FakeCodexProcess();
+    const onNotification = vi.fn();
+    child.writeHandler = (message, acknowledge, process) => {
+      acknowledge();
+      if (message.method === "initialize") {
+        process.sendJson({ id: message.id, result: { userAgent: "codex-test" } });
+        return;
+      }
+      if (message.method === "initialized") return;
+      process.sendJson({ method: "remoteControl/status/changed", params: {} });
+      process.sendJson({ id: message.id, result: { account: null, requiresOpenaiAuth: true } });
+    };
+    const session = await startCodexAppServerSession({
+      codexBin: "codex",
+      spawnProcess: createFakeCodexSpawn(child),
+      onNotification,
+    });
+
+    await expect(session.request("account/read", { refreshToken: false })).resolves.toEqual({
+      account: null,
+      requiresOpenaiAuth: true,
+    });
+    expect(onNotification).toHaveBeenCalledWith({ method: "remoteControl/status/changed", params: {} });
+    await session.close();
+  });
+
   it("reuses one process for sequential JSONL requests and ignores interleaved notifications", async () => {
     const child = new FakeCodexProcess();
     const onNotification = vi.fn();
@@ -57,7 +84,7 @@ describe("Codex app-server session", () => {
     expect(JSON.stringify(child.writes[0])).not.toContain("experimentalApi");
     expect(spawnProcess).toHaveBeenCalledWith(
       "C:\\Program Files\\Codex\\codex.exe",
-      ["app-server", "--stdio"],
+      ["app-server", "-c", 'model_provider="openai"', "--stdio"],
       expect.objectContaining({
         shell: false,
         windowsHide: true,

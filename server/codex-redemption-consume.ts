@@ -91,7 +91,7 @@ export async function consumePrepared(dependencies: ConsumeDependencies): Promis
   } catch {
     throw new CodexRedemptionConsumeError("codex_session_changed");
   }
-  if (account.requiresOpenAiAuth || !account.account || account.account.type !== "chatgpt") {
+  if (!account.account || account.account.type !== "chatgpt") {
     throw new CodexRedemptionConsumeError("codex_account_changed");
   }
   if (account.account.email !== active.proposal.account.email || account.account.plan !== active.proposal.account.plan) {

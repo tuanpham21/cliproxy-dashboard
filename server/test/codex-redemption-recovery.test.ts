@@ -77,7 +77,7 @@ async function recoveryServiceHarness(selection: { mode: "specific"; creditId: s
       events.push("account");
       return {
         account: { type: "chatgpt" as const, email: "operator@example.com", plan: "pro" as const },
-        requiresOpenAiAuth: false,
+        providerRequiresOpenAiAuth: true,
       };
     }),
     readRateLimits: vi.fn(async () => {
@@ -157,7 +157,7 @@ describe("ambiguous reset-redemption recovery", () => {
     const harness = await recoveryServiceHarness({ mode: "generic" });
     harness.gateway.readAccount.mockResolvedValue({
       account: { type: "chatgpt", email: "other@example.com", plan: "pro" },
-      requiresOpenAiAuth: false,
+      providerRequiresOpenAiAuth: false,
     });
     await harness.service.initializeRecovery("codex");
 
@@ -293,7 +293,7 @@ describe("ambiguous reset-redemption recovery", () => {
         if (scenario === "account-mismatch") {
           harness.gateway.readAccount.mockResolvedValue({
             account: { type: "chatgpt", email: "other@example.com", plan: "pro" },
-            requiresOpenAiAuth: false,
+            providerRequiresOpenAiAuth: false,
           });
         } else if (scenario === "ambiguous-transport") {
           harness.gateway.consumeResetCredit.mockRejectedValue(
