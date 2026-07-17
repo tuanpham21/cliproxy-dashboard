@@ -215,7 +215,13 @@ export class RotationController {
         if (!this.#writer) return await this.#pause("mutation-failed", "CLIProxy priority writer unavailable");
       if (this.#state.journal.phase !== "idle") return await this.#pause("recovery-unverifiable", "Pending Rotation already active");
 
-      const proxyAccounts = await this.#writer.readAccounts();
+        let proxyAccounts: ManagedProxyAccount[];
+        try {
+          proxyAccounts = await this.#writer.readAccounts();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return await this.#pause("mutation-failed", `CLIProxy account snapshot failed before mutation: ${message}`);
+        }
       const currentByKey = proxyAccountMap(proxyAccounts);
       const overlayError = this.#validateOverlay(proxyAccounts);
       if (overlayError) return await this.#pause(overlayError.reason, overlayError.message);

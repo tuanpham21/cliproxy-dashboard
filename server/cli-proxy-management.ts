@@ -22,8 +22,9 @@ export type CliProxyManagementWriterOptions = {
   fetchImpl?: typeof fetch;
   expectedVersion?: string;
   expectedCommit?: string;
-    fingerprintResolver: (fileName: string) => Promise<string> | string;
-    proxyAccountKeyResolver?: (fileName: string) => Promise<string> | string;
+  fingerprintResolver: (fileName: string) => Promise<string | undefined> | string | undefined;
+  managementOnlyFingerprintResolver?: (fileName: string, revision: string) => Promise<string> | string;
+  proxyAccountKeyResolver?: (fileName: string) => Promise<string> | string;
 };
 
 function normalizedLoopbackBaseUrl(value: string): string {
@@ -149,24 +150,27 @@ export function createCliProxyManagementWriter(options: CliProxyManagementWriter
     }
   };
 
-  const listAccounts = async () => {
-    const entries = authFilesFromPayload(await request("/v0/management/auth-files"));
-    return await Promise.all(entries.map(async (entry) => {
-      const fileName = authFileName(entry);
-      if (!fileName) throw new Error("CLIProxy auth entry missing file name");
-        const fingerprint = (await options.fingerprintResolver(fileName)).trim();
+    const listAccounts = async () => {
+      const entries = authFilesFromPayload(await request("/v0/management/auth-files"));
+      return await Promise.all(entries.map(async (entry) => {
+        const fileName = authFileName(entry);
+        if (!fileName) throw new Error("CLIProxy auth entry missing file name");
+        const revision = authFileRevision(entry, fileName);
+        const resolvedCredentialFingerprint = await options.fingerprintResolver(fileName);
+        const credentialFingerprint = resolvedCredentialFingerprint?.trim() ?? "";
+        const fingerprint = credentialFingerprint || (await options.managementOnlyFingerprintResolver?.(fileName, revision) ?? "").trim();
         if (!fingerprint) throw new Error(`CLIProxy credential fingerprint unavailable: ${fileName}`);
         const proxyAccountKey = (await options.proxyAccountKeyResolver?.(fileName) ?? fileName).trim();
         if (!proxyAccountKey) throw new Error(`CLIProxy Proxy Account Key unavailable: ${fileName}`);
         return {
           proxyAccountKey,
-        fileName,
-        ...authFilePriorityState(entry, fileName),
-        revision: authFileRevision(entry, fileName),
-        fingerprint,
-        disabled: entry.disabled === true,
-        note: typeof entry.note === "string" ? entry.note : "",
-      };
+          fileName,
+          ...authFilePriorityState(entry, fileName),
+          revision,
+          fingerprint,
+          disabled: entry.disabled === true,
+          note: typeof entry.note === "string" ? entry.note : "",
+        };
     }));
   };
 

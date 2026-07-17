@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import path from "node:path";
 
 import type { PublicRotationState } from "../shared/types.js";
@@ -15,6 +16,16 @@ import { evaluateRotationObservationConsumption } from "./rotation-state-transit
 import type { ProvisionalResetAttempt, RotationAccountSnapshot, RotationDecision, RotationMode, RotationState, SemanticQuotaEvidence } from "./rotation-types.js";
 import type { AccountView, DashboardOptions, PersistedQuotaSnapshot, PersistedQuotaWindowEvidence } from "./types.js";
 import { normalizeProxyAccountLocalIdentity } from "./util.js";
+
+function deriveManagementEntryFingerprint(secret: string, fileName: string, revision: string): string {
+  const digest = createHmac("sha256", Buffer.from(secret, "base64url"))
+    .update("cliproxy-dashboard management-entry-fingerprint v1\0")
+    .update(normalizeProxyAccountLocalIdentity(fileName), "utf8")
+    .update("\0")
+    .update(revision, "utf8")
+    .digest("base64url");
+  return `mef_v1_${digest}`;
+}
 
 function semanticWeekly(
   evidence: PersistedQuotaWindowEvidence | undefined,
@@ -520,22 +531,27 @@ export class RotationCoordinator {
 export async function createRotationCoordinator(options: DashboardOptions): Promise<RotationCoordinator> {
   const paths = await resolveDashboardPaths(options);
   const statePath = path.join(path.dirname(paths.quotaSnapshotStatePath), "rotation-controller.json");
-  const identityForFile = async (fileName: string) => {
-    const raw = await readJsonObject(resolveAccountPath(paths.authDir, fileName));
-    if (!raw) throw new Error(`Proxy Account credentials unavailable: ${fileName}`);
+  const proxyAccountKeyForFile = async (fileName: string) => {
     const { store } = await readQuotaSnapshotStoreFile(paths.quotaSnapshotStatePath);
-    const canonicalLocalIdentity = normalizeProxyAccountLocalIdentity(fileName);
-    return {
-      proxyAccountKey: deriveProxyAccountKey(store, canonicalLocalIdentity),
-      fingerprint: deriveCredentialFingerprint(store.keyDerivation.secret, fileName, raw),
-    };
+    return deriveProxyAccountKey(store, normalizeProxyAccountLocalIdentity(fileName));
+  };
+  const credentialFingerprintForFile = async (fileName: string) => {
+    const raw = await readJsonObject(resolveAccountPath(paths.authDir, fileName));
+    if (!raw) return undefined;
+    const { store } = await readQuotaSnapshotStoreFile(paths.quotaSnapshotStatePath);
+    return deriveCredentialFingerprint(store.keyDerivation.secret, fileName, raw);
+  };
+  const managementEntryFingerprintForFile = async (fileName: string, revision: string) => {
+    const { store } = await readQuotaSnapshotStoreFile(paths.quotaSnapshotStatePath);
+    return deriveManagementEntryFingerprint(store.keyDerivation.secret, fileName, revision);
   };
   const writer = options.managementKey
     ? createCliProxyManagementWriter({
         baseUrl: paths.proxyUrl,
         managementKey: options.managementKey,
-        fingerprintResolver: async (fileName) => (await identityForFile(fileName)).fingerprint,
-        proxyAccountKeyResolver: async (fileName) => (await identityForFile(fileName)).proxyAccountKey,
+        fingerprintResolver: credentialFingerprintForFile,
+        managementOnlyFingerprintResolver: managementEntryFingerprintForFile,
+        proxyAccountKeyResolver: proxyAccountKeyForFile,
       })
     : undefined;
     const readinessCheck = async (): Promise<RotationReadiness> => {
@@ -550,7 +566,7 @@ export async function createRotationCoordinator(options: DashboardOptions): Prom
     const coordinator = new RotationCoordinator(paths.authDir, controller, {
       canMutate: Boolean(writer),
       readinessCheck,
-      proxyAccountKeyResolver: async (fileName) => (await identityForFile(fileName)).proxyAccountKey,
+      proxyAccountKeyResolver: proxyAccountKeyForFile,
     });
     await coordinator.refreshReadiness();
     return coordinator;
