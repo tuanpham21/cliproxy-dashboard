@@ -1,4 +1,5 @@
 import type { RotationPriorityWriter } from "./rotation-types.js";
+import { safeBasename } from "./paths.js";
 
 const MAX_MANAGEMENT_PRIORITY = 2_147_483_647;
 
@@ -55,6 +56,16 @@ function authFileName(entry: ManagementAuthFile): string {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+function topLevelAuthFileName(entry: ManagementAuthFile): string | undefined {
+  const fileName = authFileName(entry);
+  if (!fileName) throw new Error("CLIProxy auth entry missing file name");
+  try {
+    return safeBasename(fileName);
+  } catch {
+    return undefined;
+  }
 }
 
 function authFileRevision(entry: ManagementAuthFile, fileName: string): string {
@@ -152,9 +163,11 @@ export function createCliProxyManagementWriter(options: CliProxyManagementWriter
 
     const listAccounts = async () => {
       const entries = authFilesFromPayload(await request("/v0/management/auth-files"));
-      return await Promise.all(entries.map(async (entry) => {
-        const fileName = authFileName(entry);
-        if (!fileName) throw new Error("CLIProxy auth entry missing file name");
+      const topLevelEntries = entries.flatMap((entry) => {
+        const fileName = topLevelAuthFileName(entry);
+        return fileName ? [{ entry, fileName }] : [];
+      });
+      return await Promise.all(topLevelEntries.map(async ({ entry, fileName }) => {
         const revision = authFileRevision(entry, fileName);
         const resolvedCredentialFingerprint = await options.fingerprintResolver(fileName);
         const credentialFingerprint = resolvedCredentialFingerprint?.trim() ?? "";

@@ -184,6 +184,7 @@ describe("management-only rotation safety", () => {
       { name: sourceFileName, priority: 10, priority_present: true, revision: "source-revision-1", disabled: false, note: "source" },
       { name: targetFileName, priority: 5, priority_present: true, revision: "target-revision-1", disabled: false, note: "target" },
       { name: managementOnlyFileName, priority: 40, priority_present: true, revision: "runtime-revision-1", disabled: true, note: "runtime-only" },
+      { name: "cliproxy-dashboard/quota-snapshots.json", priority: 0, priority_present: false, revision: "dashboard-state-revision-1", disabled: false, note: "dashboard-owned state" },
     ];
     const patchBodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", async (_url: string | URL | Request, init?: RequestInit) => {
