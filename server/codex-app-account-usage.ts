@@ -3,8 +3,14 @@ import type {
   CodexAccountUsageView,
   CodexAccountUsageWindow,
 } from "../shared/types.js";
-import { CodexAccountGateway, type CodexRateLimitWindow, type CodexResetCredit } from "./codex-account-gateway.js";
+import {
+  CodexAccountGateway,
+  CodexAccountGatewayError,
+  type CodexRateLimitWindow,
+  type CodexResetCredit,
+} from "./codex-account-gateway.js";
 import { startCodexAppServerSession, type CodexAppServerSession } from "./codex-app-server-client.js";
+import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import type { CodexRuntimeQualification, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
 
 export interface CodexAccountUsageReader {
@@ -13,7 +19,7 @@ export interface CodexAccountUsageReader {
 
 export type CodexAppAccountUsageServiceDependencies = {
   qualifier: CodexRuntimeQualifierLike;
-  startSession?: (options: { codexBin: string; codexHome: string }) => Promise<CodexAppServerSession>;
+  startSession?: (options: { codexBin: string; runtimeContext: CodexRuntimeContext }) => Promise<CodexAppServerSession>;
   now?: () => Date;
 };
 
@@ -86,7 +92,10 @@ function resetCredit(credit: CodexResetCredit): CodexAccountResetCredit {
 
 export class CodexAppAccountUsageService implements CodexAccountUsageReader {
   private readonly qualifier: CodexRuntimeQualifierLike;
-  private readonly startSession: (options: { codexBin: string; codexHome: string }) => Promise<CodexAppServerSession>;
+  private readonly startSession: (options: {
+    codexBin: string;
+    runtimeContext: CodexRuntimeContext;
+  }) => Promise<CodexAppServerSession>;
   private readonly now: () => Date;
 
   constructor(dependencies: CodexAppAccountUsageServiceDependencies) {
@@ -113,12 +122,12 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
       );
     }
 
-    let session: CodexAppServerSession | null = null;
-    try {
-      session = await this.startSession({
-        codexBin: qualification.identity.canonicalPath,
-        codexHome: qualification.identity.codexStateRoot,
-      });
+      let session: CodexAppServerSession | null = null;
+      try {
+        session = await this.startSession({
+          codexBin: qualification.identity.canonicalPath,
+          runtimeContext: runtimeContextFromIdentity(qualification.identity),
+        });
       if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
         return emptyView(
           "runtime-incompatible",
@@ -196,8 +205,16 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
         message: `${availableCount} earned usage limit reset${availableCount === 1 ? " is" : "s are"} available.`,
         ...common,
       };
-    } catch {
-      return emptyView("read-failed", "codex_read_failed", "Couldn’t load Codex app usage.", runtime);
+      } catch (error) {
+        if (error instanceof CodexAccountGatewayError && error.code === "authentication-required") {
+          return emptyView(
+            "signed-out",
+            "codex_auth_required",
+            "Sign in to Codex with ChatGPT, then refresh.",
+            runtime,
+          );
+        }
+        return emptyView("read-failed", "codex_read_failed", "Couldn’t load Codex app usage.", runtime);
     } finally {
       await session?.close();
     }

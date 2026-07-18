@@ -22,6 +22,7 @@ import {
   type CodexAppServerNotification,
   type CodexAppServerSession,
 } from "./codex-app-server-client.js";
+import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import {
   CodexRedemptionPrivateStateError,
   PrivateRedemptionStateStore,
@@ -141,7 +142,7 @@ export interface CodexRedemptionPrivateStore {
 
 export type CodexRedemptionSessionOptions = {
   codexBin: string;
-  codexHome: string;
+  runtimeContext: CodexRuntimeContext;
   onNotification: (notification: CodexAppServerNotification) => Promise<void> | void;
   onUnexpectedProcessClose: () => Promise<void> | void;
 };
@@ -293,24 +294,24 @@ export class CodexRedemptionService implements CodexRedemptionController {
 
     const proposalId = this.newProposalId();
     let invalidated = false;
-    const invalidate = () => {
-      invalidated = true;
-      const active = this.active?.proposal.proposalId === proposalId ? this.active : null;
-      if (!active) return;
-      active.invalidated = true;
-      if (active.journal.phase === "prepared" && !active.consumePromise) void this.cleanup(active).catch(() => {});
-    };
-    let session: CodexRedemptionSession | null = null;
-    let journal: PreparedRedemptionJournal | null = null;
-    try {
-      session = await this.startSession({
-        codexBin: qualification.identity.canonicalPath,
-        codexHome: qualification.identity.codexStateRoot,
-        onNotification: (notification) => {
-          if (notification.method === "account/updated") invalidate();
-        },
-        onUnexpectedProcessClose: invalidate,
-      });
+      const invalidate = () => {
+        invalidated = true;
+        const active = this.active?.proposal.proposalId === proposalId ? this.active : null;
+        if (!active) return;
+        active.invalidated = true;
+        if (active.journal.phase === "prepared" && !active.consumePromise) void this.cleanup(active).catch(() => {});
+      };
+      let session: CodexRedemptionSession | null = null;
+      let journal: PreparedRedemptionJournal | null = null;
+      try {
+        session = await this.startSession({
+          codexBin: qualification.identity.canonicalPath,
+          runtimeContext: runtimeContextFromIdentity(qualification.identity),
+          onNotification: (notification) => {
+            if (notification.method === "account/updated") invalidate();
+          },
+          onUnexpectedProcessClose: invalidate,
+        });
       if (!(await this.qualifier.matchesIdentity(qualification.identity))) {
         throw new CodexRedemptionServiceError("codex_runtime_incompatible");
       }

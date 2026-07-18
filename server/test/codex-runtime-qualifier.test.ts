@@ -6,6 +6,7 @@ import {
   CodexRuntimeQualifier,
   type CodexRuntimeQualifierDependencies,
 } from "../codex-runtime-qualifier.js";
+import type { CodexRuntimeContext } from "../codex-runtime-context.js";
 import { makeTempRoot } from "./helpers.js";
 
 const REQUIRED_SCHEMA_FILES = [
@@ -154,12 +155,15 @@ async function qualifierHarness(
     await mutateBundle?.(outDir);
     return { stdout: "" };
   });
-  const qualifier = new CodexRuntimeQualifier({
-    env: { PATH: binDir },
-    platform: process.platform,
-    tempParent,
-    runCommand,
-    verifyCodexStateRoot: vi.fn(async () => root),
+    const qualifier = new CodexRuntimeQualifier({
+      env: { PATH: binDir },
+      platform: process.platform,
+      tempParent,
+      runCommand,
+      defaultContextAdapter: {
+        resolve: vi.fn(async () => ({ codexStateRoot: root, codexSqliteRoot: root })),
+      },
+      verifyRuntimeContext: vi.fn(async (context) => context),
     windowsSecurity: {
       secureCreatedDirectory: vi.fn(async () => {}),
       verifyPrivatePath: vi.fn(async () => {}),
@@ -169,40 +173,43 @@ async function qualifierHarness(
   return { qualifier, binaryPath, canonicalBinaryPath: await realpath(binaryPath), calls, root, tempParent, runCommand };
 }
 
-describe("Codex runtime qualifier", () => {
-  it("fails closed before Codex execution when current-user Codex state privacy cannot be verified", async () => {
-    const verifyCodexStateRoot = vi.fn(async () => { throw new Error("shared CODEX_HOME"); });
-    const harness = await qualifierHarness(undefined, { verifyCodexStateRoot });
+  describe("Codex runtime qualifier", () => {
+    it("fails closed before Codex execution when current-user Codex state privacy cannot be verified", async () => {
+      const resolve = vi.fn(async () => { throw new Error("shared CODEX_HOME"); });
+      const harness = await qualifierHarness(undefined, { defaultContextAdapter: { resolve } });
 
-    await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({ status: "runtime-incompatible" });
-    expect(verifyCodexStateRoot).toHaveBeenCalledTimes(1);
-    expect(harness.runCommand).not.toHaveBeenCalled();
-    await harness.qualifier.close();
-  });
+      await expect(harness.qualifier.qualify(harness.binaryPath)).resolves.toMatchObject({ status: "runtime-incompatible" });
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(harness.runCommand).not.toHaveBeenCalled();
+      await harness.qualifier.close();
+    });
 
-  it("rechecks Codex state privacy when validating a cached runtime identity", async () => {
-    const verifyCodexStateRoot = vi.fn(async () => "/private/codex-home");
-    const harness = await qualifierHarness(undefined, { verifyCodexStateRoot });
-    const qualification = await harness.qualifier.qualify(harness.binaryPath);
-    if (qualification.status !== "qualified") throw new Error("fixture did not qualify");
-    verifyCodexStateRoot.mockRejectedValueOnce(new Error("CODEX_HOME became shared"));
+    it("rechecks Codex state privacy when validating a cached runtime identity", async () => {
+      const verifyRuntimeContext = vi.fn(async (context: CodexRuntimeContext) => context);
+      const harness = await qualifierHarness(undefined, { verifyRuntimeContext });
+      const qualification = await harness.qualifier.qualify(harness.binaryPath);
+      if (qualification.status !== "qualified") throw new Error("fixture did not qualify");
+      verifyRuntimeContext.mockRejectedValueOnce(new Error("CODEX_HOME became shared"));
+
+      await expect(harness.qualifier.matchesIdentity(qualification.identity)).resolves.toBe(false);
+      await harness.qualifier.close();
+    });
+
+    it("rejects a runtime identity when the canonical Codex state root changes", async () => {
+      const verifyRuntimeContext = vi.fn(async (context: CodexRuntimeContext) => context);
+      const harness = await qualifierHarness(undefined, { verifyRuntimeContext });
+      const qualification = await harness.qualifier.qualify(harness.binaryPath);
+      if (qualification.status !== "qualified") throw new Error("fixture did not qualify");
+      verifyRuntimeContext.mockResolvedValue({
+        codexStateRoot: "/private/codex-home-b",
+        codexSqliteRoot: qualification.identity.codexSqliteRoot,
+      });
 
     await expect(harness.qualifier.matchesIdentity(qualification.identity)).resolves.toBe(false);
     await harness.qualifier.close();
   });
 
-  it("rejects a runtime identity when the canonical Codex state root changes", async () => {
-    const verifyCodexStateRoot = vi.fn(async () => "/private/codex-home-a");
-    const harness = await qualifierHarness(undefined, { verifyCodexStateRoot });
-    const qualification = await harness.qualifier.qualify(harness.binaryPath);
-    if (qualification.status !== "qualified") throw new Error("fixture did not qualify");
-    verifyCodexStateRoot.mockResolvedValue("/private/codex-home-b");
-
-    await expect(harness.qualifier.matchesIdentity(qualification.identity)).resolves.toBe(false);
-    await harness.qualifier.close();
-  });
-
-  it("qualifies one exact PATH-resolved binary and caches by file identity", async () => {
+    it("qualifies one exact PATH-resolved binary and caches by file identity", async () => {
     const { qualifier, canonicalBinaryPath, calls, tempParent, root } = await qualifierHarness();
 
     const first = await qualifier.qualify("codex");
@@ -222,8 +229,40 @@ describe("Codex runtime qualifier", () => {
     expect(calls[1].args).not.toContain("--experimental");
     expect(calls[2]).toEqual({ binary: canonicalBinaryPath, args: ["--version"], timeoutMs: 15_000 });
     expect(await readdir(tempParent)).toEqual([]);
-    await qualifier.close();
-  });
+      await qualifier.close();
+    });
+
+  it("binds qualification, cache, and identity checks to both explicit runtime context roots", async () => {
+      const verifyRuntimeContext = vi.fn(async (context: CodexRuntimeContext) => context);
+      const { qualifier, binaryPath, calls, root } = await qualifierHarness(undefined, {
+        verifyRuntimeContext,
+      });
+      const firstContext = {
+        codexStateRoot: root,
+        codexSqliteRoot: path.join(root, "sqlite-a"),
+      };
+      const secondContext = {
+        codexStateRoot: root,
+        codexSqliteRoot: path.join(root, "sqlite-b"),
+      };
+
+      const first = await qualifier.qualify(binaryPath, firstContext);
+      const second = await qualifier.qualify(binaryPath, secondContext);
+
+      expect(first).toMatchObject({
+        status: "qualified",
+        identity: firstContext,
+      });
+      expect(second).toMatchObject({
+        status: "qualified",
+        identity: secondContext,
+      });
+      expect(calls.filter(({ args }) => args[0] === "app-server")).toHaveLength(2);
+      if (first.status !== "qualified") throw new Error("fixture did not qualify");
+      verifyRuntimeContext.mockResolvedValueOnce(secondContext);
+      await expect(qualifier.matchesIdentity(first.identity)).resolves.toBe(false);
+      await qualifier.close();
+    });
 
   it("coalesces concurrent qualification for one binary identity", async () => {
     let releaseVersion!: () => void;

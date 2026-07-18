@@ -9,6 +9,7 @@ import {
   type RedemptionReconciliation,
   type TerminalRedemptionTombstone,
 } from "./codex-redemption-journal.js";
+import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
 import { terminalMessage } from "./codex-redemption-terminal-message.js";
 
@@ -46,7 +47,7 @@ export async function recoverTerminalJournal(dependencies: {
   qualifier: CodexRuntimeQualifierLike;
   startSession: (options: {
     codexBin: string;
-    codexHome: string;
+    runtimeContext: CodexRuntimeContext;
     onNotification: (notification: { method: string; params?: unknown }) => Promise<void> | void;
     onUnexpectedProcessClose: () => Promise<void> | void;
   }) => Promise<TerminalRecoverySession>;
@@ -79,21 +80,21 @@ export async function recoverTerminalJournal(dependencies: {
 
   let reconciliation = finalReconciliation(journal);
   let session: TerminalRecoverySession | null = null;
-  if (!reconciliation) {
-    reconciliation = outcome === "noCredit" ? "availability-changed-unreconciled" : "unreconciled";
-    try {
-      const qualification = await dependencies.qualifier.qualify(dependencies.codexBin);
-      if (qualification.status === "qualified" && await dependencies.qualifier.matchesIdentity(qualification.identity)) {
-        let invalidated = false;
-        session = await dependencies.startSession({
-          codexBin: qualification.identity.canonicalPath,
-          codexHome: qualification.identity.codexStateRoot,
-          onNotification: (notification) => {
-            if (notification.method === "account/updated") invalidated = true;
-          },
-          onUnexpectedProcessClose: () => {
-            invalidated = true;
-          },
+    if (!reconciliation) {
+      reconciliation = outcome === "noCredit" ? "availability-changed-unreconciled" : "unreconciled";
+      try {
+        const qualification = await dependencies.qualifier.qualify(dependencies.codexBin);
+        if (qualification.status === "qualified" && await dependencies.qualifier.matchesIdentity(qualification.identity)) {
+          let invalidated = false;
+          session = await dependencies.startSession({
+            codexBin: qualification.identity.canonicalPath,
+            runtimeContext: runtimeContextFromIdentity(qualification.identity),
+            onNotification: (notification) => {
+              if (notification.method === "account/updated") invalidated = true;
+            },
+            onUnexpectedProcessClose: () => {
+              invalidated = true;
+            },
         });
         const gateway = dependencies.gatewayForSession(session);
         const accountRead = await gateway.readAccount();

@@ -10,8 +10,9 @@ import { makeTempRoot } from "./helpers.js";
 import { privateStatePlatformDependencies } from "./private-state-platform.js";
 
 const runtimeIdentity = {
-  canonicalPath: "/opt/codex/bin/codex",
-  codexStateRoot: "/home/operator/.codex",
+    canonicalPath: "/opt/codex/bin/codex",
+    codexStateRoot: "/home/operator/.codex",
+    codexSqliteRoot: "/home/operator/.codex/sqlite",
   version: "codex-cli 0.144.4",
   fileIdentity: "1:2:3:4:5",
   schemaHash: "a".repeat(64),

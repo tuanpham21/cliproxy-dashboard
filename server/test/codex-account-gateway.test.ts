@@ -8,6 +8,11 @@ import {
   initializeFakeCodexProcess,
 } from "./fake-codex-process.js";
 
+const runtimeContext = {
+  codexStateRoot: "/private/test-codex-state",
+  codexSqliteRoot: "/private/test-codex-sqlite",
+};
+
 async function gatewayFor(responses: Record<string, unknown>) {
   const child = new FakeCodexProcess();
   initializeFakeCodexProcess(child, (message, acknowledge, process) => {
@@ -16,6 +21,7 @@ async function gatewayFor(responses: Record<string, unknown>) {
   });
   const session = await startCodexAppServerSession({
     codexBin: "codex",
+    runtimeContext,
     spawnProcess: createFakeCodexSpawn(child),
   });
   return { gateway: new CodexAccountGateway(session), session, child };
@@ -117,9 +123,10 @@ describe("Codex account gateway", () => {
         error: { code: -32001, message: "authentication required: secret-provider-detail" },
       });
     });
-    const session = await startCodexAppServerSession({
-      codexBin: "codex",
-      spawnProcess: createFakeCodexSpawn(child),
+      const session = await startCodexAppServerSession({
+        codexBin: "codex",
+        runtimeContext,
+        spawnProcess: createFakeCodexSpawn(child),
     });
     const gateway = new CodexAccountGateway(session);
 
@@ -201,7 +208,7 @@ describe("Codex account gateway", () => {
       if (message.method === "account/rateLimitResetCredit/consume") process.closeWith(1);
       else process.sendJson({ jsonrpc: "2.0", id: message.id, result: {} });
     });
-    const session = await startCodexAppServerSession({ codexBin: "codex", spawnProcess: createFakeCodexSpawn(child) });
+      const session = await startCodexAppServerSession({ codexBin: "codex", runtimeContext, spawnProcess: createFakeCodexSpawn(child) });
     const gateway = new CodexAccountGateway(session);
     await expect(gateway.consumeResetCredit({ idempotencyKey: "key" })).rejects.toMatchObject({
       code: "transport-failed",

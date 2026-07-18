@@ -12,8 +12,9 @@ const qualified: CodexRuntimeQualification = {
   status: "qualified",
   version: "codex-cli 0.144.4",
   identity: {
-    canonicalPath: "/opt/codex/bin/codex",
-    codexStateRoot: "/home/operator/.codex",
+      canonicalPath: "/opt/codex/bin/codex",
+      codexStateRoot: "/home/operator/.codex",
+      codexSqliteRoot: "/home/operator/.codex/sqlite",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4",
     schemaHash: "a".repeat(64),
@@ -155,7 +156,14 @@ describe("Codex redemption service", () => {
         expiresAt: "2030-03-17T17:46:40.000Z",
       },
     });
-    expect(harness.events).toEqual(["session", "account", "rate-limits", "lease"]);
+      expect(harness.events).toEqual(["session", "account", "rate-limits", "lease"]);
+      expect(harness.startSession).toHaveBeenCalledWith(expect.objectContaining({
+        codexBin: "/opt/codex/bin/codex",
+        runtimeContext: {
+          codexStateRoot: "/home/operator/.codex",
+          codexSqliteRoot: "/home/operator/.codex/sqlite",
+        },
+      }));
     expect(harness.store.acquirePrepared).toHaveBeenCalledWith(expect.objectContaining({
       proposalId: "p".repeat(43),
       idempotencyKey: "11111111-2222-4333-8444-555555555555",

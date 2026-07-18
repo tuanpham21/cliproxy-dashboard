@@ -192,13 +192,14 @@ export class PrivateRedemptionStateStore {
       owner,
       accountCheckDigest: accountCheckDigest(key, input.proposalId, input.accountCheck.email, input.accountCheck.plan),
       idempotencyKey: input.idempotencyKey,
-      selection: input.selection,
-      runtimeIdentity: {
-        canonicalPathDigest: runtimePathDigest(
-          key,
-          input.runtimeIdentity.canonicalPath,
-          input.runtimeIdentity.codexStateRoot,
-        ),
+        selection: input.selection,
+        runtimeIdentity: {
+          canonicalPathDigest: runtimePathDigest(
+            key,
+            input.runtimeIdentity.canonicalPath,
+            input.runtimeIdentity.codexStateRoot,
+            input.runtimeIdentity.codexSqliteRoot,
+          ),
         version: input.runtimeIdentity.version,
         fileIdentity: input.runtimeIdentity.fileIdentity,
         schemaHash: input.runtimeIdentity.schemaHash,

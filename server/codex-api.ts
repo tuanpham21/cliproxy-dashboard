@@ -3,9 +3,7 @@ import type { CodexAccountUsageView } from "../shared/types.js";
 import type { PrepareCodexRedemptionInput } from "../shared/codex-account-types.js";
 import { isCodexRedemptionProposalId } from "../shared/codex-redemption-identifiers.js";
 
-import { CodexAccountGateway, CodexAccountGatewayError } from "./codex-account-gateway.js";
 import type { CodexAccountUsageReader } from "./codex-app-account-usage.js";
-import { startCodexAppServerSession } from "./codex-app-server-client.js";
 import { resolveCodexBin } from "./commands.js";
 import {
   CodexRedemptionServiceError,
@@ -24,19 +22,19 @@ export async function handleCodexApi(
   accountUsageService: CodexAccountUsageReader | undefined,
   redemptionService: CodexRedemptionController | undefined,
   jsonResponse: JsonResponse,
-  ): Promise<boolean> {
-    if (method === "GET" && pathname === "/api/codex/reset-redemptions/current") {
-      if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
-        jsonResponse(res, 403, {
-          code: "codex_runtime_unavailable",
-          error: "Reset redemption is available only from a loopback-local dashboard.",
-        });
-        return true;
-      }
-      if (!redemptionService) {
-        jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t load reset redemption state." });
-        return true;
-      }
+): Promise<boolean> {
+  if (method === "GET" && pathname === "/api/codex/reset-redemptions/current") {
+    if (!isLoopbackHost(options.host) || !isLoopbackAddress(req.socket.remoteAddress)) {
+      jsonResponse(res, 403, {
+        code: "codex_runtime_unavailable",
+        error: "Reset redemption is available only from a loopback-local dashboard.",
+      });
+      return true;
+    }
+    if (!redemptionService) {
+      jsonResponse(res, 503, { code: "codex_read_failed", error: "Couldn’t load reset redemption state." });
+      return true;
+    }
       try {
         jsonResponse(res, 200, await redemptionService.currentState());
       } catch (error) {
@@ -156,24 +154,26 @@ export async function handleCodexApi(
   }
 
   if (method === "GET" && pathname === "/api/codex/rate-limits") {
-    let session: Awaited<ReturnType<typeof startCodexAppServerSession>> | null = null;
+    if (!accountUsageService) {
+      jsonResponse(res, 500, { error: "Couldn't load Codex app usage." });
+      return true;
+    }
     try {
-      session = await startCodexAppServerSession({ codexBin: resolveCodexBin(options) });
-      const result = await new CodexAccountGateway(session).readRateLimits();
-      jsonResponse(res, 200, { ok: true, availableCount: result.resetCredits?.availableCount ?? 0 });
-    } catch (error) {
-      if (error instanceof CodexAccountGatewayError && error.code === "authentication-required") {
+      const result = await accountUsageService.read(resolveCodexBin(options));
+      if (result.state === "signed-out") {
         jsonResponse(res, 200, {
           ok: false,
           error: "authentication required",
           authRequired: true,
           availableCount: 0,
         });
+      } else if (result.resetCredits) {
+        jsonResponse(res, 200, { ok: true, availableCount: result.resetCredits.availableCount });
       } else {
         jsonResponse(res, 500, { error: "Couldn't load Codex app usage." });
       }
-    } finally {
-      await session?.close();
+    } catch {
+      jsonResponse(res, 500, { error: "Couldn't load Codex app usage." });
     }
     return true;
   }

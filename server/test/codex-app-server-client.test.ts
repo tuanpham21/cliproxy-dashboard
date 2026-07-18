@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CodexAppServerTransportError,
-  startCodexAppServerSession,
+  startCodexAppServerSession as startRawCodexAppServerSession,
+  type CodexAppServerSessionOptions,
 } from "../codex-app-server-client.js";
 import {
   FakeCodexProcess,
@@ -11,7 +12,64 @@ import {
   initializeFakeCodexProcess,
 } from "./fake-codex-process.js";
 
+const TEST_RUNTIME_CONTEXT = {
+  codexStateRoot: "/private/test-codex-state",
+  codexSqliteRoot: "/private/test-codex-sqlite",
+};
+
+function startCodexAppServerSession(
+  options: Omit<CodexAppServerSessionOptions, "runtimeContext"> & {
+    runtimeContext?: CodexAppServerSessionOptions["runtimeContext"];
+  },
+) {
+  return startRawCodexAppServerSession({
+    ...options,
+    runtimeContext: options.runtimeContext ?? TEST_RUNTIME_CONTEXT,
+  });
+}
+
 describe("Codex app-server session", () => {
+  it("pins both Codex runtime roots and the built-in OpenAI provider for app-server", async () => {
+    const child = new FakeCodexProcess();
+    initializeFakeCodexProcess(child, () => {});
+    const spawnProcess = createFakeCodexSpawn(child);
+    const runtimeContext = {
+      codexStateRoot: "/private/profiles/profile-a/codex",
+      codexSqliteRoot: "/private/profiles/profile-a/sqlite",
+    };
+
+    const session = await startCodexAppServerSession({
+      codexBin: "/opt/codex/bin/codex",
+      runtimeContext,
+      env: {
+        PATH: "/usr/bin",
+        CODEX_HOME: "/untrusted/inherited-codex",
+        CODEX_SQLITE_HOME: "/untrusted/inherited-sqlite",
+      },
+      spawnProcess,
+    });
+    await session.close();
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      "/opt/codex/bin/codex",
+      [
+        "app-server",
+        "-c",
+        'model_provider="openai"',
+        "-c",
+        `sqlite_home=${JSON.stringify(runtimeContext.codexSqliteRoot)}`,
+        "--stdio",
+      ],
+      expect.objectContaining({
+        env: {
+          PATH: "/usr/bin",
+          CODEX_HOME: runtimeContext.codexStateRoot,
+          CODEX_SQLITE_HOME: runtimeContext.codexSqliteRoot,
+        },
+      }),
+    );
+  });
+
   it("accepts Codex JSONL envelopes that omit the optional jsonrpc marker", async () => {
     const child = new FakeCodexProcess();
     const onNotification = vi.fn();
@@ -62,9 +120,12 @@ describe("Codex app-server session", () => {
     });
     const spawnProcess = createFakeCodexSpawn(child);
 
-    const session = await startCodexAppServerSession({
-      codexBin: "C:\\Program Files\\Codex\\codex.exe",
-      codexHome: "C:\\Users\\Operator Name\\Codex State",
+      const session = await startCodexAppServerSession({
+        codexBin: "C:\\Program Files\\Codex\\codex.exe",
+        runtimeContext: {
+          codexStateRoot: "C:\\Users\\Operator Name\\Codex State",
+          codexSqliteRoot: "C:\\Users\\Operator Name\\Codex SQLite",
+        },
       spawnProcess,
       platform: "win32",
       onNotification,
@@ -84,12 +145,22 @@ describe("Codex app-server session", () => {
     expect(JSON.stringify(child.writes[0])).not.toContain("experimentalApi");
     expect(spawnProcess).toHaveBeenCalledWith(
       "C:\\Program Files\\Codex\\codex.exe",
-      ["app-server", "-c", 'model_provider="openai"', "--stdio"],
+        [
+          "app-server",
+          "-c",
+          'model_provider="openai"',
+          "-c",
+          'sqlite_home="C:\\\\Users\\\\Operator Name\\\\Codex SQLite"',
+          "--stdio",
+        ],
       expect.objectContaining({
         shell: false,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
-        env: expect.objectContaining({ CODEX_HOME: "C:\\Users\\Operator Name\\Codex State" }),
+          env: expect.objectContaining({
+            CODEX_HOME: "C:\\Users\\Operator Name\\Codex State",
+            CODEX_SQLITE_HOME: "C:\\Users\\Operator Name\\Codex SQLite",
+          }),
       }),
     );
     expect(child.killed).toBe(true);

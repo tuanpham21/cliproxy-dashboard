@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 
+import type { CodexRuntimeContext } from "./codex-runtime-context.js";
+
 export type CodexAppServerWriteDisposition = "not-written" | "possibly-written";
 
 export type CodexAppServerTransportErrorCode =
@@ -51,7 +53,8 @@ export type CodexAppServerSpawn = (
 
 export type CodexAppServerSessionOptions = {
   codexBin: string;
-  codexHome?: string;
+  runtimeContext: CodexRuntimeContext;
+  env?: NodeJS.ProcessEnv;
   spawnProcess?: CodexAppServerSpawn;
   platform?: NodeJS.Platform;
   requestTimeoutMs?: number;
@@ -143,21 +146,26 @@ export class CodexAppServerSession {
     this.maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_STDERR_BYTES;
     this.onNotification = options.onNotification;
     this.onUnexpectedProcessClose = options.onUnexpectedProcessClose;
-    this.processClosePromise = new Promise((resolve) => {
-      this.resolveProcessClose = resolve;
-    });
-    const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
-    try {
-      this.child = spawnProcess(
-        options.codexBin,
-        ["app-server", "-c", CODEX_APP_ACCOUNT_PROVIDER_OVERRIDE, "--stdio"],
-        {
-          shell: false,
-          windowsHide: (options.platform ?? process.platform) === "win32",
-          stdio: ["pipe", "pipe", "pipe"],
-          env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env,
-        },
-      );
+      this.processClosePromise = new Promise((resolve) => {
+        this.resolveProcessClose = resolve;
+      });
+      const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
+      const sqliteHomeOverride = `sqlite_home=${JSON.stringify(options.runtimeContext.codexSqliteRoot)}`;
+      try {
+        this.child = spawnProcess(
+          options.codexBin,
+          ["app-server", "-c", CODEX_APP_ACCOUNT_PROVIDER_OVERRIDE, "-c", sqliteHomeOverride, "--stdio"],
+          {
+            shell: false,
+            windowsHide: (options.platform ?? process.platform) === "win32",
+            stdio: ["pipe", "pipe", "pipe"],
+            env: {
+              ...(options.env ?? process.env),
+              CODEX_HOME: options.runtimeContext.codexStateRoot,
+              CODEX_SQLITE_HOME: options.runtimeContext.codexSqliteRoot,
+            },
+          },
+        );
     } catch {
       this.state = "failed";
       throw new CodexAppServerTransportError("spawn-failed", "not-written");

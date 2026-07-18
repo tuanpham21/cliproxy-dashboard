@@ -13,8 +13,9 @@ const qualified: CodexRuntimeQualification = {
   status: "qualified",
   version: "codex-cli 0.144.4",
   identity: {
-    canonicalPath: "/opt/codex/bin/codex",
-    codexStateRoot: "/home/operator/.codex",
+      canonicalPath: "/opt/codex/bin/codex",
+      codexStateRoot: "/home/operator/.codex",
+      codexSqliteRoot: "/home/operator/.codex/sqlite",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4:5",
     schemaHash: "a".repeat(64),
@@ -148,9 +149,15 @@ describe("ambiguous reset-redemption recovery", () => {
       idempotencyKey: "11111111-2222-4333-8444-555555555555",
       ...(expectedCreditId ? { creditId: expectedCreditId } : {}),
     }));
-    if (!expectedCreditId) expect(harness.gateway.consumeResetCredit.mock.calls[0][0]).not.toHaveProperty("creditId");
-    expect(harness.events.slice(0, 3)).toEqual(["account", "consume", "rate-limits"]);
-    expect(harness.gateway.readRateLimits).toHaveBeenCalledTimes(1);
+      if (!expectedCreditId) expect(harness.gateway.consumeResetCredit.mock.calls[0][0]).not.toHaveProperty("creditId");
+      expect(harness.events.slice(0, 3)).toEqual(["account", "consume", "rate-limits"]);
+      expect(harness.sessionOptions()).toMatchObject({
+        runtimeContext: {
+          codexStateRoot: qualified.identity.codexStateRoot,
+          codexSqliteRoot: qualified.identity.codexSqliteRoot,
+        },
+      });
+      expect(harness.gateway.readRateLimits).toHaveBeenCalledTimes(1);
   });
 
   it("retains ambiguous state and performs zero consume on account-digest mismatch", async () => {

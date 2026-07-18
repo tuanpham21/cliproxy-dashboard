@@ -18,8 +18,9 @@ const preparedInput: AcquirePreparedRedemptionInput = {
   accountCheck: { email: "operator@example.com", plan: "pro" },
   selection: { mode: "specific", creditId: "credit-secret-id" },
   runtimeIdentity: {
-    canonicalPath: "/opt/codex/bin/codex",
-    codexStateRoot: "/home/operator/.codex",
+      canonicalPath: "/opt/codex/bin/codex",
+      codexStateRoot: "/home/operator/.codex",
+      codexSqliteRoot: "/home/operator/.codex/sqlite",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4:5",
     schemaHash: "a".repeat(64),

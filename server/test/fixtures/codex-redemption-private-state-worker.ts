@@ -14,8 +14,9 @@ const input: AcquirePreparedRedemptionInput = {
   accountCheck: { email: "operator@example.com", plan: "pro" },
   selection: { mode: "generic" },
   runtimeIdentity: {
-    canonicalPath: "C:\\Program Files\\Codex\\codex.exe",
-    codexStateRoot: "C:\\Users\\Operator Name\\.codex",
+      canonicalPath: "C:\\Program Files\\Codex\\codex.exe",
+      codexStateRoot: "C:\\Users\\Operator Name\\.codex",
+      codexSqliteRoot: "C:\\Users\\Operator Name\\.codex\\sqlite",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4:5",
     schemaHash: "a".repeat(64),

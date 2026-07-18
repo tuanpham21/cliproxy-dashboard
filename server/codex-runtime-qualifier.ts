@@ -15,7 +15,12 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { verifyCodexStateRoot } from "./codex-state-privacy.js";
+import {
+  DefaultCodexRuntimeContextAdapter,
+  type CodexRuntimeContext,
+  type CodexRuntimeContextAdapterLike,
+  verifyCodexRuntimeContext,
+} from "./codex-runtime-context.js";
 import {
   createWindowsPrivatePathSecurity,
   type WindowsPrivatePathSecurity,
@@ -35,6 +40,7 @@ const READ_ONLY_NO_FOLLOW = constants.O_RDONLY | ((constants as { O_NOFOLLOW?: n
 export type CodexRuntimeIdentity = {
   canonicalPath: string;
   codexStateRoot: string;
+  codexSqliteRoot: string;
   version: string;
   fileIdentity: string;
   schemaHash: string;
@@ -58,7 +64,7 @@ export type CodexRuntimeQualification =
     };
 
 export interface CodexRuntimeQualifierLike {
-  qualify(codexBin: string): Promise<CodexRuntimeQualification>;
+  qualify(codexBin: string, context?: CodexRuntimeContext): Promise<CodexRuntimeQualification>;
   matchesIdentity(identity: CodexRuntimeIdentity, verifyVersion?: boolean): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -70,12 +76,13 @@ export type CodexRuntimeQualifierLimits = {
 };
 
 export type CodexRuntimeQualifierDependencies = {
-  env?: { PATH?: string; PATHEXT?: string; CODEX_HOME?: string };
+  env?: { PATH?: string; PATHEXT?: string; CODEX_HOME?: string; CODEX_SQLITE_HOME?: string };
   platform?: NodeJS.Platform;
   tempParent?: string;
   runCommand?: (binary: string, args: string[], timeoutMs: number) => Promise<{ stdout: string }>;
   removeTree?: (root: string) => Promise<void>;
-  verifyCodexStateRoot?: () => Promise<string>;
+  defaultContextAdapter?: CodexRuntimeContextAdapterLike;
+  verifyRuntimeContext?: (context: CodexRuntimeContext) => Promise<CodexRuntimeContext>;
   windowsSecurity?: WindowsPrivatePathSecurity;
   limits?: CodexRuntimeQualifierLimits;
 };
@@ -294,12 +301,13 @@ function isInsideRoot(root: string, candidate: string): boolean {
 }
 
 export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
-  private readonly env: { PATH?: string; PATHEXT?: string; CODEX_HOME?: string };
+  private readonly env: { PATH?: string; PATHEXT?: string; CODEX_HOME?: string; CODEX_SQLITE_HOME?: string };
   private readonly platform: NodeJS.Platform;
   private readonly tempParent: string;
   private readonly runCommand: CodexRuntimeQualifierDependencies["runCommand"];
   private readonly removeTree: (root: string) => Promise<void>;
-  private readonly verifyCodexState: () => Promise<string>;
+  private readonly defaultContextAdapter: CodexRuntimeContextAdapterLike;
+  private readonly verifyRuntimeContext: (context: CodexRuntimeContext) => Promise<CodexRuntimeContext>;
   private readonly windowsSecurity: WindowsPrivatePathSecurity;
   private readonly limits: CodexRuntimeQualifierLimits;
   private readonly cache = new Map<string, Extract<CodexRuntimeQualification, { status: "qualified" }>>();
@@ -313,20 +321,20 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     this.runCommand = dependencies.runCommand ?? defaultRunCommand;
     this.removeTree = dependencies.removeTree ?? (async (root) => await rm(root, { recursive: true, force: true }));
     this.windowsSecurity = dependencies.windowsSecurity ?? createWindowsPrivatePathSecurity();
-    this.verifyCodexState = dependencies.verifyCodexStateRoot ?? (() => verifyCodexStateRoot({
-      platform: this.platform,
-      env: this.env,
-      homedir: os.homedir,
-      windowsSecurity: this.windowsSecurity,
+    this.defaultContextAdapter = dependencies.defaultContextAdapter ?? new DefaultCodexRuntimeContextAdapter({
+      platform: this.platform, env: this.env, windowsSecurity: this.windowsSecurity,
+    });
+    this.verifyRuntimeContext = dependencies.verifyRuntimeContext ?? ((context) => verifyCodexRuntimeContext(context, {
+      platform: this.platform, windowsSecurity: this.windowsSecurity,
     }));
     this.limits = dependencies.limits ?? DEFAULT_LIMITS;
   }
 
-  async qualify(codexBin: string): Promise<CodexRuntimeQualification> {
+  async qualify(codexBin: string, context?: CodexRuntimeContext): Promise<CodexRuntimeQualification> {
     if (this.pendingCleanup.size > 0) return this.incompatible();
     let canonicalPath: string;
     let fileIdentity: string;
-    let codexStateRoot: string;
+    let runtimeContext: CodexRuntimeContext;
     try {
       canonicalPath = await resolveCodexExecutable(codexBin, this.platform, this.env);
       fileIdentity = await readCodexFileIdentity(canonicalPath);
@@ -334,13 +342,16 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
       return this.unavailable();
     }
     try {
-      codexStateRoot = await this.verifyCodexState();
+      runtimeContext = context
+        ? await this.verifyRuntimeContext(context)
+        : await this.defaultContextAdapter.resolve();
     } catch {
       return this.incompatible();
     }
     const cachePath = this.platform === "win32" ? canonicalPath.toLowerCase() : canonicalPath;
-    const cacheStateRoot = this.platform === "win32" ? codexStateRoot.toLowerCase() : codexStateRoot;
-    const cacheKey = `${cachePath}|${fileIdentity}|${cacheStateRoot}`;
+    const cacheStateRoot = this.platform === "win32" ? runtimeContext.codexStateRoot.toLowerCase() : runtimeContext.codexStateRoot;
+    const cacheSqliteRoot = this.platform === "win32" ? runtimeContext.codexSqliteRoot.toLowerCase() : runtimeContext.codexSqliteRoot;
+    const cacheKey = JSON.stringify([cachePath, fileIdentity, cacheStateRoot, cacheSqliteRoot]);
     const cached = this.cache.get(cacheKey);
     if (cached) {
       if (await this.matchesIdentity(cached.identity, true, false)) return cached;
@@ -349,7 +360,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     const running = this.inFlight.get(cacheKey);
     if (running) return running;
 
-    const operation = this.qualifyResolved(canonicalPath, codexStateRoot, fileIdentity, cacheKey);
+    const operation = this.qualifyResolved(canonicalPath, runtimeContext, fileIdentity, cacheKey);
     this.inFlight.set(cacheKey, operation);
     try {
       return await operation;
@@ -360,7 +371,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
 
   private async qualifyResolved(
     canonicalPath: string,
-    codexStateRoot: string,
+    context: CodexRuntimeContext,
     fileIdentity: string,
     cacheKey: string,
   ): Promise<CodexRuntimeQualification> {
@@ -370,7 +381,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
       const versionResult = await this.runCommand!(canonicalPath, ["--version"], 15_000);
       version = versionResult.stdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
       if (!version || Buffer.byteLength(version, "utf8") > 256) throw new Error("invalid version");
-      if (!(await this.matchesIdentity({ canonicalPath, codexStateRoot, version: "", fileIdentity, schemaHash: "" }, false, false))) {
+      if (!(await this.matchesIdentity({ canonicalPath, ...context, version: "", fileIdentity, schemaHash: "" }, false, false))) {
         identityChanged = true;
         throw new Error("runtime changed");
       }
@@ -384,7 +395,7 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
     try {
       schemaRoot = await mkdtemp(path.join(this.tempParent, "cliproxy-codex-schema-"));
       await this.verifyPrivateDirectory(schemaRoot);
-      if (!(await this.matchesIdentity({ canonicalPath, codexStateRoot, version, fileIdentity, schemaHash: "" }, false, false))) {
+      if (!(await this.matchesIdentity({ canonicalPath, ...context, version, fileIdentity, schemaHash: "" }, false, false))) {
         throw new Error("runtime changed");
       }
       await this.runCommand!(
@@ -392,14 +403,14 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
         ["app-server", "generate-json-schema", "--out", schemaRoot],
         15_000,
       );
-      if (!(await this.matchesIdentity({ canonicalPath, codexStateRoot, version, fileIdentity, schemaHash: "" }, false, false))) {
+      if (!(await this.matchesIdentity({ canonicalPath, ...context, version, fileIdentity, schemaHash: "" }, false, false))) {
         throw new Error("runtime changed");
       }
       const schemaHash = await this.inspectSchemaRoot(schemaRoot);
       result = {
         status: "qualified",
         version,
-        identity: { canonicalPath, codexStateRoot, version, fileIdentity, schemaHash },
+        identity: { canonicalPath, ...context, version, fileIdentity, schemaHash },
       };
     } catch {
       result = this.incompatible();
@@ -420,10 +431,12 @@ export class CodexRuntimeQualifier implements CodexRuntimeQualifierLike {
   async matchesIdentity(identity: CodexRuntimeIdentity, verifyVersion = true, verifyState = true): Promise<boolean> {
     try {
       if (verifyState) {
-        const codexStateRoot = await this.verifyCodexState();
+        const context = await this.verifyRuntimeContext(identity);
         const expectedState = this.platform === "win32" ? identity.codexStateRoot.toLowerCase() : identity.codexStateRoot;
-        const actualState = this.platform === "win32" ? codexStateRoot.toLowerCase() : codexStateRoot;
-        if (actualState !== expectedState) return false;
+        const actualState = this.platform === "win32" ? context.codexStateRoot.toLowerCase() : context.codexStateRoot;
+        const expectedSqlite = this.platform === "win32" ? identity.codexSqliteRoot.toLowerCase() : identity.codexSqliteRoot;
+        const actualSqlite = this.platform === "win32" ? context.codexSqliteRoot.toLowerCase() : context.codexSqliteRoot;
+        if (actualState !== expectedState || actualSqlite !== expectedSqlite) return false;
       }
       const canonical = await realpath(identity.canonicalPath);
       const expected = this.platform === "win32" ? identity.canonicalPath.toLowerCase() : identity.canonicalPath;

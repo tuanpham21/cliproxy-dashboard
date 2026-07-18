@@ -19,7 +19,11 @@ export function accountCheckDigest(key: Buffer, proposalId: string, email: strin
   return lengthPrefixedHmac(key, "cliproxy-dashboard/account-check/v1", [proposalId, email, plan]);
 }
 
-export function runtimePathDigest(key: Buffer, canonicalPath: string, codexStateRoot: string): string {
+export function runtimePathDigest(key: Buffer, canonicalPath: string, codexStateRoot: string, codexSqliteRoot: string): string {
+  return lengthPrefixedHmac(key, "cliproxy-dashboard/runtime-context/v3", [canonicalPath, codexStateRoot, codexSqliteRoot]);
+}
+
+function legacyRuntimePathDigest(key: Buffer, canonicalPath: string, codexStateRoot: string): string {
   return lengthPrefixedHmac(key, "cliproxy-dashboard/runtime-context/v2", [canonicalPath, codexStateRoot]);
 }
 
@@ -34,15 +38,26 @@ export function verifyRecoveryDigests(
   journal: RedemptionJournal,
   evidence: { accountCheck: { email: string; plan: string }; runtimeIdentity: CodexRuntimeIdentity },
 ): { accountMatches: boolean; runtimeMatches: boolean } {
+  const currentRuntimeDigest = runtimePathDigest(
+    key,
+    evidence.runtimeIdentity.canonicalPath,
+    evidence.runtimeIdentity.codexStateRoot,
+    evidence.runtimeIdentity.codexSqliteRoot,
+  );
+  const legacyRuntimeMatches =
+    evidence.runtimeIdentity.codexSqliteRoot === evidence.runtimeIdentity.codexStateRoot &&
+    equalDigest(
+      journal.runtimeIdentity.canonicalPathDigest,
+      legacyRuntimePathDigest(key, evidence.runtimeIdentity.canonicalPath, evidence.runtimeIdentity.codexStateRoot),
+    );
   return {
     accountMatches: equalDigest(
       journal.accountCheckDigest,
       accountCheckDigest(key, journal.proposalId, evidence.accountCheck.email, evidence.accountCheck.plan),
     ),
-    runtimeMatches: equalDigest(
-      journal.runtimeIdentity.canonicalPathDigest,
-      runtimePathDigest(key, evidence.runtimeIdentity.canonicalPath, evidence.runtimeIdentity.codexStateRoot),
-    ) && journal.runtimeIdentity.version === evidence.runtimeIdentity.version &&
+    runtimeMatches:
+      (equalDigest(journal.runtimeIdentity.canonicalPathDigest, currentRuntimeDigest) || legacyRuntimeMatches) &&
+      journal.runtimeIdentity.version === evidence.runtimeIdentity.version &&
       journal.runtimeIdentity.fileIdentity === evidence.runtimeIdentity.fileIdentity &&
       journal.runtimeIdentity.schemaHash === evidence.runtimeIdentity.schemaHash,
   };

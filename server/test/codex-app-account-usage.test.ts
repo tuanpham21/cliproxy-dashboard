@@ -15,11 +15,14 @@ const qualified: CodexRuntimeQualification = {
   identity: {
     canonicalPath: "/opt/codex/bin/codex",
     codexStateRoot: "/home/operator/.codex",
+    codexSqliteRoot: "/home/operator/.codex/sqlite",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4",
     schemaHash: "a".repeat(64),
   },
 };
+
+const authenticationRequired = Symbol("authentication-required");
 
 function qualifierWith(result: CodexRuntimeQualification): CodexRuntimeQualifierLike {
   return {
@@ -37,15 +40,18 @@ async function serviceHarness(
   initializeFakeCodexProcess(child, (message, acknowledge, process) => {
     acknowledge();
     const response = responses[String(message.method)];
-    if (response instanceof Error) {
+    if (response === authenticationRequired) {
+      process.sendJson({ jsonrpc: "2.0", id: message.id, error: { code: -32001, message: "authentication required" } });
+    } else if (response instanceof Error) {
       process.sendJson({ jsonrpc: "2.0", id: message.id, error: { code: -32002, message: response.message } });
     } else {
       process.sendJson({ jsonrpc: "2.0", id: message.id, result: response });
     }
   });
-  const startSession = vi.fn(async ({ codexBin }: { codexBin: string }) =>
-    await startCodexAppServerSession({ codexBin, spawnProcess: createFakeCodexSpawn(child) }),
-  );
+  const startSession = vi.fn(async ({ codexBin, runtimeContext }: {
+    codexBin: string;
+    runtimeContext: { codexStateRoot: string; codexSqliteRoot: string };
+  }) => await startCodexAppServerSession({ codexBin, runtimeContext, spawnProcess: createFakeCodexSpawn(child) }));
   const service = new CodexAppAccountUsageService({
     qualifier: qualifierWith(qualification),
     startSession,
@@ -109,7 +115,10 @@ describe("Codex app account usage service", () => {
     });
     expect(startSession).toHaveBeenCalledWith({
       codexBin: "/opt/codex/bin/codex",
-      codexHome: "/home/operator/.codex",
+      runtimeContext: {
+        codexStateRoot: "/home/operator/.codex",
+        codexSqliteRoot: "/home/operator/.codex/sqlite",
+      },
     });
     expect(child.killed).toBe(true);
   });
@@ -291,6 +300,19 @@ describe("Codex app account usage service", () => {
       message: "Couldn’t load Codex app usage.",
     });
     expect(JSON.stringify(result)).not.toContain("provider secret body");
+
+    const authenticationFailure = await serviceHarness({
+      "account/read": {
+        account: { type: "chatgpt", email: "operator@example.com", planType: "pro" },
+        requiresOpenaiAuth: false,
+      },
+      "account/rateLimits/read": authenticationRequired,
+    });
+    await expect(authenticationFailure.service.read("codex")).resolves.toMatchObject({
+      state: "signed-out",
+      errorCode: "codex_auth_required",
+      message: "Sign in to Codex with ChatGPT, then refresh.",
+    });
   });
 
   it("fails closed when the qualified binary identity changes before or after session start", async () => {
@@ -315,6 +337,7 @@ describe("Codex app account usage service", () => {
     } satisfies CodexRuntimeQualifierLike;
     const startSession = vi.fn(async () => await startCodexAppServerSession({
       codexBin: qualified.identity.canonicalPath,
+      runtimeContext: qualified.identity,
       spawnProcess: createFakeCodexSpawn(child),
     }));
     const afterService = new CodexAppAccountUsageService({ qualifier: afterSession, startSession });

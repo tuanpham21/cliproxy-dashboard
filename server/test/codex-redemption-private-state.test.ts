@@ -16,8 +16,9 @@ const proposalInput: AcquirePreparedRedemptionInput = {
   accountCheck: { email: "operator@example.com", plan: "pro" },
   selection: { mode: "specific", creditId: "credit-secret-id" },
   runtimeIdentity: {
-    canonicalPath: "/opt/codex/bin/codex",
-    codexStateRoot: "/home/operator/.codex",
+      canonicalPath: "/opt/codex/bin/codex",
+      codexStateRoot: "/home/operator/.codex",
+      codexSqliteRoot: "/home/operator/.codex/sqlite",
     version: "codex-cli 0.144.4",
     fileIdentity: "1:2:3:4:5",
     schemaHash: "a".repeat(64),
@@ -434,7 +435,7 @@ describe("private reset-redemption state", () => {
     });
   });
 
-  it("verifies retained account and runtime evidence without regenerating a missing digest key", async () => {
+    it("verifies retained account and runtime evidence without regenerating a missing digest key", async () => {
     const { store, rootPathForTests } = await storeHarness();
     const journal = await store.acquirePrepared(proposalInput);
 
@@ -450,16 +451,45 @@ describe("private reset-redemption state", () => {
       accountCheck: proposalInput.accountCheck,
       runtimeIdentity: { ...proposalInput.runtimeIdentity, canonicalPath: "/other/codex" },
     })).resolves.toEqual({ accountMatches: true, runtimeMatches: false });
-    await expect(store.verifyRecoveryEvidence(journal, {
-      accountCheck: proposalInput.accountCheck,
-      runtimeIdentity: { ...proposalInput.runtimeIdentity, codexStateRoot: "/other/codex-home" },
-    })).resolves.toEqual({ accountMatches: true, runtimeMatches: false });
+      await expect(store.verifyRecoveryEvidence(journal, {
+        accountCheck: proposalInput.accountCheck,
+        runtimeIdentity: { ...proposalInput.runtimeIdentity, codexStateRoot: "/other/codex-home" },
+      })).resolves.toEqual({ accountMatches: true, runtimeMatches: false });
+      await expect(store.verifyRecoveryEvidence(journal, {
+        accountCheck: proposalInput.accountCheck,
+        runtimeIdentity: { ...proposalInput.runtimeIdentity, codexSqliteRoot: "/other/codex-sqlite" },
+      })).resolves.toEqual({ accountMatches: true, runtimeMatches: false });
 
     await unlink(path.join(rootPathForTests, "account-digest.key"));
     await expect(store.verifyRecoveryEvidence(journal, {
       accountCheck: proposalInput.accountCheck,
       runtimeIdentity: proposalInput.runtimeIdentity,
     })).rejects.toMatchObject({ code: "redemption-recovery-required" });
-    await expect(stat(path.join(rootPathForTests, "account-digest.key"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(path.join(rootPathForTests, "account-digest.key"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("accepts a legacy default-root runtime digest but never rebinds it to separate SQLite state", async () => {
+      const { store } = await storeHarness({ randomBytes: () => Buffer.alloc(32, 7) });
+      const legacyIdentity = {
+        ...proposalInput.runtimeIdentity,
+        codexSqliteRoot: proposalInput.runtimeIdentity.codexStateRoot,
+      };
+      const journal = await store.acquirePrepared({ ...proposalInput, runtimeIdentity: legacyIdentity });
+      const legacyJournal = {
+        ...journal,
+        runtimeIdentity: {
+          ...journal.runtimeIdentity,
+          canonicalPathDigest: "uswiGhrA3HTud0iqnmIL7mgIkX7qU7EFLtlzibx6ZNg",
+        },
+      };
+
+      await expect(store.verifyRecoveryEvidence(legacyJournal, {
+        accountCheck: proposalInput.accountCheck,
+        runtimeIdentity: legacyIdentity,
+      })).resolves.toEqual({ accountMatches: true, runtimeMatches: true });
+      await expect(store.verifyRecoveryEvidence(legacyJournal, {
+        accountCheck: proposalInput.accountCheck,
+        runtimeIdentity: proposalInput.runtimeIdentity,
+      })).resolves.toEqual({ accountMatches: true, runtimeMatches: false });
+    });
   });
-});

@@ -15,6 +15,7 @@ import {
   recoverTerminalJournal,
   type TerminalRecoveryStore,
 } from "./codex-redemption-terminal-recovery.js";
+import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
 
 type RecoverySession = { close(): Promise<void> };
@@ -56,7 +57,7 @@ export type RecoveryCoordinatorDependencies = {
   qualifier: CodexRuntimeQualifierLike;
   startSession: (options: {
     codexBin: string;
-    codexHome: string;
+    runtimeContext: CodexRuntimeContext;
     onNotification: (notification: { method: string; params?: unknown }) => Promise<void> | void;
     onUnexpectedProcessClose: () => Promise<void> | void;
   }) => Promise<RecoverySession>;
@@ -110,7 +111,7 @@ export class CodexRedemptionRecoveryCoordinator {
       };
       session = await this.dependencies.startSession({
         codexBin: qualification.identity.canonicalPath,
-        codexHome: qualification.identity.codexStateRoot,
+        runtimeContext: runtimeContextFromIdentity(qualification.identity),
         onNotification: (notification) => {
           if (notification.method === "account/updated") active.invalidated = true;
         },
