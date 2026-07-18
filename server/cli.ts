@@ -1,6 +1,7 @@
 import process from "node:process";
 
 import { DEFAULT_DASHBOARD_PORT, DEFAULT_HOST, DEFAULT_PROXY_PORT } from "./constants.js";
+import { DEFAULT_MINIMUM_QUOTA_SPREAD, resolveMinimumQuotaSpread } from "./rotation-policy.js";
 import { startServer } from "./server.js";
 import { parseOptionalInteger } from "./util.js";
 
@@ -16,6 +17,7 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
   quotaSnapshotStatePath?: string;
   proxyUrl?: string;
   proxyPort?: number;
+  minimumQuotaSpread: number;
   inboundKey?: string | null;
     cliProxyBin?: string;
     managementKey?: string;
@@ -32,6 +34,7 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     quotaSnapshotStatePath: undefined as string | undefined,
     proxyUrl: undefined as string | undefined,
     proxyPort: undefined as number | undefined,
+    minimumQuotaSpread: DEFAULT_MINIMUM_QUOTA_SPREAD,
     inboundKey: undefined as string | null | undefined,
       cliProxyBin: undefined as string | undefined,
       managementKey: process.env.CLI_PROXY_MANAGEMENT_KEY,
@@ -40,7 +43,7 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--no-port-fallback] [--cli-proxy-bin <path>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--open]\n",
+        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--no-port-fallback] [--cli-proxy-bin <path>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--rotation-minimum-spread <percentage-points>] [--open]\n",
       );
       process.exit(0);
     }
@@ -90,6 +93,10 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     }
     if (arg === "--proxy-port") {
       parsed.proxyPort = parseOptionalInteger(argv[++index], DEFAULT_PROXY_PORT);
+      continue;
+    }
+    if (arg === "--rotation-minimum-spread") {
+      parsed.minimumQuotaSpread = resolveMinimumQuotaSpread(Number(argv[++index]));
       continue;
     }
     if (arg === "--inbound-key") {

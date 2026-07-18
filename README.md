@@ -144,6 +144,19 @@ pnpm run start -- `
 $env:CLI_PROXY_API_BIN = "C:\Tools\cli-proxy-api\cli-proxy-api.exe"
 ```
 
+### Rotation Minimum Quota Spread
+
+Automatic rotation requires a five-percentage-point weekly Quota Spread by
+default. A trusted isolated run may override that process-local threshold:
+
+```powershell
+pnpm run start -- --rotation-minimum-spread 1
+```
+
+The value must be greater than `0` and no greater than `100`. Lower thresholds
+increase switching sensitivity. Production keeps the default `5`; the live
+canary may use `1` only in its isolated runtime.
+
 Do not import provider account JSONs or start provider OAuth until the Phase F
 provider-auth gate.
 

@@ -38,6 +38,14 @@ describe("cliproxy dashboard basic config helpers", () => {
     expect(defaultCliProxyBin("win32")).toBe("C:\\Tools\\cli-proxy-api\\cli-proxy-api.exe");
   });
 
+  it("uses a five-point production spread and accepts an explicit canary override", () => {
+    expect(parseCliArgs([]).minimumQuotaSpread).toBe(5);
+    expect(parseCliArgs(["--rotation-minimum-spread", "1"]).minimumQuotaSpread).toBe(1);
+    expect(() => parseCliArgs(["--rotation-minimum-spread", "0"])).toThrow(/minimum quota spread/i);
+    expect(() => parseCliArgs(["--rotation-minimum-spread", "101"])).toThrow(/minimum quota spread/i);
+    expect(() => parseCliArgs(["--rotation-minimum-spread"])).toThrow(/minimum quota spread/i);
+  });
+
   it("resolves cli-proxy-api from explicit option before environment fallback", () => {
     const oldValue = process.env.CLI_PROXY_API_BIN;
     try {

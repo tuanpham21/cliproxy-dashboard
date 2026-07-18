@@ -127,6 +127,21 @@ describe("rotation policy", () => {
       })).kind).toBe("hold");
   });
 
+  it("uses an explicit minimum spread while keeping the five-point default", () => {
+    const closeAccounts = [
+      account({
+        fileName: "codex-active.json",
+        proxyAccountKey: "pak-active",
+        identityFingerprint: "fp-active",
+        weekly: { ...account().weekly!, usedPercent: 22, credentialFingerprint: "fp-active" },
+      }),
+      account({ weekly: { ...account().weekly!, usedPercent: 21 } }),
+    ];
+
+    expect(decideRotation(decisionInput({ accounts: closeAccounts }))).toMatchObject({ kind: "hold", spread: 1 });
+    expect(decideRotation(decisionInput({ accounts: closeAccounts, minimumQuotaSpread: 1 }))).toMatchObject({ kind: "switch", spread: 1 });
+  });
+
   it("chooses lowest usage, then LRU and stable key tie-breaks", () => {
     const lowA = account({ fileName: "codex-a.json", proxyAccountKey: "pak-a", lastSelectedAt: 200, weekly: { ...account().weekly!, usedPercent: 10 } });
     const higherButOlder = account({ fileName: "codex-older.json", proxyAccountKey: "pak-older", lastSelectedAt: 100, weekly: { ...account().weekly!, usedPercent: 12 } });

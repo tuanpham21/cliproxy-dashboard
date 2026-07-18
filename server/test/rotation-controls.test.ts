@@ -55,6 +55,20 @@ describe("rotation controls", () => {
     await coordinator.close();
   });
 
+  it("exposes the production default and an explicit minimum quota spread", async () => {
+    const root = await makeTempRoot();
+    const authDir = path.join(root, "auth");
+    const configPath = await writeConfig(root, authDir);
+
+    const production = await createRotationCoordinator({ configPath, authDir });
+    expect(production.publicState().minimumQuotaSpread).toBe(5);
+    await production.close();
+
+    const canary = await createRotationCoordinator({ configPath, authDir, minimumQuotaSpread: 1 });
+    expect(canary.publicState().minimumQuotaSpread).toBe(1);
+    await canary.close();
+  });
+
   it("rejects active mode when routing prerequisites are incompatible", async () => {
     const root = await makeTempRoot();
     const authDir = path.join(root, "auth");

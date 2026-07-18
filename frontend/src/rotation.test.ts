@@ -28,6 +28,7 @@ function rotation(overrides: Partial<PublicRotationState> = {}): PublicRotationS
   return {
     mode: "shadow",
     lifecycle: "shadow",
+    minimumQuotaSpread: 5,
     pool: [{ proxyAccountKey: "pak-a", fileName: "codex-pak-a.json", exclusivityAttested: true, addedAt: "2026-07-16T00:00:00.000Z" }],
     routingTargetKey: "pak-a",
     observedRoutedAccountKey: "pak-b",
@@ -50,6 +51,7 @@ describe("rotation panel", () => {
   it("renders controls, intended versus observed routing, pool intent, journal, and escaped audit", () => {
     const html = renderRotationPanel({ accounts: [account("pak-a"), account("pak-b")], rotation: rotation() });
     expect(html).toContain("Intended Routing Target");
+    expect(html).toContain("Minimum Spread");
     expect(html).toContain("Observed Routed Account");
     expect(html).toContain("pak-a@example.com");
     expect(html).toContain("pak-b@example.com");

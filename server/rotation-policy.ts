@@ -8,6 +8,21 @@ import type {
   QuotaWindowKind,
 } from "./rotation-types.js";
 
+export const DEFAULT_MINIMUM_QUOTA_SPREAD = 5;
+
+export function resolveMinimumQuotaSpread(value: unknown = DEFAULT_MINIMUM_QUOTA_SPREAD): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 100) {
+    throw new Error("Minimum quota spread must be greater than 0 and no greater than 100 percentage points");
+  }
+  return value;
+}
+
+function minimumQuotaSpreadLabel(value: number): string {
+  if (value === 1) return "one percentage point";
+  if (value === DEFAULT_MINIMUM_QUOTA_SPREAD) return "five percentage points";
+  return `${value} percentage points`;
+}
+
 export function classifyQuotaWindow(durationMinutes: unknown): QuotaWindowKind {
   if (typeof durationMinutes !== "number" || !Number.isFinite(durationMinutes) || durationMinutes <= 0) {
     return "unknown";
@@ -160,6 +175,8 @@ function switchBudgetExhausted(input: RotationDecisionInput): boolean {
 }
 
 export function decideRotation(input: RotationDecisionInput): RotationDecision {
+  const minimumQuotaSpread = resolveMinimumQuotaSpread(input.minimumQuotaSpread);
+  const minimumQuotaSpreadDescription = minimumQuotaSpreadLabel(minimumQuotaSpread);
   if (input.mode === "off") {
     return { kind: "hold", reason: "rotation is off" };
   }
@@ -219,11 +236,11 @@ export function decideRotation(input: RotationDecisionInput): RotationDecision {
   }
   const lowest = evidenceUsedPercent(eligible[0].weekly!);
   const spread = active - lowest;
-  if (spread < 5) {
-    return { kind: "hold", reason: "Quota Spread below five percentage points", activeUsedPercent: active, lowestUsedPercent: lowest, spread };
+  if (spread < minimumQuotaSpread) {
+    return { kind: "hold", reason: `Quota Spread below ${minimumQuotaSpreadDescription}`, activeUsedPercent: active, lowestUsedPercent: lowest, spread };
   }
   if (switchBudgetExhausted(input)) {
     return { kind: "pause", reason: "automatic switch budget exhausted", pauseReason: "switch-budget-exhausted" };
   }
-  return { kind: "switch", reason: "Quota Spread reached five percentage points", targetKey: candidate.proxyAccountKey, activeUsedPercent: active, lowestUsedPercent: lowest, spread };
+  return { kind: "switch", reason: `Quota Spread reached ${minimumQuotaSpreadDescription}`, targetKey: candidate.proxyAccountKey, activeUsedPercent: active, lowestUsedPercent: lowest, spread };
 }

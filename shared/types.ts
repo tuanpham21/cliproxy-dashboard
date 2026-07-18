@@ -116,6 +116,7 @@ export type LogSummary = {
 export type PublicRotationState = {
   mode: "off" | "shadow" | "active";
   lifecycle: "off" | "recovering" | "shadow" | "active" | "pending" | "awaiting-confirmation" | "manual-hold" | "paused" | "recovery-required";
+  minimumQuotaSpread: number;
   pool: Array<{ proxyAccountKey: string; fileName: string; exclusivityAttested: boolean; addedAt: string }>;
   routingTargetKey?: string;
   observedRoutedAccountKey?: string;

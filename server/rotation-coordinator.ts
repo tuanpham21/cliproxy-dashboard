@@ -10,7 +10,7 @@ import { openRotationController, type RotationController } from "./rotation-cont
 import type { RotationObservationBatch } from "./rotation-log-observer.js";
 import { resolveDashboardPaths } from "./paths.js";
 import { resolveAccountPath } from "./paths.js";
-import { deriveCredentialFingerprint, decideRotation, isProvisionalResetCandidate, isRotationEligible } from "./rotation-policy.js";
+import { deriveCredentialFingerprint, decideRotation, isProvisionalResetCandidate, isRotationEligible, resolveMinimumQuotaSpread } from "./rotation-policy.js";
 import { deriveProxyAccountKey, readQuotaSnapshotStoreFile } from "./quota-store.js";
 import { evaluateRotationObservationConsumption } from "./rotation-state-transitions.js";
 import type { ProvisionalResetAttempt, RotationAccountSnapshot, RotationDecision, RotationMode, RotationState, SemanticQuotaEvidence } from "./rotation-types.js";
@@ -205,6 +205,7 @@ export type RotationReadiness = { compatible: boolean; reason?: string };
 
 export type RotationCoordinatorOptions = {
   canMutate?: boolean;
+  minimumQuotaSpread?: number;
   readinessCheck?: () => Promise<RotationReadiness>;
   proxyAccountKeyResolver?: (fileName: string) => Promise<string> | string;
 };
@@ -213,6 +214,7 @@ export class RotationCoordinator {
   readonly #authDir: string;
   readonly #controller: RotationController;
   readonly #canMutate: boolean;
+  readonly #minimumQuotaSpread: number;
   readonly #readinessCheck?: RotationCoordinatorOptions["readinessCheck"];
   readonly #proxyAccountKeyResolver?: RotationCoordinatorOptions["proxyAccountKeyResolver"];
   #readiness: RotationReadiness = { compatible: true };
@@ -221,6 +223,7 @@ export class RotationCoordinator {
     this.#authDir = authDir;
     this.#controller = controller;
     this.#canMutate = options.canMutate ?? false;
+    this.#minimumQuotaSpread = resolveMinimumQuotaSpread(options.minimumQuotaSpread);
     this.#readinessCheck = options.readinessCheck;
     this.#proxyAccountKeyResolver = options.proxyAccountKeyResolver;
   }
@@ -234,6 +237,7 @@ export class RotationCoordinator {
     return {
       mode: state.mode,
       lifecycle: state.lifecycle,
+      minimumQuotaSpread: this.#minimumQuotaSpread,
       pool: state.pool,
       ...(state.routingTargetKey ? { routingTargetKey: state.routingTargetKey } : {}),
       ...(state.observedRoutedAccountKey ? { observedRoutedAccountKey: state.observedRoutedAccountKey } : {}),
@@ -392,9 +396,10 @@ export class RotationCoordinator {
           decisionAtMs,
         );
         provisionalResetAttemptUpdate = provisionalReset.attemptUpdate;
-        decision = provisionalReset.decision ?? decideRotation({
-            accounts: proxyAccounts,
-            routingTargetKey,
+          decision = provisionalReset.decision ?? decideRotation({
+              accounts: proxyAccounts,
+              minimumQuotaSpread: this.#minimumQuotaSpread,
+              routingTargetKey,
             nowMs: decisionAtMs,
             recentAutomaticSwitches: controllerState.switchTimestamps,
             observationId: observation!.observationId,
@@ -529,6 +534,7 @@ export class RotationCoordinator {
 }
 
 export async function createRotationCoordinator(options: DashboardOptions): Promise<RotationCoordinator> {
+  const minimumQuotaSpread = resolveMinimumQuotaSpread(options.minimumQuotaSpread);
   const paths = await resolveDashboardPaths(options);
   const statePath = path.join(path.dirname(paths.quotaSnapshotStatePath), "rotation-controller.json");
   const proxyAccountKeyForFile = async (fileName: string) => {
@@ -565,6 +571,7 @@ export async function createRotationCoordinator(options: DashboardOptions): Prom
     const controller = await openRotationController({ statePath, writer });
     const coordinator = new RotationCoordinator(paths.authDir, controller, {
       canMutate: Boolean(writer),
+      minimumQuotaSpread,
       readinessCheck,
       proxyAccountKeyResolver: proxyAccountKeyForFile,
     });

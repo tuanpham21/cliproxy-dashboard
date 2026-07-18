@@ -81,6 +81,7 @@ export type RotationAccountSnapshot = {
 
 export type RotationDecisionInput = {
   accounts: RotationAccountSnapshot[];
+  minimumQuotaSpread?: number;
   routingTargetKey?: string;
   nowMs: number;
   recentAutomaticSwitches: number[];

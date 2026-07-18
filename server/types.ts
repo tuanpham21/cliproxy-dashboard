@@ -131,6 +131,7 @@ export type DashboardOptions = {
   quotaSnapshotStatePath?: string;
   proxyPort?: number;
   proxyUrl?: string;
+  minimumQuotaSpread?: number;
   inboundKey?: string | null;
   host?: string;
   cliProxyBin?: string;

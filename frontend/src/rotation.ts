@@ -102,6 +102,7 @@ export function renderRotationPanel(data: RotationPanelData): string {
       ${metric("Rotation-Eligible", rotation.eligibleCount)}
       ${metric("Provisional Reset", rotation.provisionalCount)}
       ${metric("Quota Spread", rotation.quotaSpread === undefined ? "unknown" : `${rotation.quotaSpread} pp`)}
+      ${metric("Minimum Spread", `${rotation.minimumQuotaSpread} pp`)}
       ${metric("Journal", rotation.journal.phase, rotation.journal.intendedPriority === undefined ? journalTarget : `${journalTarget} · priority ${rotation.journal.intendedPriority}`)}
       ${metric("Restoration", rotation.restorationVerified ? "verified" : "not verified")}
       ${metric("Routing compatibility", rotation.routingCompatible ? "compatible" : "blocked", rotation.routingCompatibilityMessage)}
