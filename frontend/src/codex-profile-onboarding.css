@@ -1,0 +1,76 @@
+#codex-login-profiles-section {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.codex-profile-onboarding-copy {
+  max-width: 72ch;
+  margin: 0.35rem 0 0;
+}
+
+.codex-profile-onboarding-status,
+.codex-profile-onboarding-error {
+  margin: 0.8rem 0 0;
+}
+
+.codex-profile-onboarding-error {
+  color: var(--danger, #c2413b);
+  font-weight: 600;
+}
+
+.codex-profile-onboarding-workspace {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 12%);
+}
+
+.codex-profile-onboarding-workspace p {
+  margin: 0;
+}
+
+.codex-profile-candidate-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.codex-profile-candidate-details > div {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--panel);
+}
+
+.codex-profile-candidate-details dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.codex-profile-candidate-details dd {
+  margin: 0.3rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.codex-profile-confirmation-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  line-height: 1.4;
+}
+
+.codex-profile-confirmation-label input {
+  margin-top: 0.18rem;
+}
+
+.codex-profile-onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}

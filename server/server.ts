@@ -4,11 +4,14 @@ import process from "node:process";
 
 import { handleApi, isSameOriginRequest, jsonResponse } from "./api.js";
 import { CodexAppAccountUsageService } from "./codex-app-account-usage.js";
+import { CodexLoginProfileRegistry } from "./codex-login-profile-registry.js";
+import { CodexProfileLoginRunner } from "./codex-profile-login-runner.js";
+import { CodexProfileOnboardingService } from "./codex-profile-onboarding-service.js";
 import { CodexRedemptionService } from "./codex-redemption-service.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
 import { openExternalUrl, resolveCliProxyBin, resolveCodexBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
-import { defaultQuotaSnapshotStatePath } from "./paths.js";
+import { codexLoginProfilesManagerRoot, defaultQuotaSnapshotStatePath, resolveDashboardPaths } from "./paths.js";
 import { createRotationCoordinator } from "./rotation-coordinator.js";
 import { createRotationLogObserver, type RotationObservationBatch } from "./rotation-log-observer.js";
 import { serveFrontend } from "./static.js";
@@ -22,21 +25,33 @@ export async function startServer(
     onRotationObservation?: (batch: RotationObservationBatch) => Promise<void> | void;
   },
   ): Promise<void> {
-        const codexRuntimeQualifier = new CodexRuntimeQualifier();
-        const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
-        const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
-        await codexRedemptionService.initializeRecovery(resolveCodexBin(options));
+          const codexRuntimeQualifier = new CodexRuntimeQualifier();
+          const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
+            const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
+            const dashboardPaths = await resolveDashboardPaths(options);
+            const codexProfileLoginRunner = new CodexProfileLoginRunner();
+            const codexProfileOnboardingService = new CodexProfileOnboardingService({
+            registry: new CodexLoginProfileRegistry({
+              managerRoot: codexLoginProfilesManagerRoot(dashboardPaths.quotaSnapshotStatePath),
+            }),
+              loginRunner: codexProfileLoginRunner,
+              codexBin: resolveCodexBin(options),
+              qualifier: codexRuntimeQualifier,
+            });
+          await codexRedemptionService.initializeRecovery(resolveCodexBin(options));
         const serverOptions: DashboardOptions & {
           operatorToken: string;
           rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null;
-          codexAccountUsageService: CodexAppAccountUsageService;
-          codexRedemptionService: CodexRedemptionService;
+            codexAccountUsageService: CodexAppAccountUsageService;
+            codexProfileOnboardingService: CodexProfileOnboardingService;
+            codexRedemptionService: CodexRedemptionService;
         } = {
         ...options,
         operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
         rotationCoordinator: null,
-        codexAccountUsageService,
-        codexRedemptionService,
+          codexAccountUsageService,
+          codexProfileOnboardingService,
+          codexRedemptionService,
       };
   const server = createServer(async (req, res) => {
     try {
@@ -118,9 +133,10 @@ export async function startServer(
     try {
       await rotationObserver.start();
       } catch (error) {
-        await rotationCoordinator.close();
-        await codexRedemptionService.close().catch(() => {});
-        await codexRuntimeQualifier.close();
+          await rotationCoordinator.close();
+          await codexRedemptionService.close().catch(() => {});
+          await codexProfileLoginRunner.close().catch(() => {});
+          await codexRuntimeQualifier.close();
         await new Promise<void>((resolve) => server.close(() => resolve()));
         throw error;
     }
@@ -140,9 +156,10 @@ export async function startServer(
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
         await rotationObserver.close();
-        await rotationCoordinator.close();
-        await codexRedemptionService.close().catch(() => {});
-        await codexRuntimeQualifier.close();
+          await rotationCoordinator.close();
+          await codexRedemptionService.close().catch(() => {});
+          await codexProfileLoginRunner.close().catch(() => {});
+          await codexRuntimeQualifier.close();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     process.exit(0);
   };

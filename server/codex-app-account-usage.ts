@@ -9,6 +9,7 @@ import {
   type CodexRateLimitWindow,
   type CodexResetCredit,
 } from "./codex-account-gateway.js";
+import { codexSecondsToIso, normalizeCodexAvailableCount, normalizeCodexUsageWindow } from "./codex-account-normalization.js";
 import { startCodexAppServerSession, type CodexAppServerSession } from "./codex-app-server-client.js";
 import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import type { CodexRuntimeQualification, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
@@ -51,25 +52,6 @@ function runtimeView(qualification: CodexRuntimeQualification): CodexAccountUsag
   };
 }
 
-function secondsToIso(value: number | null): string | null {
-  if (value === null || !Number.isSafeInteger(value) || value < 0) return null;
-  const date = new Date(value * 1000);
-  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
-}
-
-function usageWindow(window: CodexRateLimitWindow | null): CodexAccountUsageWindow | null {
-  if (!window) return null;
-  return {
-    usedPercent:
-      Number.isFinite(window.usedPercent) && window.usedPercent >= 0 && window.usedPercent <= 100
-        ? window.usedPercent
-        : null,
-    durationMinutes:
-      window.windowMinutes !== null && window.windowMinutes >= 0 ? window.windowMinutes : null,
-    resetsAt: secondsToIso(window.resetsAt),
-  };
-}
-
 function boundedText(value: string | null, maxBytes: number): string | null {
   if (value === null) return null;
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
@@ -85,8 +67,8 @@ function resetCredit(credit: CodexResetCredit): CodexAccountResetCredit {
     availability: credit.availability,
     title: boundedText(credit.title, 256),
     description: boundedText(credit.description, 2048),
-    grantedAt: secondsToIso(credit.grantedAt),
-    expiresAt: secondsToIso(credit.expiresAt),
+    grantedAt: codexSecondsToIso(credit.grantedAt),
+    expiresAt: codexSecondsToIso(credit.expiresAt),
   };
 }
 
@@ -165,7 +147,7 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
         return left.expiresAt.localeCompare(right.expiresAt) || (left.id ?? "").localeCompare(right.id ?? "");
       });
       credits.splice(128);
-      const availableCount = rateLimits.resetCredits?.availableCount ?? 0;
+        const availableCount = normalizeCodexAvailableCount(rateLimits.resetCredits?.availableCount) ?? 0;
       const selectionMode =
         availableCount <= 0
           ? "none"
@@ -177,8 +159,8 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
         account,
         observedAt,
         usage: {
-          primary: usageWindow(rateLimits.rateLimits.primary),
-          secondary: usageWindow(rateLimits.rateLimits.secondary),
+            primary: normalizeCodexUsageWindow(rateLimits.rateLimits.primary),
+            secondary: normalizeCodexUsageWindow(rateLimits.rateLimits.secondary),
         },
         resetCredits: { availableCount, selectionMode, credits },
       } as const;

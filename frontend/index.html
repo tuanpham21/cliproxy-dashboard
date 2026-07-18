@@ -44,7 +44,39 @@
         </div>
       </section>
 
-        <section id="codex-app-account-section" aria-labelledby="codex-app-account-title">
+          <section id="codex-login-profiles-section" aria-labelledby="codex-login-profiles-title">
+            <div class="section-title">
+              <div>
+                <h2 id="codex-login-profiles-title">Codex Login Profiles</h2>
+                <p class="muted small codex-profile-onboarding-copy">Add an isolated Codex app login. The dashboard uses the official browser login and never receives tokens or profile paths.</p>
+              </div>
+              <button type="button" id="add-codex-login-profile" class="small">Add Codex Login Profile</button>
+            </div>
+            <p id="codex-profile-onboarding-status" class="codex-profile-onboarding-status" role="status" aria-live="polite" aria-atomic="true" aria-label="Codex profile onboarding status">No Codex Login Profile onboarding is active.</p>
+            <p id="codex-profile-onboarding-error" class="codex-profile-onboarding-error" role="alert" aria-label="Codex profile onboarding error" hidden></p>
+            <div id="codex-profile-onboarding-workspace" class="codex-profile-onboarding-workspace" hidden>
+              <p id="codex-profile-onboarding-instructions"></p>
+              <dl id="codex-profile-candidate-details" class="codex-profile-candidate-details" hidden>
+                <div><dt>Account email</dt><dd id="codex-profile-candidate-email"></dd></div>
+                <div><dt>Plan</dt><dd id="codex-profile-candidate-plan"></dd></div>
+                <div><dt>Primary usage</dt><dd id="codex-profile-candidate-primary-usage"></dd></div>
+                <div><dt>Usage Limit Reset Credits</dt><dd id="codex-profile-candidate-reset-credits"></dd></div>
+                <div><dt>Observed</dt><dd id="codex-profile-candidate-observed-at"></dd></div>
+              </dl>
+              <label id="codex-profile-confirmation-label" class="codex-profile-confirmation-label" hidden>
+                <input id="codex-profile-confirmation" type="checkbox">
+                This is the intended Codex app account and plan for this private profile.
+              </label>
+              <div class="codex-profile-onboarding-actions">
+                <button type="button" id="check-codex-login-profile" hidden>Check logged-in account</button>
+                <button type="button" id="retry-codex-login-profile" hidden>Retry browser login</button>
+                <button type="button" id="confirm-codex-login-profile" class="primary" hidden disabled>Confirm Codex account</button>
+                <button type="button" id="cancel-codex-login-profile" hidden>Cancel Codex profile onboarding</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="codex-app-account-section" aria-labelledby="codex-app-account-title">
           <div class="section-title">
             <div>
               <h2 id="codex-app-account-title">Codex app account</h2>

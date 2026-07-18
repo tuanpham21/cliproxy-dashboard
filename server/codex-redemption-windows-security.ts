@@ -8,6 +8,7 @@ export type WindowsAclCommandRunner = (
 
 export type WindowsPrivatePathSecurity = {
   secureCreatedDirectory(path: string): Promise<void>;
+  secureCreatedFile?(path: string): Promise<void>;
   verifyPrivatePath(path: string, requireProtected: boolean): Promise<void>;
 };
 
@@ -156,11 +157,11 @@ export function createWindowsPrivatePathSecurity(
       if (error instanceof WindowsPrivatePathSecurityError) throw error;
       throw new WindowsPrivatePathSecurityError();
     }
-  };
+    };
 
-  return {
-    async secureCreatedDirectory(targetPath: string): Promise<void> {
-      const sid = await currentUserSid();
+    return {
+      async secureCreatedDirectory(targetPath: string): Promise<void> {
+        const sid = await currentUserSid();
       try {
         await runCommand("icacls.exe", [targetPath, "/reset", "/c", "/q"], ICACLS_TIMEOUT_MS);
         await runCommand("icacls.exe", [
@@ -173,11 +174,30 @@ export function createWindowsPrivatePathSecurity(
           "/q",
         ], ICACLS_TIMEOUT_MS);
         await verifyPrivatePath(targetPath, true);
-      } catch (error) {
-        if (error instanceof WindowsPrivatePathSecurityError) throw error;
-        throw new WindowsPrivatePathSecurityError();
-      }
-    },
-    verifyPrivatePath,
-  };
-}
+        } catch (error) {
+          if (error instanceof WindowsPrivatePathSecurityError) throw error;
+          throw new WindowsPrivatePathSecurityError();
+        }
+      },
+      async secureCreatedFile(targetPath: string): Promise<void> {
+        const sid = await currentUserSid();
+        try {
+          await runCommand("icacls.exe", [targetPath, "/reset", "/c", "/q"], ICACLS_TIMEOUT_MS);
+          await runCommand("icacls.exe", [
+            targetPath,
+            "/inheritance:r",
+            "/grant:r",
+            `*${sid}:F`,
+            `*${SYSTEM_SID}:F`,
+            "/c",
+            "/q",
+          ], ICACLS_TIMEOUT_MS);
+          await verifyPrivatePath(targetPath, true);
+        } catch (error) {
+          if (error instanceof WindowsPrivatePathSecurityError) throw error;
+          throw new WindowsPrivatePathSecurityError();
+        }
+      },
+      verifyPrivatePath,
+    };
+  }

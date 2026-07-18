@@ -5,6 +5,13 @@ import type {
   CodexRedemptionStateView,
   PrepareCodexRedemptionInput,
 } from "../../shared/codex-account-types";
+import type {
+  CodexProfileCandidateView,
+  CodexProfileCancelledView,
+  CodexProfileConfirmedView,
+  CodexProfileLoginStartedView,
+  ConfirmCodexProfileInput,
+} from "../../shared/codex-profile-onboarding-types";
 
 const TOKEN_PLACEHOLDER = "__CLIPROXY_OPERATOR_TOKEN__";
 const OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";
@@ -138,6 +145,41 @@ export async function readCodexAccountUsage(): Promise<CodexAccountUsageView> {
       resetCredits: null,
     };
   }
+}
+
+export async function createCodexLoginProfile(): Promise<CodexProfileLoginStartedView> {
+  return await postJson<CodexProfileLoginStartedView>("/api/codex/login-profiles", {});
+}
+
+export async function observeCodexLoginProfile(profileId: string): Promise<CodexProfileCandidateView> {
+  return await requestJson<CodexProfileCandidateView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}/onboarding`,
+    {},
+    true,
+  );
+}
+
+export async function retryCodexLoginProfile(profileId: string): Promise<CodexProfileLoginStartedView> {
+  return await postJson<CodexProfileLoginStartedView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}/retry`,
+    {},
+  );
+}
+
+export async function confirmCodexLoginProfile(
+  profileId: string,
+  input: ConfirmCodexProfileInput,
+): Promise<CodexProfileConfirmedView> {
+  return await postJson<CodexProfileConfirmedView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}/confirm`,
+    input,
+  );
+}
+
+export async function cancelCodexLoginProfile(profileId: string): Promise<CodexProfileCancelledView> {
+  return await deleteJson<CodexProfileCancelledView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}`,
+  );
 }
 
 export async function prepareCodexRedemption(

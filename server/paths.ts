@@ -35,6 +35,10 @@ export function defaultQuotaSnapshotStatePath(authDir: string): string {
   return path.join(authDir, DASHBOARD_STATE_DIR_NAME, QUOTA_SNAPSHOT_STATE_FILE_NAME);
 }
 
+export function codexLoginProfilesManagerRoot(quotaSnapshotStatePath: string): string {
+  return path.join(path.dirname(path.resolve(quotaSnapshotStatePath)), "codex-login-profiles");
+}
+
 export function resolveQuotaSnapshotStatePath(authDir: string, overridePath?: string): string {
   return path.resolve(overridePath ?? defaultQuotaSnapshotStatePath(authDir));
 }
