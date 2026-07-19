@@ -3,7 +3,7 @@ import type {
   CodexRedemptionCurrentView,
   CodexRedemptionProposalView,
   CodexRedemptionStateView,
-  PrepareCodexRedemptionInput,
+  LegacyPrepareCodexRedemptionInput,
 } from "../../shared/codex-account-types";
 import type {
   CodexProfileCandidateView,
@@ -229,7 +229,7 @@ export async function cancelCodexLoginProfileRefreshAll(): Promise<CodexProfileR
 }
 
 export async function prepareCodexRedemption(
-  input: PrepareCodexRedemptionInput,
+  input: LegacyPrepareCodexRedemptionInput,
 ): Promise<CodexRedemptionProposalView> {
   return await postJson<CodexRedemptionProposalView>("/api/codex/reset-redemptions/proposals", input);
 }

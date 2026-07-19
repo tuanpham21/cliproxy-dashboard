@@ -82,7 +82,10 @@ export type CodexRedemptionStateView =
 
 export type CodexRedemptionCurrentView = CodexRedemptionProposalView | CodexRedemptionStateView;
 
-export type PrepareCodexRedemptionInput = {
+type CodexRedemptionPrepareFields = {
   creditId?: string;
   singleWorkspaceAttested: true;
 };
+
+export type PrepareCodexRedemptionInput = CodexRedemptionPrepareFields & { profileId: string };
+export type LegacyPrepareCodexRedemptionInput = CodexRedemptionPrepareFields & { profileId?: string };

@@ -10,7 +10,7 @@ import { CodexProfileObservationStore } from "./codex-profile-observation-store.
 import { CodexProfileObservationService } from "./codex-profile-observation-service.js";
 import { CodexProfileRefreshCoordinator } from "./codex-profile-refresh-coordinator.js";
 import { CodexProfileOnboardingService } from "./codex-profile-onboarding-service.js";
-import { CodexRedemptionService } from "./codex-redemption-service.js";
+import { CodexProfileRedemptionService } from "./codex-profile-redemption-service.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
 import { openExternalUrl, resolveCliProxyBin, resolveCodexBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
@@ -30,11 +30,14 @@ export async function startServer(
 ): Promise<void> {
   const codexRuntimeQualifier = new CodexRuntimeQualifier();
   const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
-  const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
   const dashboardPaths = await resolveDashboardPaths(options);
   const codexProfilesManagerRoot = codexLoginProfilesManagerRoot(dashboardPaths.quotaSnapshotStatePath);
   const codexLoginProfileRegistry = new CodexLoginProfileRegistry({
     managerRoot: codexProfilesManagerRoot,
+  });
+  const codexRedemptionService = new CodexProfileRedemptionService({
+    qualifier: codexRuntimeQualifier,
+    registry: codexLoginProfileRegistry,
   });
   const codexProfileLoginRunner = new CodexProfileLoginRunner();
   const codexProfileObservationStore = new CodexProfileObservationStore({ managerRoot: codexProfilesManagerRoot });
@@ -62,7 +65,7 @@ export async function startServer(
     codexProfileOnboardingService: CodexProfileOnboardingService;
     codexProfileObservationService: CodexProfileObservationService;
     codexProfileRefreshCoordinator: CodexProfileRefreshCoordinator;
-    codexRedemptionService: CodexRedemptionService;
+    codexRedemptionService: CodexProfileRedemptionService;
   } = {
     ...options,
     operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),

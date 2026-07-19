@@ -5,6 +5,7 @@ import type {
   CodexRedemptionProposalView,
   CodexRedemptionCurrentView,
   CodexRedemptionStateView,
+  LegacyPrepareCodexRedemptionInput,
   PrepareCodexRedemptionInput,
 } from "../shared/codex-account-types.js";
 import type { CodexAccountUsageWindow } from "../shared/types.js";
@@ -278,7 +279,7 @@ export class CodexRedemptionService implements CodexRedemptionController {
     await this.recovery?.initialize(codexBin);
   }
 
-  async prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
+  async prepare(codexBin: string, input: LegacyPrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
     if (input.singleWorkspaceAttested !== true) {
       throw new CodexRedemptionServiceError("redemption-attestation-required");
     }

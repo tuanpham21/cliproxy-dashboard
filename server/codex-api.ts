@@ -4,6 +4,7 @@ import type { PrepareCodexRedemptionInput } from "../shared/codex-account-types.
 import { isCodexRedemptionProposalId } from "../shared/codex-redemption-identifiers.js";
 
 import type { CodexAccountUsageReader } from "./codex-app-account-usage.js";
+import { isRegistryProfileId } from "./codex-login-profile-registry-migration.js";
 import { resolveCodexBin } from "./commands.js";
 import {
   CodexRedemptionServiceError,
@@ -236,13 +237,18 @@ function parsePrepareBody(value: unknown): PrepareCodexRedemptionInput {
   }
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
-  if (keys.some((key) => key !== "creditId" && key !== "singleWorkspaceAttested")) {
+  if (keys.some((key) => key !== "profileId" && key !== "creditId" && key !== "singleWorkspaceAttested")) {
     throw new CodexRedemptionRequestError();
   }
   if (record.singleWorkspaceAttested !== true) {
     throw new CodexRedemptionServiceError("redemption-attestation-required");
   }
-  if (record.creditId === undefined) return { singleWorkspaceAttested: true };
+  if (typeof record.profileId !== "string" || !isRegistryProfileId(record.profileId)) {
+    throw new CodexRedemptionRequestError();
+  }
+  if (record.creditId === undefined) {
+    return { profileId: record.profileId, singleWorkspaceAttested: true };
+  }
   if (
     typeof record.creditId !== "string" ||
     record.creditId.length === 0 ||
@@ -250,7 +256,7 @@ function parsePrepareBody(value: unknown): PrepareCodexRedemptionInput {
   ) {
     throw new CodexRedemptionRequestError();
   }
-  return { creditId: record.creditId, singleWorkspaceAttested: true };
+  return { profileId: record.profileId, creditId: record.creditId, singleWorkspaceAttested: true };
 }
 
 function respondRedemptionError(res: ServerResponse, error: unknown, jsonResponse: JsonResponse, fallback = "Couldn’t prepare reset redemption."): void {

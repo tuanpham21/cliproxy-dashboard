@@ -104,6 +104,7 @@ describe("Codex reset-redemption API", () => {
 
     await handleApi(
       request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
+        profileId: `profile_${"a".repeat(32)}`,
         creditId: "credit-1",
         singleWorkspaceAttested: true,
       })),
@@ -119,6 +120,7 @@ describe("Codex reset-redemption API", () => {
     expect(response.getStatus()).toBe(201);
     expect(response.getParsed()).toEqual(proposal);
     expect(service.prepare).toHaveBeenCalledWith("/opt/codex/bin/codex", {
+      profileId: `profile_${"a".repeat(32)}`,
       creditId: "credit-1",
       singleWorkspaceAttested: true,
     });
@@ -225,7 +227,11 @@ describe("Codex reset-redemption API", () => {
 
   it("enforces listener, IPv4/IPv6 caller, Origin, Host, and operator-token boundaries", async () => {
     const service = redemptionService();
-    const validBody = JSON.stringify({ singleWorkspaceAttested: true, creditId: "credit-1" });
+    const validBody = JSON.stringify({
+      profileId: `profile_${"a".repeat(32)}`,
+      singleWorkspaceAttested: true,
+      creditId: "credit-1",
+    });
     const invalidCases = [
       {
         req: request("POST", "/api/codex/reset-redemptions/proposals", validBody, "127.0.0.1", sameOriginHeaders(false)),
@@ -294,6 +300,13 @@ describe("Codex reset-redemption API", () => {
       })),
       request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
         singleWorkspaceAttested: false,
+      })),
+      request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
+        singleWorkspaceAttested: true,
+      })),
+      request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
+        profileId: "/private/codex/profile-root",
+        singleWorkspaceAttested: true,
       })),
       request("POST", "/api/codex/reset-redemptions/proposals", `{"singleWorkspaceAttested":true,"creditId":"${"x".repeat(2_100)}"}`),
       request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
