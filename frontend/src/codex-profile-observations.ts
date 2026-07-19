@@ -3,11 +3,15 @@ import type {
   CodexProfileObservationRowView,
 } from "../../shared/codex-profile-observation-types";
 import { summarizeCodexProfileObservations } from "../../shared/codex-profile-observation-types";
+import type { CodexProfileRefreshRunView } from "../../shared/codex-profile-refresh-types";
 import {
+  cancelCodexLoginProfileRefreshAll,
   DashboardApiError,
   readCodexLoginProfiles,
+  readCodexLoginProfileRefreshAll,
   refreshCodexLoginProfile,
   reorderCodexLoginProfiles,
+  startCodexLoginProfileRefreshAll,
   updateCodexLoginProfile,
 } from "./api";
 
@@ -105,7 +109,8 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
   const actions: Array<[RowAction, string, boolean]> = [
     ["save", `Save label for ${profile.label}`, false],
     ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled],
-    ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" || profile.status === "identity-changed"],
+      ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" ||
+        profile.status === "identity-changed" || profile.status === "re-login-required"],
     ["up", `Move ${profile.label} up`, profile.order === 0],
     ["down", `Move ${profile.label} down`, profile.order === count - 1],
   ];
@@ -131,12 +136,14 @@ export function setupCodexProfileObservations() {
   const status = byId("codex-profile-observation-status");
   const error = byId("codex-profile-observation-error");
   const rows = byId<HTMLTableSectionElement>("codex-profile-observation-rows");
+  const refreshAllButton = byId<HTMLButtonElement>("refresh-all-codex-login-profiles");
+  const cancelRefreshAllButton = byId<HTMLButtonElement>("cancel-refresh-all-codex-login-profiles");
   let current: CodexProfileObservationListView = { profiles: [], summary: summarizeCodexProfileObservations([]) };
   let busy = false;
 
   const render = () => {
     const value = current.summary;
-    summary.textContent = `${value.total} profiles · ${value.profilesWithResets} with resets · ${value.fresh} fresh · ${value.latestKnown} latest-known · ${value.pending} pending · ${value.identityChanged} identity-changed · ${value.disabled} disabled · ${value.neverObserved} never-observed`;
+    summary.textContent = `${value.total} profiles · ${value.profilesWithResets} with resets · ${value.fresh} fresh · ${value.refreshNeeded} refresh-needed · ${value.stale} stale · ${value.latestKnown} latest-known · ${value.pending} pending · ${value.reLoginRequired} re-login-required · ${value.identityChanged} identity-changed · ${value.disabled} disabled · ${value.neverObserved} never-observed`;
     rows.replaceChildren(...current.profiles.map((profile) => rowElement(profile, current.profiles.length)));
     if (current.profiles.length === 0) {
       const row = document.createElement("tr");
@@ -154,15 +161,84 @@ export function setupCodexProfileObservations() {
     error.hidden = false;
   };
 
+  const renderRefreshAll = (run: CodexProfileRefreshRunView) => {
+    const currentProfile = run.profiles.find((profile) => profile.profileId === run.currentProfileId);
+    const failed = run.profiles.filter((profile) => profile.status === "failed").length;
+    refreshAllButton.disabled = run.outcome === "running";
+    cancelRefreshAllButton.disabled = run.outcome !== "running";
+    if (run.outcome === "idle") return;
+    if (run.outcome === "running") {
+      status.textContent = `Refreshing ${run.completed} of ${run.total}${currentProfile ? ` · ${currentProfile.label}` : ""}`;
+      return;
+    }
+    if (run.outcome === "completed") {
+      status.textContent = `Refresh all completed · ${run.completed} of ${run.total}`;
+      return;
+    }
+    if (run.outcome === "partial") {
+      status.textContent = `Refresh all partially completed · ${run.completed} of ${run.total} · ${failed} failed`;
+      return;
+    }
+    status.textContent = `Refresh all cancelled · ${run.completed} of ${run.total}`;
+  };
+
+  const loadProfiles = async () => {
+    current = await readCodexLoginProfiles();
+    render();
+  };
+
+  const monitorRefreshAll = async (initial: CodexProfileRefreshRunView) => {
+    let run = initial;
+    busy = run.outcome === "running";
+    rows.setAttribute("aria-busy", String(busy));
+    renderRefreshAll(run);
+    while (run.outcome === "running") {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      run = await readCodexLoginProfileRefreshAll();
+      renderRefreshAll(run);
+    }
+    busy = false;
+    rows.setAttribute("aria-busy", "false");
+    await loadProfiles();
+  };
+
   const refresh = async () => {
     try {
-      current = await readCodexLoginProfiles();
+      const [profiles, refreshAll] = await Promise.all([
+        readCodexLoginProfiles(),
+        readCodexLoginProfileRefreshAll(),
+      ]);
+      current = profiles;
       error.hidden = true;
       render();
+      renderRefreshAll(refreshAll);
+      if (refreshAll.outcome === "running") void monitorRefreshAll(refreshAll).catch(showError);
     } catch (caught) {
       showError(caught);
     }
   };
+
+  refreshAllButton.addEventListener("click", () => {
+    if (busy) return;
+    void (async () => {
+      error.hidden = true;
+      try {
+        await monitorRefreshAll(await startCodexLoginProfileRefreshAll());
+      } catch (caught) {
+        busy = false;
+        rows.setAttribute("aria-busy", "false");
+        showError(caught);
+      }
+    })();
+  });
+
+  cancelRefreshAllButton.addEventListener("click", () => {
+    if (!busy) return;
+    cancelRefreshAllButton.disabled = true;
+    void cancelCodexLoginProfileRefreshAll()
+      .then(renderRefreshAll)
+      .catch(showError);
+  });
 
   const replaceRow = (updated: CodexProfileObservationRowView) => {
     current.profiles = current.profiles.map((profile) => profile.profileId === updated.profileId ? updated : profile);

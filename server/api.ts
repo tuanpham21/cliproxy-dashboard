@@ -10,6 +10,7 @@ import { handleCodexProfileApi, type CodexProfileOnboardingController } from "./
 import {
   handleCodexProfileObservationApi,
   type CodexProfileObservationController,
+  type CodexProfileRefreshController,
 } from "./codex-profile-observation-api.js";
 import type { CodexRedemptionController } from "./codex-redemption-service.js";
 import { cleanupStuckOauthLogins, resolveCliProxyBin, startOauthLogin } from "./commands.js";
@@ -173,6 +174,7 @@ export async function handleApi(
     codexAccountUsageService?: CodexAccountUsageReader;
     codexProfileOnboardingService?: CodexProfileOnboardingController;
     codexProfileObservationService?: CodexProfileObservationController;
+    codexProfileRefreshCoordinator?: CodexProfileRefreshController;
     codexRedemptionService?: CodexRedemptionController;
   },
 ): Promise<boolean> {
@@ -189,7 +191,18 @@ export async function handleApi(
     return true;
   }
 
-  if (await handleCodexProfileObservationApi(req, res, method, url.pathname, segments, options, options.codexProfileObservationService, jsonResponse, readJsonBody)) return true;
+  if (await handleCodexProfileObservationApi(
+    req,
+    res,
+    method,
+    url.pathname,
+    segments,
+    options,
+    options.codexProfileObservationService,
+    options.codexProfileRefreshCoordinator,
+    jsonResponse,
+    readJsonBody,
+  )) return true;
   if (await handleCodexProfileApi(req, res, method, url.pathname, segments, options, options.codexProfileOnboardingService, jsonResponse, readJsonBody)) return true;
 
   if (await handleRotationApi(req, res, method, url.pathname, segments, options.rotationCoordinator)) return true;

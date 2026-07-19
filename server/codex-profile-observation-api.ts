@@ -9,12 +9,14 @@ import {
   CodexProfileObservationServiceError,
   type CodexProfileObservationService,
 } from "./codex-profile-observation-service.js";
+import type { CodexProfileRefreshCoordinator } from "./codex-profile-refresh-coordinator.js";
 import type { DashboardOptions } from "./types.js";
 
 export type CodexProfileObservationController = Pick<
   CodexProfileObservationService,
   "list" | "refresh" | "reorder" | "updateMetadata"
 >;
+export type CodexProfileRefreshController = Pick<CodexProfileRefreshCoordinator, "cancel" | "refreshAll" | "status">;
 
 type JsonResponse = (res: ServerResponse, status: number, payload: unknown) => void;
 type ReadJsonBody = (req: IncomingMessage) => Promise<Record<string, unknown>>;
@@ -28,6 +30,7 @@ export async function handleCodexProfileObservationApi(
   segments: string[],
   options: Pick<DashboardOptions, "host">,
   service: CodexProfileObservationController | undefined,
+  refreshService: CodexProfileRefreshController | undefined,
   jsonResponse: JsonResponse,
   readJsonBody: ReadJsonBody,
 ): Promise<boolean> {
@@ -38,6 +41,22 @@ export async function handleCodexProfileObservationApi(
   }
   if (!service) return false;
   try {
+    if (pathname === "/api/codex/login-profiles/refresh-all" && refreshService) {
+      if (method === "GET") {
+        jsonResponse(res, 200, refreshService.status());
+        return true;
+      }
+      if (method === "POST") {
+        if (Object.keys(await safeBody(req, readJsonBody)).length > 0) throw new CodexProfileObservationRequestError();
+        void refreshService.refreshAll("manual").catch(() => {});
+        jsonResponse(res, 202, refreshService.status());
+        return true;
+      }
+      if (method === "DELETE") {
+        jsonResponse(res, 200, await refreshService.cancel());
+        return true;
+      }
+    }
     if (method === "GET" && pathname === "/api/codex/login-profiles") {
       jsonResponse(res, 200, await service.list());
       return true;

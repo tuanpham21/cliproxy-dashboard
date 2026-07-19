@@ -1,4 +1,4 @@
-import { chmod, link, lstat, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -66,6 +66,25 @@ describe("Codex Profile Observation Store", () => {
       generation: 1,
       snapshot: { usage: { primary: { usedPercent: 40 } } },
     });
+  });
+
+  it("persists a secret-free private re-login marker and clears it with fresh evidence", async () => {
+    const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+    const store = new CodexProfileObservationStore({ managerRoot });
+
+    await store.markReLoginRequired(profileId);
+
+    const restarted = new CodexProfileObservationStore({ managerRoot });
+    await expect(restarted.isReLoginRequired(profileId)).resolves.toBe(true);
+    const observationsRoot = path.join(managerRoot, "observations");
+    const marker = (await readdir(observationsRoot)).find((name) => name.includes("re-login-required"))!;
+    expect((await lstat(path.join(observationsRoot, marker))).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(path.join(observationsRoot, marker), "utf8")))
+      .toEqual({ schemaVersion: 1, profileId, state: "re-login-required" });
+
+    await restarted.replace(profileId, null, snapshot("2026-07-19T05:00:00.000Z", 30));
+
+    await expect(new CodexProfileObservationStore({ managerRoot }).isReLoginRequired(profileId)).resolves.toBe(false);
   });
 
   it("rejects secret-bearing or history-shaped snapshots instead of silently stripping fields", async () => {

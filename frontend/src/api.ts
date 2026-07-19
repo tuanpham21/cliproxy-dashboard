@@ -18,6 +18,7 @@ import type {
   ReorderCodexProfilesInput,
   UpdateCodexProfileMetadataInput,
 } from "../../shared/codex-profile-observation-types";
+import type { CodexProfileRefreshRunView } from "../../shared/codex-profile-refresh-types";
 
 const TOKEN_PLACEHOLDER = "__CLIPROXY_OPERATOR_TOKEN__";
 const OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";
@@ -213,6 +214,18 @@ export async function reorderCodexLoginProfiles(
   input: ReorderCodexProfilesInput,
 ): Promise<CodexProfileObservationListView> {
   return await putJson<CodexProfileObservationListView>("/api/codex/login-profiles/order", input);
+}
+
+export async function readCodexLoginProfileRefreshAll(): Promise<CodexProfileRefreshRunView> {
+  return await requestJson<CodexProfileRefreshRunView>("/api/codex/login-profiles/refresh-all", {}, true);
+}
+
+export async function startCodexLoginProfileRefreshAll(): Promise<CodexProfileRefreshRunView> {
+  return await postJson<CodexProfileRefreshRunView>("/api/codex/login-profiles/refresh-all", {});
+}
+
+export async function cancelCodexLoginProfileRefreshAll(): Promise<CodexProfileRefreshRunView> {
+  return await deleteJson<CodexProfileRefreshRunView>("/api/codex/login-profiles/refresh-all");
 }
 
 export async function prepareCodexRedemption(

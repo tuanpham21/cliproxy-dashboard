@@ -48,6 +48,7 @@ describe("Codex Profile Observation Service", () => {
       codexBin: "/trusted/bin/codex",
       qualifier: unusedQualifier(),
       startReadGateway: vi.fn(async () => { throw new Error("unused"); }),
+      now: () => new Date("2026-07-19T04:15:00.000Z"),
     });
 
     const view = await service.list();
@@ -75,12 +76,102 @@ describe("Codex Profile Observation Service", () => {
       pending: 0,
       fresh: 0,
       latestKnown: 1,
+      refreshNeeded: 0,
+      stale: 0,
+      reLoginRequired: 0,
       disabled: 1,
       identityChanged: 0,
       neverObserved: 0,
       profilesWithResets: 1,
     });
     expect(view.summary).not.toHaveProperty("totalCredits");
+  });
+
+  it("derives fresh, refresh-needed, and stale states from schedule age and reset times", async () => {
+    const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+    const ids = [firstProfileId, secondProfileId, "profile_U4nM7cX2vL9sP5rK8dB6tQ3w"];
+    const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => ids.shift() ?? "" });
+    const profiles = await Promise.all([registry.create(), registry.create(), registry.create()]);
+    for (const profile of profiles) await registry.confirm(profile.id);
+    const store = new CodexProfileObservationStore({ managerRoot });
+    const snapshots = [
+      {
+        ...retainedSnapshot,
+        observedAt: "2026-07-19T05:31:00.000Z",
+        usage: { ...retainedSnapshot.usage, primary: { ...retainedSnapshot.usage.primary!, resetsAt: "2026-07-19T07:00:00.000Z" } },
+      },
+      {
+        ...retainedSnapshot,
+        observedAt: "2026-07-19T05:50:00.000Z",
+        usage: { ...retainedSnapshot.usage, primary: { ...retainedSnapshot.usage.primary!, resetsAt: "2026-07-19T05:59:00.000Z" } },
+      },
+      {
+        ...retainedSnapshot,
+        observedAt: "2026-07-19T05:29:59.000Z",
+        usage: { primary: null, secondary: null },
+      },
+    ] as const;
+    for (const [index, profile] of profiles.entries()) await store.replace(profile.id, null, snapshots[index]!);
+    const service = new CodexProfileObservationService({
+      registry,
+      observationStore: store,
+      codexBin: "/trusted/bin/codex",
+      qualifier: unusedQualifier(),
+      now: () => new Date("2026-07-19T06:00:00.000Z"),
+    });
+
+    const view = await service.list();
+
+    expect(view.profiles.map((profile) => [profile.status, profile.observation?.freshness])).toEqual([
+      ["fresh", "fresh"],
+      ["refresh-needed", "refresh-needed"],
+      ["stale", "stale"],
+    ]);
+    expect(view.summary).toMatchObject({ fresh: 1, refreshNeeded: 1, stale: 1 });
+  });
+
+  it("keeps retained evidence but marks it stale after a failed refresh", async () => {
+    const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+    const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => firstProfileId });
+    const profile = await registry.create();
+    await registry.confirm(profile.id);
+    const store = new CodexProfileObservationStore({ managerRoot });
+    await store.replace(profile.id, null, retainedSnapshot);
+    const identity = {
+      canonicalPath: "/canonical/bin/codex",
+      ...profile.runtimeContext,
+      version: "codex-cli 0.145.0",
+      fileIdentity: "1:2:3:failed-refresh",
+      schemaHash: "schema-hash-failed-refresh",
+    };
+    const qualifier: CodexRuntimeQualifierLike = {
+      qualify: vi.fn(async () => ({ status: "qualified" as const, version: identity.version, identity })),
+      matchesIdentity: vi.fn(async () => true),
+      close: vi.fn(async () => {}),
+    };
+    const service = new CodexProfileObservationService({
+      registry,
+      observationStore: store,
+      codexBin: "/trusted/bin/codex",
+      qualifier,
+      startReadGateway: vi.fn(async () => ({
+        readAccount: vi.fn(async () => { throw new Error("transient provider read failed"); }),
+        readRateLimits: vi.fn(),
+        close: vi.fn(async () => {}),
+      })),
+      now: () => new Date("2026-07-19T04:10:00.000Z"),
+    });
+
+    await expect(service.refresh(profile.id)).rejects.toMatchObject({ code: "read-failed" });
+
+    await expect(service.list()).resolves.toMatchObject({
+      profiles: [{
+        profileId: profile.id,
+        status: "stale",
+        observation: { ...retainedSnapshot, freshness: "stale" },
+      }],
+      summary: { stale: 1 },
+    });
   });
 
   it("refreshes only the selected profile through its private read-only runtime", async () => {
@@ -339,6 +430,9 @@ describe("Codex Profile Observation Service", () => {
         pending: 0,
         fresh: 0,
         latestKnown: 0,
+        refreshNeeded: 0,
+        stale: 0,
+        reLoginRequired: 0,
         disabled: 0,
         identityChanged: 0,
         neverObserved: 0,

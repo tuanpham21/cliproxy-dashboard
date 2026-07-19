@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type { CodexProfileObservationListView } from "../../shared/codex-profile-observation-types";
+import type { CodexProfileRefreshRunView } from "../../shared/codex-profile-refresh-types";
 import { mockApi, view } from "./codex-app-account-fixture";
 
 const primaryId = "profile_M8JcV6Qq0YxE2kT4uN7sP9aB";
@@ -41,6 +42,9 @@ function profileView(): CodexProfileObservationListView {
       pending: 0,
       fresh: 0,
       latestKnown: 1,
+      refreshNeeded: 0,
+      stale: 0,
+      reLoginRequired: 0,
       disabled: 1,
       identityChanged: 0,
       neverObserved: 0,
@@ -51,16 +55,83 @@ function profileView(): CodexProfileObservationListView {
 
 async function observationsApi(
   page: Page,
-  options: { initial?: CodexProfileObservationListView; failRefresh?: "read" | "identity" } = {},
+  options: {
+    initial?: CodexProfileObservationListView;
+    failRefresh?: "read" | "identity";
+    refreshAllMode?: "completed" | "partial" | "running";
+  } = {},
 ) {
   await mockApi(page, view());
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const current = structuredClone(options.initial ?? profileView());
+  let refreshAll: CodexProfileRefreshRunView = {
+    source: null,
+    outcome: "idle",
+    startedAt: null,
+    finishedAt: null,
+    total: 0,
+    completed: 0,
+    currentProfileId: null,
+    profiles: [],
+  };
+  let refreshAllPolls = 0;
   await page.route("**/api/codex/login-profiles**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const method = request.method();
     requests.push({ method, path, body: request.postData() ? request.postDataJSON() : null });
+    if (path === "/api/codex/login-profiles/refresh-all") {
+      if (method === "POST") {
+        refreshAll = {
+          source: "manual",
+          outcome: "running",
+          startedAt: "2026-07-19T06:00:00.000Z",
+          finishedAt: null,
+          total: 2,
+          completed: 0,
+          currentProfileId: primaryId,
+          profiles: [
+            { profileId: primaryId, label: "Primary", status: "refreshing", attempts: 1 },
+            { profileId: pausedId, label: "Paused", status: "pending", attempts: 0 },
+          ],
+        };
+        await route.fulfill({ status: 202, json: refreshAll });
+        return;
+      }
+      if (method === "GET") {
+        refreshAllPolls += 1;
+        if (refreshAll.outcome === "running" && refreshAllPolls > 1 && options.refreshAllMode !== "running") {
+          const completed = options.refreshAllMode === "completed";
+          refreshAll = {
+            ...refreshAll,
+            outcome: completed ? "completed" : "partial",
+            finishedAt: "2026-07-19T06:00:03.000Z",
+            completed: 2,
+            currentProfileId: null,
+            profiles: [
+              { profileId: primaryId, label: "Primary", status: "refreshed", attempts: 1 },
+              completed
+                ? { profileId: pausedId, label: "Paused", status: "skipped", attempts: 0, reason: "disabled" }
+                : { profileId: pausedId, label: "Paused", status: "failed", attempts: 2, reason: "read-failed" },
+            ],
+          };
+        }
+        await route.fulfill({ json: refreshAll });
+        return;
+      }
+      if (method === "DELETE") {
+        refreshAll = {
+          ...refreshAll,
+          outcome: "cancelled",
+          finishedAt: "2026-07-19T06:00:01.000Z",
+          completed: 1,
+          currentProfileId: null,
+          profiles: refreshAll.profiles.map((profile) => ({ ...profile, status: "cancelled", reason: "cancelled" })),
+        };
+        await route.fulfill({ json: refreshAll });
+        return;
+      }
+    }
     if (method === "GET" && path === "/api/codex/login-profiles") {
       await route.fulfill({ json: current });
       return;
@@ -197,7 +268,10 @@ test("guides the operator when no profiles exist", async ({ page }) => {
         total: 0,
         pending: 0,
         fresh: 0,
-        latestKnown: 0,
+          latestKnown: 0,
+          refreshNeeded: 0,
+          stale: 0,
+          reLoginRequired: 0,
         disabled: 0,
         identityChanged: 0,
         neverObserved: 0,
@@ -234,4 +308,42 @@ test("shows identity quarantine after a mismatched refresh without counting reta
   await expect(region.getByRole("alert")).toContainText("Couldn’t refresh this Codex Login Profile.");
   await expect(primary).toContainText("Identity-changed");
   await expect(region.getByText("0 with resets", { exact: false })).toBeVisible();
+});
+
+test("announces refresh-all progress and an honest partial outcome", async ({ page }) => {
+  const requests = await observationsApi(page);
+  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+
+  await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
+
+  const status = region.getByRole("status", { name: "Codex profile refresh status" });
+  await expect(status).toContainText("Refreshing 0 of 2 · Primary");
+  await expect(status).toContainText("Refresh all partially completed · 2 of 2 · 1 failed");
+  await expect(region.getByRole("button", { name: "Cancel refresh all" })).toBeDisabled();
+  expect(requests).toContainEqual({ method: "POST", path: "/api/codex/login-profiles/refresh-all", body: {} });
+  expect(requests).toContainEqual({ method: "GET", path: "/api/codex/login-profiles/refresh-all", body: null });
+});
+
+test("cancels refresh-all accessibly", async ({ page }) => {
+  const requests = await observationsApi(page, { refreshAllMode: "running" });
+  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+
+  await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
+  const cancel = region.getByRole("button", { name: "Cancel refresh all" });
+  await expect(cancel).toBeEnabled();
+  await cancel.click();
+
+  await expect(region.getByRole("status", { name: "Codex profile refresh status" }))
+    .toContainText("Refresh all cancelled · 1 of 2");
+  expect(requests).toContainEqual({ method: "DELETE", path: "/api/codex/login-profiles/refresh-all", body: null });
+});
+
+test("announces a completed refresh-all outcome", async ({ page }) => {
+  await observationsApi(page, { refreshAllMode: "completed" });
+  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+
+  await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
+
+  await expect(region.getByRole("status", { name: "Codex profile refresh status" }))
+    .toContainText("Refresh all completed · 2 of 2");
 });

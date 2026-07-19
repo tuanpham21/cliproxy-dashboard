@@ -74,9 +74,13 @@
                 <button type="button" id="cancel-codex-login-profile" hidden>Cancel Codex profile onboarding</button>
               </div>
             </div>
-            <div class="codex-profile-observation-header">
-              <p id="codex-profile-observation-summary" class="codex-profile-observation-summary">Loading Codex Login Profiles…</p>
-              <p id="codex-profile-observation-status" class="muted small" role="status" aria-live="polite" aria-atomic="true"></p>
+              <div class="codex-profile-observation-header">
+                <p id="codex-profile-observation-summary" class="codex-profile-observation-summary">Loading Codex Login Profiles…</p>
+                <div class="codex-profile-refresh-all-actions">
+                  <button type="button" id="refresh-all-codex-login-profiles" class="small" aria-label="Refresh all Codex Login Profiles">Refresh all</button>
+                  <button type="button" id="cancel-refresh-all-codex-login-profiles" class="small" aria-label="Cancel refresh all" disabled>Cancel refresh</button>
+                </div>
+                <p id="codex-profile-observation-status" class="muted small" role="status" aria-live="polite" aria-atomic="true" aria-label="Codex profile refresh status"></p>
             </div>
             <p id="codex-profile-observation-error" class="codex-profile-observation-error" role="alert" hidden></p>
             <div class="codex-profile-observation-table-wrap">

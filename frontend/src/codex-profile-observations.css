@@ -16,6 +16,11 @@
   font-weight: 650;
 }
 
+.codex-profile-refresh-all-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .codex-profile-observation-error {
   margin: 0.65rem 0 0;
   color: var(--danger, #c2413b);
@@ -83,6 +88,9 @@
 
 .codex-profile-status-fresh { color: var(--success, #2f855a); }
 .codex-profile-status-latest-known { color: var(--accent); }
+.codex-profile-status-refresh-needed { color: var(--warning, #b7791f); }
+.codex-profile-status-stale,
+.codex-profile-status-re-login-required { color: var(--danger, #c2413b); }
 .codex-profile-status-disabled,
 .codex-profile-status-never-observed { color: var(--muted); }
 .codex-profile-status-identity-changed { color: var(--danger, #c2413b); }

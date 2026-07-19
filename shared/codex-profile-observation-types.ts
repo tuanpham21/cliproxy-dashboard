@@ -1,6 +1,12 @@
 import type { CodexAccountUsageWindow } from "./types.js";
 
-export type CodexProfileObservationFreshness = "fresh" | "latest-known" | "identity-changed";
+export type CodexProfileObservationFreshness =
+  | "fresh"
+  | "latest-known"
+  | "refresh-needed"
+  | "stale"
+  | "re-login-required"
+  | "identity-changed";
 export type CodexProfileObservationSnapshot = Readonly<{
   account: { email: string; plan: string };
   observedAt: string;
@@ -16,6 +22,9 @@ export type CodexProfileRowStatus =
   | "disabled"
   | "fresh"
   | "latest-known"
+  | "refresh-needed"
+  | "stale"
+  | "re-login-required"
   | "never-observed";
 
 export type CodexProfileObservationRowView = {
@@ -32,6 +41,9 @@ export type CodexProfileObservationSummaryView = {
   pending: number;
   fresh: number;
   latestKnown: number;
+  refreshNeeded: number;
+  stale: number;
+  reLoginRequired: number;
   disabled: number;
   identityChanged: number;
   neverObserved: number;
@@ -51,6 +63,9 @@ export function summarizeCodexProfileObservations(
     pending: 0,
     fresh: 0,
     latestKnown: 0,
+    refreshNeeded: 0,
+    stale: 0,
+    reLoginRequired: 0,
     disabled: 0,
     identityChanged: 0,
     neverObserved: 0,
@@ -58,10 +73,12 @@ export function summarizeCodexProfileObservations(
   };
   for (const profile of profiles) {
     if (profile.status === "latest-known") summary.latestKnown += 1;
+    else if (profile.status === "refresh-needed") summary.refreshNeeded += 1;
+    else if (profile.status === "re-login-required") summary.reLoginRequired += 1;
     else if (profile.status === "identity-changed") summary.identityChanged += 1;
     else if (profile.status === "never-observed") summary.neverObserved += 1;
     else summary[profile.status] += 1;
-    if (profile.status !== "identity-changed" &&
+    if (profile.status !== "identity-changed" && profile.status !== "re-login-required" &&
       (profile.observation?.resetCredits.availableCount ?? 0) > 0) {
       summary.profilesWithResets += 1;
     }

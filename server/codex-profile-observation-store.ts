@@ -24,6 +24,7 @@ type ObservationState = {
   generation: number;
   snapshot: CodexProfileObservationSnapshot;
 };
+type ReLoginRequiredState = { schemaVersion: 1; profileId: string; state: "re-login-required" };
 type CodexProfileObservationStoreDependencies = {
   managerRoot: string;
   platform?: NodeJS.Platform;
@@ -34,6 +35,7 @@ type CodexProfileObservationStoreDependencies = {
 
 const OBSERVATION_FILE_PATTERN = /^\.([A-Za-z0-9_-]{24,80})\.observation\.([1-9][0-9]*)\.json$/;
 const OBSERVATION_TEMP_PATTERN = /^\.observation\.[a-f0-9]{24}\.tmp$/;
+const RE_LOGIN_REQUIRED_FILE_PATTERN = /^\.([A-Za-z0-9_-]{24,80})\.re-login-required\.json$/;
 const OBSERVATION_TEMP_STALE_MS = 60_000;
 
 function isEnoent(error: unknown): boolean {
@@ -80,7 +82,9 @@ function assertSnapshot(value: unknown): asserts value is CodexProfileObservatio
     !(value.resetCredits.availableCount === null ||
       (typeof value.resetCredits.availableCount === "number" &&
         Number.isSafeInteger(value.resetCredits.availableCount) && value.resetCredits.availableCount >= 0)) ||
-    (value.freshness !== "fresh" && value.freshness !== "latest-known" && value.freshness !== "identity-changed")) {
+      typeof value.freshness !== "string" ||
+      !["fresh", "latest-known", "refresh-needed", "stale", "re-login-required", "identity-changed"]
+        .includes(value.freshness)) {
     throw new CodexProfileObservationStoreError("invalid-snapshot");
   }
 }
@@ -174,9 +178,10 @@ export class CodexProfileObservationStore {
       let removed = false;
       for (const name of await readdir(this.observationsRoot)) {
         const match = OBSERVATION_FILE_PATTERN.exec(name);
+        const reLoginMatch = RE_LOGIN_REQUIRED_FILE_PATTERN.exec(name);
         if (OBSERVATION_TEMP_PATTERN.test(name)) {
           if (!(await this.isStaleTemp(name))) continue;
-        } else if (!match || retained.has(match[1]!)) {
+        } else if (match ? retained.has(match[1]!) : reLoginMatch ? retained.has(reLoginMatch[1]!) : true) {
           continue;
         }
         await this.removePath(path.join(this.observationsRoot, name));
@@ -187,8 +192,9 @@ export class CodexProfileObservationStore {
       if (removed) await syncRegistryDirectory(this.observationsRoot, this.privatePaths.platform);
       for (const name of await readdir(this.observationsRoot)) {
         const match = OBSERVATION_FILE_PATTERN.exec(name);
+        const reLoginMatch = RE_LOGIN_REQUIRED_FILE_PATTERN.exec(name);
         if ((OBSERVATION_TEMP_PATTERN.test(name) && await this.isStaleTemp(name)) ||
-          (match && !retained.has(match[1]!))) {
+          (match && !retained.has(match[1]!)) || (reLoginMatch && !retained.has(reLoginMatch[1]!))) {
           throw new CodexProfileObservationStoreError("unavailable");
         }
       }
@@ -207,7 +213,11 @@ export class CodexProfileObservationStore {
         await this.removePath(this.statePath(profileId, generation));
         removed = true;
       }
-      if ((await this.generations(profileId)).length > 0) {
+      if (await this.isReLoginRequired(profileId)) {
+        await this.removePath(this.reLoginRequiredPath(profileId));
+        removed = true;
+      }
+      if ((await this.generations(profileId)).length > 0 || await this.isReLoginRequired(profileId)) {
         throw new CodexProfileObservationStoreError("unavailable");
       }
       this.freshGenerations.delete(profileId);
@@ -257,6 +267,7 @@ export class CodexProfileObservationStore {
         }
         this.freshGenerations.set(profileId, generation);
         await this.cleanup(profileId);
+        if (snapshot.freshness === "fresh") await this.clearReLoginRequired(profileId);
         if ((await this.generations(profileId)).at(-1) !== generation) {
           throw new CodexProfileObservationStoreError("stale-generation");
         }
@@ -293,6 +304,57 @@ export class CodexProfileObservationStore {
     }
   }
 
+  async isReLoginRequired(profileId: string): Promise<boolean> {
+    this.assertProfileId(profileId);
+    try {
+      await this.ensureRoot();
+      await this.readReLoginRequiredState(profileId);
+      return true;
+    } catch (error) {
+      if (isEnoent(error)) return false;
+      if (error instanceof CodexProfileObservationStoreError) throw error;
+      throw new CodexProfileObservationStoreError("unavailable");
+    }
+  }
+
+  async markReLoginRequired(profileId: string): Promise<void> {
+    this.assertProfileId(profileId);
+    try {
+      await this.ensureRoot();
+      if (await this.isReLoginRequired(profileId)) return;
+      const tempPath = path.join(this.observationsRoot, `.observation.${randomBytes(12).toString("hex")}.tmp`);
+      try {
+        const state: ReLoginRequiredState = { schemaVersion: 1, profileId, state: "re-login-required" };
+        await this.privatePaths.writePrivateJsonTemp(tempPath, state);
+        try {
+          await this.linkPath(tempPath, this.reLoginRequiredPath(profileId));
+        } catch (error) {
+          if (!isEexist(error)) throw error;
+        }
+        await syncRegistryDirectory(this.observationsRoot, this.privatePaths.platform);
+        await this.readReLoginRequiredState(profileId);
+      } finally {
+        await this.removePath(tempPath);
+      }
+    } catch (error) {
+      if (error instanceof CodexProfileObservationStoreError) throw error;
+      throw new CodexProfileObservationStoreError("unavailable");
+    }
+  }
+
+  async clearReLoginRequired(profileId: string): Promise<void> {
+    this.assertProfileId(profileId);
+    try {
+      await this.ensureRoot();
+      await this.removePath(this.reLoginRequiredPath(profileId));
+      await syncRegistryDirectory(this.observationsRoot, this.privatePaths.platform);
+      if (await this.isReLoginRequired(profileId)) throw new CodexProfileObservationStoreError("unavailable");
+    } catch (error) {
+      if (error instanceof CodexProfileObservationStoreError) throw error;
+      throw new CodexProfileObservationStoreError("unavailable");
+    }
+  }
+
   private async readState(profileId: string, generation: number): Promise<ObservationState> {
     const statePath = this.statePath(profileId, generation);
     await this.privatePaths.verifyPrivateFile(statePath);
@@ -326,9 +388,24 @@ export class CodexProfileObservationStore {
       .sort((left, right) => left - right);
   }
 
-  private statePath(profileId: string, generation: number): string {
-    return path.join(this.observationsRoot, `.${profileId}.observation.${generation}.json`);
-  }
+    private statePath(profileId: string, generation: number): string {
+      return path.join(this.observationsRoot, `.${profileId}.observation.${generation}.json`);
+    }
+
+    private reLoginRequiredPath(profileId: string): string {
+      return path.join(this.observationsRoot, `.${profileId}.re-login-required.json`);
+    }
+
+    private async readReLoginRequiredState(profileId: string): Promise<ReLoginRequiredState> {
+      const filePath = this.reLoginRequiredPath(profileId);
+      await this.privatePaths.verifyPrivateFile(filePath);
+      const value = JSON.parse(await readFile(filePath, "utf8")) as unknown;
+      if (!exactKeys(value, ["profileId", "schemaVersion", "state"]) || value.schemaVersion !== 1 ||
+        value.profileId !== profileId || value.state !== "re-login-required") {
+        throw new CodexProfileObservationStoreError("unavailable");
+      }
+      return { schemaVersion: 1, profileId, state: "re-login-required" };
+    }
 
   private async isStaleTemp(name: string): Promise<boolean> {
     try {

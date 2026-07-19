@@ -8,6 +8,7 @@ import { CodexLoginProfileRegistry } from "./codex-login-profile-registry.js";
 import { CodexProfileLoginRunner } from "./codex-profile-login-runner.js";
 import { CodexProfileObservationStore } from "./codex-profile-observation-store.js";
 import { CodexProfileObservationService } from "./codex-profile-observation-service.js";
+import { CodexProfileRefreshCoordinator } from "./codex-profile-refresh-coordinator.js";
 import { CodexProfileOnboardingService } from "./codex-profile-onboarding-service.js";
 import { CodexRedemptionService } from "./codex-redemption-service.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
@@ -43,6 +44,9 @@ export async function startServer(
     codexBin: resolveCodexBin(options),
     qualifier: codexRuntimeQualifier,
   });
+  const codexProfileRefreshCoordinator = new CodexProfileRefreshCoordinator({
+    observationService: codexProfileObservationService,
+  });
   const codexProfileOnboardingService = new CodexProfileOnboardingService({
     registry: codexLoginProfileRegistry,
     observationStore: codexProfileObservationStore,
@@ -57,6 +61,7 @@ export async function startServer(
     codexAccountUsageService: CodexAppAccountUsageService;
     codexProfileOnboardingService: CodexProfileOnboardingService;
     codexProfileObservationService: CodexProfileObservationService;
+    codexProfileRefreshCoordinator: CodexProfileRefreshCoordinator;
     codexRedemptionService: CodexRedemptionService;
   } = {
     ...options,
@@ -65,6 +70,7 @@ export async function startServer(
     codexAccountUsageService,
     codexProfileOnboardingService,
     codexProfileObservationService,
+    codexProfileRefreshCoordinator,
     codexRedemptionService,
   };
   const server = createServer(async (req, res) => {
@@ -149,11 +155,13 @@ export async function startServer(
       } catch (error) {
           await rotationCoordinator.close();
           await codexRedemptionService.close().catch(() => {});
+          await codexProfileRefreshCoordinator.close().catch(() => {});
           await codexProfileLoginRunner.close().catch(() => {});
           await codexRuntimeQualifier.close();
         await new Promise<void>((resolve) => server.close(() => resolve()));
         throw error;
-    }
+      }
+    void codexProfileRefreshCoordinator.start();
 
     const url = "http://" + options.host + ":" + actualPort;
   process.stdout.write("Cliproxy dashboard: " + url + "\n");
@@ -172,6 +180,7 @@ export async function startServer(
         await rotationObserver.close();
           await rotationCoordinator.close();
           await codexRedemptionService.close().catch(() => {});
+          await codexProfileRefreshCoordinator.close().catch(() => {});
           await codexProfileLoginRunner.close().catch(() => {});
           await codexRuntimeQualifier.close();
         await new Promise<void>((resolve) => server.close(() => resolve()));
