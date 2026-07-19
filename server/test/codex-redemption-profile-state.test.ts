@@ -221,9 +221,38 @@ describe("profile-bound reset-redemption state", () => {
       schemaVersion: 2,
       profileBinding: prepared.profileBinding,
     });
-    await expect(store.releaseTerminal(prepared.proposalId, prepared.ownerNonce, tombstone.auditEventId))
-      .resolves.toBeUndefined();
-  });
+      await expect(store.releaseTerminal(prepared.proposalId, prepared.ownerNonce, tombstone.auditEventId))
+        .resolves.toBeUndefined();
+    });
+
+    it("allows deletion only after the active profile-bound journal and retry claim are gone", async () => {
+      const { store } = await stateHarness(PROFILE_A, {
+        inspectOwner: async () => "alive" as const,
+        now: () => Date.parse("2026-07-19T12:05:00.000Z"),
+      });
+      await expect(store.deletionDisposition()).resolves.toBe("safe");
+      const prepared = await store.acquirePrepared(proposalInput("p".repeat(43)));
+      await expect(store.deletionDisposition()).resolves.toBe("blocked");
+      await transitionToTerminal(store, prepared);
+      const tombstone = {
+        schemaVersion: 1 as const,
+        proposalId: prepared.proposalId,
+        selectionMode: "generic" as const,
+        outcome: "reset" as const,
+        reconciliation: "reconciled" as const,
+        auditEventId: "a".repeat(43),
+        message: "Usage limits reset. Checking current usage…",
+        createdAt: "2026-07-19T12:00:03.000Z",
+        expiresAt: "2026-07-19T12:10:03.000Z",
+      };
+      await store.publishTombstone(tombstone);
+      await expect(store.deletionDisposition()).resolves.toBe("blocked");
+
+      await store.releaseTerminal(prepared.proposalId, prepared.ownerNonce, tombstone.auditEventId);
+
+      await expect(store.deletionDisposition()).resolves.toBe("safe");
+      await expect(store.readPublicState()).resolves.toMatchObject({ status: "terminal" });
+    });
 
     it("keeps legacy current-account state recoverable outside profile namespaces", async () => {
       const { dependencies, store: legacyStore } = await stateHarness(undefined, {

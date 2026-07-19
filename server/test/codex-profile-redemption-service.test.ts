@@ -193,6 +193,35 @@ describe("profile-scoped Codex reset redemption", () => {
     await test.service.close();
   });
 
+  it("rejects new proposals for a disabled profile without touching its retained recovery state", async () => {
+    const test = await harness();
+    test.profiles.set(PROFILE_A, { ...test.profileA, enabled: false });
+
+    await expect(test.service.prepare("codex", {
+      profileId: PROFILE_A,
+      creditId: "credit-1",
+      singleWorkspaceAttested: true,
+    })).rejects.toMatchObject({ code: "codex_runtime_incompatible" });
+
+    expect(test.startSession).not.toHaveBeenCalled();
+    await expect(test.service.currentState(PROFILE_A)).resolves.toEqual({ status: "not-found" });
+  });
+
+  it("reports deletion safety from the exact profile journal rather than terminal tombstone visibility", async () => {
+    const test = await harness();
+    await expect(test.service.deletionDisposition(PROFILE_A)).resolves.toBe("safe");
+    const proposal = await test.service.prepare("codex", {
+      profileId: PROFILE_A,
+      creditId: "credit-1",
+      singleWorkspaceAttested: true,
+    });
+    await expect(test.service.deletionDisposition(PROFILE_A)).resolves.toBe("blocked");
+
+    await test.service.cancel(proposal.proposalId);
+
+    await expect(test.service.deletionDisposition(PROFILE_A)).resolves.toBe("safe");
+  });
+
   it("fails closed before provider mutation when the retained profile root changes", async () => {
     const test = await harness();
     const proposal = await test.service.prepare("codex", {

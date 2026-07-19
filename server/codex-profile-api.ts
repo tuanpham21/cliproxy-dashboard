@@ -9,7 +9,7 @@ import type { DashboardOptions } from "./types.js";
 
 export type CodexProfileOnboardingController = Pick<
   CodexProfileOnboardingService,
-  "create" | "observe" | "retry" | "confirm" | "cancel"
+  "create" | "observe" | "retry" | "confirm" | "cancel" | "startReLogin"
 >;
 
 type JsonResponse = (res: ServerResponse, status: number, payload: unknown) => void;
@@ -59,11 +59,16 @@ export async function handleCodexProfileApi(
       jsonResponse(res, 200, await service.observe(profileId));
       return true;
     }
-    if (method === "POST" && segments.length === 5 && segments[4] === "retry") {
+      if (method === "POST" && segments.length === 5 && segments[4] === "retry") {
       assertEmptyProfileRequest(await safeBody(req, readJsonBody, "profile"));
       jsonResponse(res, 200, await service.retry(profileId));
-      return true;
-    }
+        return true;
+      }
+      if (method === "POST" && segments.length === 5 && segments[4] === "login-again") {
+        assertEmptyProfileRequest(await safeBody(req, readJsonBody, "profile"));
+        jsonResponse(res, 200, await service.startReLogin(profileId));
+        return true;
+      }
     if (method === "POST" && segments.length === 5 && segments[4] === "confirm") {
       jsonResponse(res, 200, await service.confirm(profileId, confirmationInput(await safeBody(req, readJsonBody, "confirmation"))));
       return true;
@@ -126,16 +131,22 @@ function respondOnboardingError(res: ServerResponse, error: unknown, jsonRespons
     return;
   }
   if (error instanceof CodexProfileOnboardingError) {
-    const status = error.code === "profile-not-pending" ? 404
-      : error.code === "confirmation-mismatch" ? 409
+      const status = error.code === "profile-not-pending" ? 404
+        : error.code === "confirmation-mismatch" || error.code === "retained-redemption-mismatch" || error.code === "profile-busy" ? 409
         : 503;
     const message = error.code === "confirmation-mismatch"
       ? "The observed Codex account changed. Retry login or check the account again."
       : error.code === "cleanup-failed"
         ? "Couldn’t safely clean up this Codex Login Profile."
-        : error.code === "login-failed"
-          ? "Codex browser login did not complete."
-          : "Couldn’t check this Codex Login Profile.";
+          : error.code === "login-failed"
+            ? "Codex browser login did not complete."
+            : error.code === "retained-redemption-mismatch"
+              ? "This fresh account does not match retained reset-redemption recovery. Retry with the original account."
+              : error.code === "recovery-unavailable"
+                ? "Reset-redemption recovery cannot be safely checked on this host."
+                : error.code === "profile-busy"
+                  ? "This Codex Login Profile is busy. Try again after its current action finishes."
+            : "Couldn’t check this Codex Login Profile.";
     jsonResponse(res, status, { code: error.code, error: message });
     return;
   }

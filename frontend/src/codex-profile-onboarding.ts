@@ -8,11 +8,12 @@ import {
   confirmCodexLoginProfile,
   createCodexLoginProfile,
   observeCodexLoginProfile,
-  retryCodexLoginProfile,
+    retryCodexLoginProfile,
+    startCodexLoginProfileReLogin,
 } from "./api";
 
 type OnboardingMode = "idle" | "login" | "candidate" | "candidate-error" | "confirmed";
-type OnboardingAction = "add" | "check" | "retry" | "confirm" | "cancel";
+type OnboardingAction = "add" | "check" | "retry" | "relogin" | "confirm" | "cancel";
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -60,6 +61,7 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
   let mode: OnboardingMode = "idle";
   let busyAction: OnboardingAction | null = null;
   let operationGeneration = 0;
+  let reLoginMode = false;
 
   const fixedError = (caught: unknown): string =>
     caught instanceof DashboardApiError ? caught.message : "Codex Login Profile onboarding failed.";
@@ -84,6 +86,7 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
     retryButton.hidden = mode !== "candidate" && mode !== "candidate-error";
     confirmButton.hidden = mode !== "candidate";
     cancelButton.hidden = mode === "idle" || mode === "confirmed";
+    cancelButton.textContent = reLoginMode ? "Cancel Codex profile re-login" : "Cancel Codex profile onboarding";
     confirmationLabel.hidden = mode !== "candidate";
     checkButton.disabled = busy;
     retryButton.disabled = busy;
@@ -150,14 +153,25 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
     }
   };
 
-  addButton.addEventListener("click", () => void run("add", async (isCurrent) => {
+    addButton.addEventListener("click", () => void run("add", async (isCurrent) => {
     const created = await createCodexLoginProfile();
     if (!isCurrent()) return null;
     activeProfileId = created.profileId;
     void onProfileChanged();
     showLogin("Finish the official browser login, then check the logged-in Codex app account.");
     return checkButton;
-  }));
+    }));
+
+    const startReLogin = (profileId: string) => void run("relogin", async (isCurrent) => {
+      if (activeProfileId) return null;
+      await startCodexLoginProfileReLogin(profileId);
+      if (!isCurrent()) return null;
+      activeProfileId = profileId;
+      reLoginMode = true;
+      void onProfileChanged();
+      showLogin("Log in again with the intended Codex app account, then check the account.");
+      return checkButton;
+    });
 
   checkButton.addEventListener("click", () => void run("check", async (isCurrent) => {
     if (!activeProfileId) return null;
@@ -186,8 +200,9 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
       plan: candidate.account.plan,
     });
     if (!isCurrent()) return null;
-    activeProfileId = null;
-    void onProfileChanged();
+      activeProfileId = null;
+      reLoginMode = false;
+      void onProfileChanged();
     showCandidate(confirmed);
     status.textContent = `Codex Login Profile confirmed for ${confirmed.account.email}.`;
     return addButton;
@@ -198,15 +213,19 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
     if (!profileId) return null;
     await cancelCodexLoginProfile(profileId);
     if (!isCurrent()) return null;
-    activeProfileId = null;
-    candidate = null;
-    mode = "idle";
-    void onProfileChanged();
-    workspace.hidden = true;
-    status.textContent = "Onboarding cancelled. Pending Codex Login Profile data was cleaned up.";
+      activeProfileId = null;
+      candidate = null;
+      mode = "idle";
+      const wasReLogin = reLoginMode;
+      reLoginMode = false;
+      void onProfileChanged();
+      workspace.hidden = true;
+      status.textContent = wasReLogin
+        ? "Codex profile re-login cancelled. The profile remains disabled."
+        : "Onboarding cancelled. Pending Codex Login Profile data was cleaned up.";
     clearError();
     return addButton;
   }));
 
-  return { updateControls };
-}
+    return { updateControls, startReLogin };
+  }

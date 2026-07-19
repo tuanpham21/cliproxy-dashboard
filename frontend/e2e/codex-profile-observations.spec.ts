@@ -47,6 +47,7 @@ function profileView(): CodexProfileObservationListView {
       reLoginRequired: 0,
       disabled: 1,
       identityChanged: 0,
+      cleanupRequired: 0,
       neverObserved: 0,
       profilesWithResets: 1,
     },
@@ -136,7 +137,7 @@ async function observationsApi(
       await route.fulfill({ json: current });
       return;
     }
-    if (method === "POST" && path === `/api/codex/login-profiles/${primaryId}/refresh`) {
+      if (method === "POST" && path === `/api/codex/login-profiles/${primaryId}/refresh`) {
       if (options.failRefresh) {
         if (options.failRefresh === "identity") {
           current.profiles[0] = {
@@ -167,9 +168,32 @@ async function observationsApi(
       };
       current.summary.latestKnown = 0;
       current.summary.fresh = 1;
-      await route.fulfill({ json: current.profiles[0] });
-      return;
-    }
+        await route.fulfill({ json: current.profiles[0] });
+        return;
+      }
+      if (method === "POST" && path === `/api/codex/login-profiles/${primaryId}/login-again`) {
+        await route.fulfill({ json: { profileId: primaryId, status: "login-in-progress" } });
+        return;
+      }
+      if (method === "POST" && path === `/api/codex/login-profiles/${primaryId}/delete`) {
+        current.profiles = current.profiles.filter((profile) => profile.profileId !== primaryId);
+        current.summary = {
+          total: current.profiles.length,
+          pending: 0,
+          fresh: 0,
+          latestKnown: 0,
+          refreshNeeded: 0,
+          stale: 0,
+          reLoginRequired: 0,
+          disabled: current.profiles.filter((profile) => !profile.enabled).length,
+          identityChanged: 0,
+          cleanupRequired: 0,
+          neverObserved: current.profiles.filter((profile) => profile.observation === null && profile.enabled).length,
+          profilesWithResets: 0,
+        };
+        await route.fulfill({ json: { profileId: primaryId, status: "deleted" } });
+        return;
+      }
     if (method === "PATCH") {
       const profileId = path.split("/").at(-1);
       const index = current.profiles.findIndex((profile) => profile.profileId === profileId);
@@ -274,6 +298,7 @@ test("guides the operator when no profiles exist", async ({ page }) => {
           reLoginRequired: 0,
         disabled: 0,
         identityChanged: 0,
+        cleanupRequired: 0,
         neverObserved: 0,
         profilesWithResets: 0,
       },
@@ -298,7 +323,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
   await expect(primary).toContainText("2 available");
 });
 
-test("shows identity quarantine after a mismatched refresh without counting retained resets", async ({ page }) => {
+  test("shows identity quarantine after a mismatched refresh without counting retained resets", async ({ page }) => {
   await observationsApi(page, { failRefresh: "identity" });
   const region = page.getByRole("region", { name: "Codex Login Profiles" });
   const primary = region.getByRole("row", { name: /Primary operator@example.com/i });
@@ -308,7 +333,54 @@ test("shows identity quarantine after a mismatched refresh without counting reta
   await expect(region.getByRole("alert")).toContainText("Couldn’t refresh this Codex Login Profile.");
   await expect(primary).toContainText("Identity-changed");
   await expect(region.getByText("0 with resets", { exact: false })).toBeVisible();
-});
+  });
+
+  test("exposes explicit Log in again for an auth-quarantined profile", async ({ page }) => {
+    const initial = profileView();
+    initial.profiles[0] = {
+      ...initial.profiles[0]!,
+      enabled: false,
+      status: "re-login-required",
+      observation: { ...initial.profiles[0]!.observation!, freshness: "re-login-required" },
+    };
+    const requests = await observationsApi(page, { initial });
+    const row = page.getByRole("table", { name: "Codex Login Profile evidence" })
+      .getByRole("row", { name: /Primary operator@example.com/i });
+
+    await row.getByRole("button", { name: "Log in again for Primary" }).click();
+
+    await expect(page.getByRole("status", { name: "Codex profile onboarding status" }))
+      .toContainText("Log in again with the intended Codex app account");
+    expect(requests).toContainEqual({
+      method: "POST",
+      path: `/api/codex/login-profiles/${primaryId}/login-again`,
+      body: {},
+    });
+  });
+
+  test("requires explicit confirmation before deleting one profile", async ({ page }) => {
+    const requests = await observationsApi(page);
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("confirm");
+      expect(dialog.message()).toContain("Primary");
+      await dialog.accept();
+    });
+    const table = page.getByRole("table", { name: "Codex Login Profile evidence" });
+    await table.getByRole("row", { name: /Primary operator@example.com/i })
+      .getByRole("button", { name: "Delete Primary" }).click();
+
+    expect(requests).toContainEqual({
+      method: "POST",
+      path: `/api/codex/login-profiles/${primaryId}/delete`,
+      body: { confirmed: true },
+    });
+    await expect(table.getByRole("row", { name: /Primary operator@example.com/i })).toHaveCount(0);
+    expect(requests).toContainEqual({
+      method: "POST",
+      path: `/api/codex/login-profiles/${primaryId}/delete`,
+      body: { confirmed: true },
+    });
+  });
 
 test("announces refresh-all progress and an honest partial outcome", async ({ page }) => {
   const requests = await observationsApi(page);

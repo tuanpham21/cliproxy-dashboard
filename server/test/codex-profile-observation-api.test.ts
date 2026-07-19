@@ -31,9 +31,10 @@ const listView = {
       refreshNeeded: 0,
       stale: 0,
       reLoginRequired: 0,
-    disabled: 0,
-    identityChanged: 0,
-    neverObserved: 0,
+      disabled: 0,
+      identityChanged: 0,
+      cleanupRequired: 0,
+      neverObserved: 0,
     profilesWithResets: 1,
   },
 };
@@ -52,8 +53,9 @@ function controller() {
   return {
     list: vi.fn(async () => listView),
     refresh: vi.fn(async () => ({ ...row, status: "fresh" as const })),
-    updateMetadata: vi.fn(async () => row),
-    reorder: vi.fn(async () => listView),
+      updateMetadata: vi.fn(async () => row),
+      reorder: vi.fn(async () => listView),
+      deleteProfile: vi.fn(async () => ({ profileId, status: "deleted" as const })),
   };
 }
 
@@ -124,7 +126,16 @@ describe("Codex Profile Observation API", () => {
     expect(service.refresh).toHaveBeenCalledWith(profileId);
     expect(JSON.stringify(refreshed.response.getParsed())).not.toMatch(/consume|codexStateRoot|codexSqliteRoot|\/private\//i);
     expect(service).not.toHaveProperty("consume");
-  });
+
+      const deleted = await call(
+        service,
+        "POST",
+        `/api/codex/login-profiles/${profileId}/delete`,
+        JSON.stringify({ confirmed: true }),
+      );
+      expect(deleted.response.getStatus()).toBe(200);
+      expect(service.deleteProfile).toHaveBeenCalledWith(profileId, { confirmed: true });
+    });
 
   it("rejects path and aggregate-credit fields instead of forwarding them", async () => {
     const service = controller();
@@ -137,7 +148,16 @@ describe("Codex Profile Observation API", () => {
 
     expect(invalid.response.getStatus()).toBe(400);
     expect(service.updateMetadata).not.toHaveBeenCalled();
-  });
+
+      const invalidDelete = await call(
+        service,
+        "POST",
+        `/api/codex/login-profiles/${profileId}/delete`,
+        "{}",
+      );
+      expect(invalidDelete.response.getStatus()).toBe(400);
+      expect(service.deleteProfile).not.toHaveBeenCalled();
+    });
 
   it("starts, reports, and cancels refresh-all without exposing mutation capability", async () => {
     const service = controller();

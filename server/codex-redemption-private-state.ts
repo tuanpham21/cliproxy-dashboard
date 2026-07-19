@@ -9,7 +9,6 @@ import path from "node:path";
 import process from "node:process";
 import {
   parsePreparedRedemptionJournal,
-  terminalTombstoneMatchesJournal,
   type PreparedRedemptionJournal,
   type RedemptionJournal,
   type RedemptionJournalPhase,
@@ -28,10 +27,7 @@ import {
   transitionJournal as transitionPrivateJournal,
 } from "./codex-redemption-private-terminal.js";
 import {
-  publicStateFromJournal,
-  recoveryRequiredPrivateState,
   type PublicPrivateRedemptionState,
-  unavailablePrivateState,
 } from "./codex-redemption-public-state.js";
 import { CodexRedemptionPrivateStateError } from "./codex-redemption-private-error.js";
 import {
@@ -58,7 +54,7 @@ import {
   type ProcessOwnerStatus,
 } from "./codex-redemption-private-owner.js";
 import { activeJournalCleanupExists, initializePrivateRecovery, type RecoveryInitializationState } from "./codex-redemption-private-recovery.js";
-import { findLatestPublicTombstone, pruneExpiredPublicTombstones } from "./codex-redemption-private-tombstone-index.js";
+import { pruneExpiredPublicTombstones } from "./codex-redemption-private-tombstone-index.js";
 import {
   claimAmbiguousRetry as claimPrivateAmbiguousRetry,
   recoverRetryClaim as recoverPrivateRetryClaim,
@@ -79,8 +75,16 @@ import {
   readOptionalPrivateRedemptionJournal,
   type OptionalPrivateRedemptionJournal,
 } from "./codex-redemption-private-journal-file.js";
+import {
+  readPrivateRedemptionDeletionDisposition,
+  readPrivateRedemptionPublicState,
+  readPrivateRedemptionReloginDisposition,
+  type CodexRedemptionDeletionDisposition,
+  type CodexRedemptionReloginDisposition,
+} from "./codex-redemption-private-lifecycle.js";
 export type { PreparedRedemptionJournal, RedemptionJournal, RedemptionSelection } from "./codex-redemption-journal.js";
 export type { PublicPrivateRedemptionState } from "./codex-redemption-public-state.js";
+export type { CodexRedemptionDeletionDisposition, CodexRedemptionReloginDisposition } from "./codex-redemption-private-lifecycle.js";
 export { CodexRedemptionPrivateStateError } from "./codex-redemption-private-error.js";
 const DIGEST_KEY_FILE = "account-digest.key";
 const ACTIVE_JOURNAL_FILE = "active-redemption.json";
@@ -344,50 +348,29 @@ export class PrivateRedemptionStateStore {
       return tombstone;
   }
   async readPublicState(proposalId?: string): Promise<PublicPrivateRedemptionState> {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = await this.verifyExistingRoot();
-    } catch (error) {
-      if (isEnoent(error)) return { status: "not-found" };
-      return error instanceof CodexRedemptionPrivateStateError && error.code === "redemption-private-state-unavailable"
-        ? unavailablePrivateState()
-        : recoveryRequiredPrivateState();
-    }
-    const activePath = path.join(this.rootPath, ACTIVE_JOURNAL_FILE);
-    const existing = await this.readOptionalJournal(activePath, canonicalRoot);
-    if (existing.kind === "invalid") return recoveryRequiredPrivateState();
-    if (existing.kind === "missing") {
-      const tombstone = proposalId
-        ? await this.readTombstone(proposalId)
-        : await findLatestPublicTombstone(this.rootPath, this.now(), (id) => this.readTombstone(id));
-      if (tombstone && Date.parse(tombstone.expiresAt) > this.now()) return { status: "terminal", tombstone };
-      const keyState = await this.readOptionalKey(canonicalRoot);
-      return keyState === "invalid" ? recoveryRequiredPrivateState() : { status: "not-found" };
-    }
-    const keyState = await this.readOptionalKey(canonicalRoot);
-    if (keyState !== "valid") return recoveryRequiredPrivateState();
-    if (proposalId && existing.journal.proposalId !== proposalId) return { status: "not-found" };
-    if (existing.journal.phase === "ambiguous") {
-      try {
-        const claimState = await retryClaimState(this.retryClaimDependencies(canonicalRoot));
-        if (claimState === "invalid") return recoveryRequiredPrivateState();
-        if (claimState === "active") {
-          return {
-            status: "processing",
-            proposalId: existing.journal.proposalId,
-            selectionMode: existing.journal.selection.mode,
-            phase: "retrying",
-            dispatchAt: existing.journal.dispatchAt,
-          };
-        }
-      } catch {
-        return recoveryRequiredPrivateState();
-      }
-    }
-    const tombstone = existing.journal.phase === "terminal" ? await this.readTombstone(existing.journal.proposalId) : null;
-    if (tombstone && !terminalTombstoneMatchesJournal(existing.journal, tombstone)) return recoveryRequiredPrivateState();
-    const publicTombstone = tombstone && Date.parse(tombstone.expiresAt) > this.now() ? tombstone : null;
-    return publicStateFromJournal(existing.journal, publicTombstone);
+    return await readPrivateRedemptionPublicState(this.lifecycleReadDependencies(), proposalId);
+  }
+
+  async deletionDisposition(): Promise<CodexRedemptionDeletionDisposition> {
+    return await readPrivateRedemptionDeletionDisposition(this.lifecycleReadDependencies());
+  }
+
+  async reloginDisposition(evidence: RedemptionRecoveryEvidence): Promise<CodexRedemptionReloginDisposition> {
+    return await readPrivateRedemptionReloginDisposition(this.lifecycleReadDependencies(), evidence);
+  }
+
+  private lifecycleReadDependencies() {
+    return {
+      rootPath: this.rootPath,
+      profileId: this.profileId,
+      now: this.now,
+      verifyExistingRoot: () => this.verifyExistingRoot(),
+      readOptionalJournal: (activePath: string, canonicalRoot: string) => this.readOptionalJournal(activePath, canonicalRoot),
+      readOptionalKey: (canonicalRoot: string) => this.readOptionalKey(canonicalRoot),
+      retryClaimState: (canonicalRoot: string) => retryClaimState(this.retryClaimDependencies(canonicalRoot)),
+      readDigestKey: (canonicalRoot: string) => this.readDigestKey(canonicalRoot, false),
+      readTombstone: (proposalId: string) => this.readTombstone(proposalId),
+    };
   }
     private retryUnavailableRoot(): void {
       if (!this.rootResolutionFailed || !this.retryRootResolution) return;

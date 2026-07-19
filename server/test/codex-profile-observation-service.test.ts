@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexLoginProfileRegistry } from "../codex-login-profile-registry.js";
 import { CodexProfileObservationService } from "../codex-profile-observation-service.js";
 import { CodexProfileObservationStore } from "../codex-profile-observation-store.js";
+import { CodexProfileLifecycleStore } from "../codex-profile-lifecycle-store.js";
 import type { CodexRuntimeQualifierLike } from "../codex-runtime-qualifier.js";
 import { makeTempRoot } from "./helpers.js";
 
@@ -81,6 +82,7 @@ describe("Codex Profile Observation Service", () => {
       reLoginRequired: 0,
       disabled: 1,
       identityChanged: 0,
+      cleanupRequired: 0,
       neverObserved: 0,
       profilesWithResets: 1,
     });
@@ -408,7 +410,7 @@ describe("Codex Profile Observation Service", () => {
     await expect(new CodexLoginProfileRegistry({ managerRoot }).get(profile.id)).resolves.toMatchObject({ enabled: false });
   });
 
-  it("removes an orphan observation after profile cancellation recovery", async () => {
+    it("removes an orphan observation after profile cancellation recovery", async () => {
     const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
     const profileId = "profile_Q8nM3cX6vL5sP9rK4dB2tQ7w";
     const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => profileId });
@@ -435,10 +437,31 @@ describe("Codex Profile Observation Service", () => {
         reLoginRequired: 0,
         disabled: 0,
         identityChanged: 0,
+        cleanupRequired: 0,
         neverObserved: 0,
         profilesWithResets: 0,
       },
     });
     await expect(new CodexProfileObservationStore({ managerRoot }).get(profile.id)).resolves.toBeNull();
+    });
+
+    it("surfaces failed deletion as cleanup-required without exposing retained observation values", async () => {
+      const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+      const lifecycleStore = new CodexProfileLifecycleStore({ managerRoot });
+      const observationStore = new CodexProfileObservationStore({ managerRoot });
+      await lifecycleStore.markCleanupRequired({ profileId: firstProfileId, label: "Primary", order: 0 });
+      await observationStore.replace(firstProfileId, null, retainedSnapshot);
+      const service = new CodexProfileObservationService({
+        registry: new CodexLoginProfileRegistry({ managerRoot }),
+        observationStore,
+        lifecycleStore,
+        codexBin: "/trusted/bin/codex",
+        qualifier: unusedQualifier(),
+      });
+
+      await expect(service.list()).resolves.toMatchObject({
+        profiles: [{ profileId: firstProfileId, label: "Primary", status: "cleanup-required", observation: null }],
+        summary: { total: 1, cleanupRequired: 1, profilesWithResets: 0 },
+      });
+    });
   });
-});

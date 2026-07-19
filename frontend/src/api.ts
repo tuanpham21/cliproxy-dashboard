@@ -210,6 +210,20 @@ export async function updateCodexLoginProfile(
   );
 }
 
+export async function deleteCodexLoginProfile(profileId: string): Promise<{ profileId: string; status: "deleted" }> {
+  return await postJson<{ profileId: string; status: "deleted" }>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}/delete`,
+    { confirmed: true },
+  );
+}
+
+export async function startCodexLoginProfileReLogin(profileId: string): Promise<CodexProfileLoginStartedView> {
+  return await postJson<CodexProfileLoginStartedView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}/login-again`,
+    {},
+  );
+}
+
 export async function reorderCodexLoginProfiles(
   input: ReorderCodexProfilesInput,
 ): Promise<CodexProfileObservationListView> {

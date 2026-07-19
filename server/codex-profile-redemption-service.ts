@@ -10,6 +10,12 @@ import type {
   CodexLoginProfileRegistry,
 } from "./codex-login-profile-registry.js";
 import { PrivateRedemptionStateStore } from "./codex-redemption-private-state.js";
+import type {
+  CodexRedemptionDeletionDisposition,
+  CodexRedemptionReloginDisposition,
+} from "./codex-redemption-private-state.js";
+import type { RedemptionRecoveryEvidence } from "./codex-redemption-private-digests.js";
+import type { CodexProfileLifecycleStore } from "./codex-profile-lifecycle-store.js";
 import {
   CodexRedemptionService,
   CodexRedemptionServiceError,
@@ -22,9 +28,14 @@ import type {
   CodexRuntimeQualification,
   CodexRuntimeQualifierLike,
 } from "./codex-runtime-qualifier.js";
+import type {
+  CodexProfileLifecycleFence,
+  CodexProfileLifecycleOperation,
+} from "./codex-profile-lifecycle-fence.js";
 
 type CodexRedemptionProfileRegistry = Pick<CodexLoginProfileRegistry, "get" | "list">;
 type ProfileScope = {
+  profileId?: string;
   service: CodexRedemptionService;
 };
 
@@ -36,6 +47,8 @@ export type CodexProfileRedemptionServiceDependencies = Omit<
   registry: CodexRedemptionProfileRegistry;
   createProfileStore?: (profileId: string) => CodexRedemptionPrivateStore;
   legacyStore?: CodexRedemptionPrivateStore;
+  lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
+  lifecycleStore?: Pick<CodexProfileLifecycleStore, "getCleanupRequired">;
 };
 
 function incompatibleQualification(): CodexRuntimeQualification {
@@ -86,6 +99,8 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
   private readonly createProfileStore: (profileId: string) => CodexRedemptionPrivateStore;
   private readonly scopeDependencies: Omit<CodexRedemptionServiceDependencies, "qualifier" | "store">;
   private readonly qualifier: CodexRuntimeQualifierLike;
+  private readonly lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
+  private readonly lifecycleStore?: Pick<CodexProfileLifecycleStore, "getCleanupRequired">;
   private readonly legacy: ProfileScope;
   private readonly profiles = new Map<string, ProfileScope>();
   private readonly proposalScopes = new Map<string, ProfileScope>();
@@ -96,12 +111,16 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
       registry,
       createProfileStore,
       legacyStore,
-      ...scopeDependencies
+        lifecycleFence,
+        lifecycleStore,
+        ...scopeDependencies
     } = dependencies;
     this.qualifier = qualifier;
     this.registry = registry;
-    this.createProfileStore = createProfileStore ?? ((profileId) => new PrivateRedemptionStateStore({ profileId }));
-    this.scopeDependencies = scopeDependencies;
+      this.createProfileStore = createProfileStore ?? ((profileId) => new PrivateRedemptionStateStore({ profileId }));
+      this.scopeDependencies = scopeDependencies;
+      this.lifecycleFence = lifecycleFence;
+      this.lifecycleStore = lifecycleStore;
     this.legacy = {
       service: new CodexRedemptionService({
         ...scopeDependencies,
@@ -128,14 +147,20 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
     if (!isRegistryProfileId(input.profileId)) {
       throw new CodexRedemptionServiceError("codex_runtime_incompatible");
     }
-    const scope = this.profileScope(input.profileId);
-    const current = await scope.service.currentState();
-    if (current.status === "recovery-required" || current.status === "unavailable") {
-      throw new CodexRedemptionServiceError(current.code);
-    }
-    const proposal = await scope.service.prepare(codexBin, input);
-    this.proposalScopes.set(proposal.proposalId, scope);
-    return proposal;
+    return await this.withProfileFence(input.profileId, "prepare", async () => {
+      const profile = await this.registry.get(input.profileId);
+      if (profile.status !== "confirmed" || !profile.enabled || await this.lifecycleStore?.getCleanupRequired(input.profileId)) {
+        throw new CodexRedemptionServiceError("codex_runtime_incompatible");
+      }
+      const scope = this.profileScope(input.profileId);
+      const current = await scope.service.currentState();
+      if (current.status === "recovery-required" || current.status === "unavailable") {
+        throw new CodexRedemptionServiceError(current.code);
+      }
+      const proposal = await scope.service.prepare(codexBin, input);
+      this.proposalScopes.set(proposal.proposalId, scope);
+      return proposal;
+    });
   }
 
   async state(proposalId: string): Promise<CodexRedemptionStateView> {
@@ -149,10 +174,21 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
     return await this.profileScope(profileId).service.currentState();
   }
 
+  async deletionDisposition(profileId: string): Promise<CodexRedemptionDeletionDisposition> {
+    await this.registry.get(profileId);
+    return await this.profileScope(profileId).service.deletionDisposition();
+  }
+
+  async reloginDisposition(profileId: string, evidence: RedemptionRecoveryEvidence): Promise<CodexRedemptionReloginDisposition> {
+    await this.registry.get(profileId);
+    return await this.profileScope(profileId).service.reloginDisposition(evidence);
+  }
+
   async consume(proposalId: string, codexBin?: string): Promise<CodexRedemptionCurrentView> {
     const scope = await this.scopeForProposal(proposalId);
     if (!scope) throw new CodexRedemptionServiceError("redemption-proposal-not-found");
-    const result = await scope.service.consume(proposalId, codexBin);
+    const result = await this.withProfileFence(scope.profileId, "consume", async () =>
+      await scope.service.consume(proposalId, codexBin));
     if (result.status === "terminal") this.proposalScopes.delete(proposalId);
     return result;
   }
@@ -160,7 +196,8 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
   async cancel(proposalId: string): Promise<{ status: "cancelled"; proposalId: string }> {
     const scope = this.proposalScopes.get(proposalId);
     if (!scope) throw new CodexRedemptionServiceError("redemption-proposal-not-found");
-    const result = await scope.service.cancel(proposalId);
+    const result = await this.withProfileFence(scope.profileId, "delete", async () =>
+      await scope.service.cancel(proposalId));
     this.proposalScopes.delete(proposalId);
     return result;
   }
@@ -180,7 +217,8 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
       async () => await this.registry.get(profileId),
     );
     const scope = {
-      service: new CodexRedemptionService({
+        profileId,
+        service: new CodexRedemptionService({
         ...this.scopeDependencies,
         qualifier,
         store: this.createProfileStore(profileId),
@@ -201,5 +239,19 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
       }
     }
     return null;
+  }
+
+  private async withProfileFence<T>(
+    profileId: string | undefined,
+    operation: CodexProfileLifecycleOperation,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    if (!profileId || !this.lifecycleFence) return await action();
+    const lease = await this.lifecycleFence.acquire(profileId, operation);
+    try {
+      return await action();
+    } finally {
+      await lease.release();
+    }
   }
 }

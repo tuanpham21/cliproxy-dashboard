@@ -30,7 +30,8 @@ function controller() {
   return {
     create: vi.fn(async () => ({ profileId, status: "login-in-progress" as const })),
     observe: vi.fn(async () => candidate),
-    retry: vi.fn(async () => ({ profileId, status: "login-in-progress" as const })),
+      retry: vi.fn(async () => ({ profileId, status: "login-in-progress" as const })),
+      startReLogin: vi.fn(async () => ({ profileId, status: "login-in-progress" as const })),
     confirm: vi.fn(async () => ({ ...candidate, status: "confirmed" as const })),
     cancel: vi.fn(async () => ({ profileId, status: "cancelled" as const })),
   };
@@ -65,8 +66,12 @@ describe("Codex Login Profile onboarding API", () => {
     expect(observed.response.getParsed()).toEqual(candidate);
     expect(JSON.stringify(observed.response.getParsed())).not.toMatch(/codexStateRoot|codexSqliteRoot|\/private\//);
 
-    const retried = await call(service, "POST", `/api/codex/login-profiles/${profileId}/retry`);
-    expect(retried.response.getParsed()).toEqual({ profileId, status: "login-in-progress" });
+      const retried = await call(service, "POST", `/api/codex/login-profiles/${profileId}/retry`);
+      expect(retried.response.getParsed()).toEqual({ profileId, status: "login-in-progress" });
+
+      const relogin = await call(service, "POST", `/api/codex/login-profiles/${profileId}/login-again`);
+      expect(relogin.response.getStatus()).toBe(200);
+      expect(service.startReLogin).toHaveBeenCalledWith(profileId);
 
     const confirmation = { confirmed: true, email: "operator@example.com", plan: "pro" };
     const confirmed = await call(

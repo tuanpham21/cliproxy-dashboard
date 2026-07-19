@@ -11,6 +11,9 @@ import { CodexProfileObservationService } from "./codex-profile-observation-serv
 import { CodexProfileRefreshCoordinator } from "./codex-profile-refresh-coordinator.js";
 import { CodexProfileOnboardingService } from "./codex-profile-onboarding-service.js";
 import { CodexProfileRedemptionService } from "./codex-profile-redemption-service.js";
+import { CodexProfileLifecycleFence } from "./codex-profile-lifecycle-fence.js";
+import { CodexProfileLifecycleService } from "./codex-profile-lifecycle-service.js";
+import { CodexProfileLifecycleStore } from "./codex-profile-lifecycle-store.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
 import { openExternalUrl, resolveCliProxyBin, resolveCodexBin } from "./commands.js";
 import { DEFAULT_AUTH_DIR, DEFAULT_CONFIG_PATH } from "./constants.js";
@@ -35,17 +38,31 @@ export async function startServer(
   const codexLoginProfileRegistry = new CodexLoginProfileRegistry({
     managerRoot: codexProfilesManagerRoot,
   });
+  const codexProfileLifecycleFence = new CodexProfileLifecycleFence({ managerRoot: codexProfilesManagerRoot });
+  const codexProfileLifecycleStore = new CodexProfileLifecycleStore({ managerRoot: codexProfilesManagerRoot });
   const codexRedemptionService = new CodexProfileRedemptionService({
     qualifier: codexRuntimeQualifier,
     registry: codexLoginProfileRegistry,
+    lifecycleFence: codexProfileLifecycleFence,
+    lifecycleStore: codexProfileLifecycleStore,
   });
   const codexProfileLoginRunner = new CodexProfileLoginRunner();
   const codexProfileObservationStore = new CodexProfileObservationStore({ managerRoot: codexProfilesManagerRoot });
+  const codexProfileLifecycleService = new CodexProfileLifecycleService({
+    registry: codexLoginProfileRegistry,
+    observationStore: codexProfileObservationStore,
+    lifecycleStore: codexProfileLifecycleStore,
+    lifecycleFence: codexProfileLifecycleFence,
+    redemptionService: codexRedemptionService,
+  });
   const codexProfileObservationService = new CodexProfileObservationService({
     registry: codexLoginProfileRegistry,
     observationStore: codexProfileObservationStore,
     codexBin: resolveCodexBin(options),
     qualifier: codexRuntimeQualifier,
+    lifecycleStore: codexProfileLifecycleStore,
+    lifecycleService: codexProfileLifecycleService,
+    lifecycleFence: codexProfileLifecycleFence,
   });
   const codexProfileRefreshCoordinator = new CodexProfileRefreshCoordinator({
     observationService: codexProfileObservationService,
@@ -56,6 +73,9 @@ export async function startServer(
     loginRunner: codexProfileLoginRunner,
     codexBin: resolveCodexBin(options),
     qualifier: codexRuntimeQualifier,
+    lifecycleFence: codexProfileLifecycleFence,
+    lifecycleStore: codexProfileLifecycleStore,
+    redemptionService: codexRedemptionService,
   });
   await codexRedemptionService.initializeRecovery(resolveCodexBin(options));
   const serverOptions: DashboardOptions & {

@@ -66,10 +66,13 @@ const els: DashboardElements = {
   codexAccount: byId("codex-app-account-content"),
 };
 
-let codexRefreshPromise: Promise<void> | null = null;
-let codexRedemptionController: ReturnType<typeof setupCodexRedemption> | null = null;
-const codexProfileObservations = setupCodexProfileObservations();
-setupCodexProfileOnboarding(codexProfileObservations.refresh);
+  let codexRefreshPromise: Promise<void> | null = null;
+  let codexRedemptionController: ReturnType<typeof setupCodexRedemption> | null = null;
+  let codexProfileOnboarding: ReturnType<typeof setupCodexProfileOnboarding>;
+  const codexProfileObservations = setupCodexProfileObservations({
+    onReLogin: (profileId) => codexProfileOnboarding.startReLogin(profileId),
+  });
+  codexProfileOnboarding = setupCodexProfileOnboarding(codexProfileObservations.refresh);
 
 function activeElementBlocksRefresh(): boolean {
   const active = document.activeElement;

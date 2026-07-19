@@ -28,10 +28,12 @@ import {
   CodexRedemptionPrivateStateError,
   PrivateRedemptionStateStore,
   type AcquirePreparedRedemptionInput,
-  type PreparedRedemptionJournal,
-  type RedemptionJournal,
-  type PublicPrivateRedemptionState,
-} from "./codex-redemption-private-state.js";
+    type PreparedRedemptionJournal,
+    type RedemptionJournal,
+    type PublicPrivateRedemptionState,
+    type CodexRedemptionDeletionDisposition,
+    type CodexRedemptionReloginDisposition,
+  } from "./codex-redemption-private-state.js";
 import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
 import {
   defaultCodexRedemptionAuditSink,
@@ -139,6 +141,8 @@ export interface CodexRedemptionPrivateStore {
   readTombstone?: RecoveryCoordinatorStore["readTombstone"];
   readJournal?: (proposalId: string, ownerNonce: string) => Promise<RedemptionJournal | null>;
   releaseTerminal?: (proposalId: string, ownerNonce: string, auditEventId: string) => Promise<void>;
+    deletionDisposition?: () => Promise<CodexRedemptionDeletionDisposition>;
+  reloginDisposition?: (evidence: import("./codex-redemption-private-digests.js").RedemptionRecoveryEvidence) => Promise<CodexRedemptionReloginDisposition>;
 }
 
 export type CodexRedemptionSessionOptions = {
@@ -468,6 +472,29 @@ export class CodexRedemptionService implements CodexRedemptionController {
     const checked = await this.state(privateState.proposalId);
     if (checked.status !== "prepared") return checked;
     return this.active?.proposal.proposalId === privateState.proposalId ? this.active.proposal : checked;
+  }
+
+  async deletionDisposition(): Promise<CodexRedemptionDeletionDisposition> {
+    if (this.active) return "blocked";
+    const recoveryBlock = this.recovery?.blockingErrorCode();
+    if (recoveryBlock === "redemption-private-state-unavailable") return "unavailable";
+    if (recoveryBlock === "redemption-recovery-required") return "recovery-required";
+    if (this.store.deletionDisposition) return await this.store.deletionDisposition();
+    const current = await this.store.readPublicState();
+    if (current.status === "not-found") return "safe";
+    if (current.status === "unavailable") return "unavailable";
+    if (current.status === "recovery-required") return "recovery-required";
+    return "blocked";
+  }
+
+  async reloginDisposition(
+    evidence: import("./codex-redemption-private-digests.js").RedemptionRecoveryEvidence,
+  ): Promise<CodexRedemptionReloginDisposition> {
+    const recoveryBlock = this.recovery?.blockingErrorCode();
+    if (recoveryBlock === "redemption-private-state-unavailable") return "unavailable";
+    if (recoveryBlock === "redemption-recovery-required") return "recovery-required";
+    if (!this.store.reloginDisposition) return "recovery-required";
+    return await this.store.reloginDisposition(evidence);
   }
 
   async cancel(proposalId: string): Promise<{ status: "cancelled"; proposalId: string }> {

@@ -26,6 +26,15 @@ import type {
   CodexRuntimeQualifierLike,
 } from "./codex-runtime-qualifier.js";
 import { CODEX_PROFILE_STALE_AFTER_MS } from "./codex-profile-refresh-policy.js";
+import type { CodexProfileLifecycleService } from "./codex-profile-lifecycle-service.js";
+import type {
+  CodexProfileLifecycleFence,
+  CodexProfileLifecycleOperation,
+} from "./codex-profile-lifecycle-fence.js";
+import type {
+  CodexProfileCleanupRequired,
+  CodexProfileLifecycleStore,
+} from "./codex-profile-lifecycle-store.js";
 
 type CodexProfileObservationRegistryLike = Pick<
   CodexLoginProfileRegistry,
@@ -39,6 +48,11 @@ type StartReadGateway = (
   input: Pick<CodexMultiProfileReadGatewayStartOptions, "codexBin" | "runtimeContext" | "qualifier">,
 ) => Promise<CodexMultiProfileReadGatewayLike>;
 type ActiveReadGateway = { gateway: CodexMultiProfileReadGatewayLike; closePromise: Promise<void> | null };
+type CodexProfileLifecycleStoreLike = Pick<
+  CodexProfileLifecycleStore,
+  "getCleanupRequired" | "listCleanupRequired"
+>;
+type CodexProfileLifecycleServiceLike = Pick<CodexProfileLifecycleService, "deleteProfile">;
 
 function isRefreshQuarantined(freshness: CodexProfileObservationFreshness | undefined): boolean {
   return freshness === "identity-changed" || freshness === "re-login-required";
@@ -51,6 +65,9 @@ type CodexProfileObservationServiceDependencies = {
   qualifier: CodexRuntimeQualifierLike;
   startReadGateway?: StartReadGateway;
   now?: () => Date;
+  lifecycleStore?: CodexProfileLifecycleStoreLike;
+  lifecycleService?: CodexProfileLifecycleServiceLike;
+  lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
 };
 
 export class CodexProfileObservationServiceError extends Error {
@@ -67,6 +84,9 @@ export class CodexProfileObservationService {
   private readonly qualifier: CodexRuntimeQualifierLike;
   private readonly startReadGateway: StartReadGateway;
   private readonly now: () => Date;
+  private readonly lifecycleStore: CodexProfileLifecycleStoreLike;
+  private readonly lifecycleService?: CodexProfileLifecycleServiceLike;
+  private readonly lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
   private readonly refreshes = new Map<string, Promise<CodexProfileObservationRowView>>();
   private readonly profileOperations = new Map<string, Promise<void>>();
   private readonly activeReadGateways = new Map<string, ActiveReadGateway>();
@@ -80,27 +100,44 @@ export class CodexProfileObservationService {
     this.startReadGateway = dependencies.startReadGateway ?? (async (input) =>
       await CodexMultiProfileReadGateway.start(input));
     this.now = dependencies.now ?? (() => new Date());
+    this.lifecycleStore = dependencies.lifecycleStore ?? {
+      getCleanupRequired: async () => null,
+      listCleanupRequired: async () => [],
+    };
+    this.lifecycleService = dependencies.lifecycleService;
+    this.lifecycleFence = dependencies.lifecycleFence;
   }
 
   async list(): Promise<CodexProfileObservationListView> {
-    try {
-      const profiles = await this.registry.list();
-      await this.observationStore.reconcile(profiles.map((profile) => profile.id));
-        const observations = await this.observationStore.list(profiles.map((profile) => profile.id));
+      try {
+        const profiles = await this.registry.list();
+        const cleanupRequired = await this.lifecycleStore.listCleanupRequired();
+        const cleanupById = new Map(cleanupRequired.map((state) => [state.profileId, state]));
+        const retainedIds = [...new Set([
+          ...profiles.map((profile) => profile.id),
+          ...cleanupRequired.map((state) => state.profileId),
+        ])];
+        await this.observationStore.reconcile(retainedIds);
+          const observations = await this.observationStore.list(retainedIds);
         const byId = new Map(observations.map((observation) => [observation.profileId, observation]));
         const reLoginRequired = new Set((await Promise.all(profiles.map(async (profile) =>
           await this.observationStore.isReLoginRequired(profile.id) ? profile.id : null)))
           .filter((profileId): profileId is string => profileId !== null));
         const repairedProfiles = await Promise.all(profiles.map(async (profile) => {
-          if (profile.enabled && (reLoginRequired.has(profile.id) ||
-            isRefreshQuarantined(byId.get(profile.id)?.snapshot.freshness))) {
+            if (profile.enabled && (cleanupById.has(profile.id) || reLoginRequired.has(profile.id) ||
+              isRefreshQuarantined(byId.get(profile.id)?.snapshot.freshness))) {
             return await this.registry.updateMetadata(profile.id, { enabled: false });
           }
           return profile;
         }));
-        const rows = repairedProfiles.map((profile) =>
-          this.rowFor(profile, byId.get(profile.id), reLoginRequired.has(profile.id)));
-      return { profiles: rows, summary: summarizeCodexProfileObservations(rows) };
+          const rows = repairedProfiles.map((profile) => cleanupById.has(profile.id)
+            ? this.cleanupRow(cleanupById.get(profile.id)!)
+            : this.rowFor(profile, byId.get(profile.id), reLoginRequired.has(profile.id)));
+          for (const cleanup of cleanupRequired) {
+            if (!repairedProfiles.some((profile) => profile.id === cleanup.profileId)) rows.push(this.cleanupRow(cleanup));
+          }
+          rows.sort((left, right) => left.order - right.order || left.profileId.localeCompare(right.profileId));
+        return { profiles: rows, summary: summarizeCodexProfileObservations(rows) };
     } catch (error) {
       if (error instanceof CodexProfileObservationServiceError) throw error;
       throw new CodexProfileObservationServiceError("unavailable");
@@ -111,9 +148,12 @@ export class CodexProfileObservationService {
     profileId: string,
     input: UpdateCodexProfileMetadataInput,
   ): Promise<CodexProfileObservationRowView> {
-    return await this.withProfileOperation(profileId, async () => {
+      return await this.withProfileOperation(profileId, async () => await this.withLifecycleFence(profileId, "disable", async () => {
         try {
-          const stored = await this.observationStore.get(profileId);
+            const stored = await this.observationStore.get(profileId);
+            if (await this.lifecycleStore.getCleanupRequired(profileId)) {
+              throw new CodexProfileObservationServiceError("profile-not-refreshable");
+            }
           const reLoginRequired = await this.observationStore.isReLoginRequired(profileId);
           if (input.enabled === true && (reLoginRequired || isRefreshQuarantined(stored?.snapshot.freshness))) {
             throw new CodexProfileObservationServiceError("profile-not-refreshable");
@@ -124,11 +164,14 @@ export class CodexProfileObservationService {
         if (error instanceof CodexProfileObservationServiceError) throw error;
         throw new CodexProfileObservationServiceError("unavailable");
       }
-    });
-  }
+      }));
+    }
 
   async reorder(profileIds: readonly string[]): Promise<CodexProfileObservationListView> {
     try {
+        if ((await this.lifecycleStore.listCleanupRequired()).length > 0) {
+          throw new CodexProfileObservationServiceError("profile-not-refreshable");
+        }
       await this.registry.reorder(profileIds);
       return await this.list();
     } catch (error) {
@@ -140,7 +183,8 @@ export class CodexProfileObservationService {
   refresh(profileId: string): Promise<CodexProfileObservationRowView> {
     const existing = this.refreshes.get(profileId);
     if (existing) return existing;
-    const task = this.withProfileOperation(profileId, async () => await this.performRefresh(profileId)).finally(() => {
+      const task = this.withProfileOperation(profileId, async () =>
+        await this.withLifecycleFence(profileId, "refresh", async () => await this.performRefresh(profileId))).finally(() => {
       if (this.refreshes.get(profileId) === task) this.refreshes.delete(profileId);
       this.activeReadGateways.delete(profileId);
       this.cancellationRequests.delete(profileId);
@@ -155,6 +199,11 @@ export class CodexProfileObservationService {
     if (active) await this.closeReadGateway(active).catch(() => {});
   }
 
+    async deleteProfile(profileId: string, input: { confirmed: true }) {
+      if (!this.lifecycleService) throw new CodexProfileObservationServiceError("unavailable");
+      return await this.lifecycleService.deleteProfile(profileId, input);
+    }
+
   private async performRefresh(profileId: string): Promise<CodexProfileObservationRowView> {
     let gateway: CodexMultiProfileReadGatewayLike | null = null;
     let operationError: unknown;
@@ -165,7 +214,10 @@ export class CodexProfileObservationService {
     let current: Awaited<ReturnType<CodexProfileObservationStoreLike["get"]>> = null;
     let closeError: unknown;
     try {
-      profile = await this.registry.get(profileId);
+        profile = await this.registry.get(profileId);
+        if (await this.lifecycleStore.getCleanupRequired(profileId)) {
+          throw new CodexProfileObservationServiceError("profile-not-refreshable");
+        }
       if (profile.status !== "confirmed") {
         throw new CodexProfileObservationServiceError("profile-not-refreshable");
       }
@@ -186,8 +238,8 @@ export class CodexProfileObservationService {
       gateway = await this.startReadGateway({
         codexBin: identity.canonicalPath,
         runtimeContext: runtimeContextFromIdentity(identity),
-        qualifier: this.qualifier,
-      });
+          qualifier: this.qualifier,
+        });
       const active = { gateway, closePromise: null };
       this.activeReadGateways.set(profile.id, active);
       if (this.cancellationRequests.has(profile.id)) {
@@ -308,7 +360,7 @@ export class CodexProfileObservationService {
     };
   }
 
-  private statusFor(
+    private statusFor(
       profile: CodexLoginProfileRecord,
       observation: CodexProfileObservationSnapshot | null,
       reLoginRequired: boolean,
@@ -324,15 +376,27 @@ export class CodexProfileObservationService {
     if (["identity-changed", "re-login-required", "stale"].includes(snapshot.freshness)) {
       return snapshot.freshness;
     }
-    const now = this.now().getTime();
+
+      const now = this.now().getTime();
     const resetPassed = [snapshot.usage.primary, snapshot.usage.secondary]
       .some((window) => window?.resetsAt && new Date(window.resetsAt).getTime() <= now);
     if (resetPassed) return "refresh-needed";
       if (now - new Date(snapshot.observedAt).getTime() > CODEX_PROFILE_STALE_AFTER_MS) return "stale";
-    return snapshot.freshness;
-  }
+      return snapshot.freshness;
+    }
 
-  private async withProfileOperation<T>(profileId: string, action: () => Promise<T>): Promise<T> {
+    private cleanupRow(cleanup: CodexProfileCleanupRequired): CodexProfileObservationRowView {
+      return {
+        profileId: cleanup.profileId,
+        label: cleanup.label,
+        enabled: false,
+        order: cleanup.order,
+        status: "cleanup-required",
+        observation: null,
+      };
+    }
+
+    private async withProfileOperation<T>(profileId: string, action: () => Promise<T>): Promise<T> {
     const previous = this.profileOperations.get(profileId) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>((resolve) => { release = resolve; });
@@ -343,8 +407,29 @@ export class CodexProfileObservationService {
     } finally {
       release();
       if (this.profileOperations.get(profileId) === tail) this.profileOperations.delete(profileId);
+      }
     }
-  }
+
+    private async withLifecycleFence<T>(
+      profileId: string,
+      operation: CodexProfileLifecycleOperation,
+      action: () => Promise<T>,
+    ): Promise<T> {
+      if (!this.lifecycleFence) return await action();
+      try {
+        const lease = await this.lifecycleFence.acquire(profileId, operation);
+        try {
+          return await action();
+        } finally {
+          await lease.release();
+        }
+      } catch (error) {
+        if ((error as { code?: unknown }).code === "profile-busy") {
+          throw new CodexProfileObservationServiceError("profile-not-refreshable");
+        }
+        throw new CodexProfileObservationServiceError("unavailable");
+      }
+    }
 
   private async closeReadGateway(active: ActiveReadGateway): Promise<void> {
     active.closePromise ??= active.gateway.close();

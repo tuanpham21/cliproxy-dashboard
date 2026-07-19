@@ -238,17 +238,33 @@ export class CodexLoginProfileRegistry {
   }
 
   async cancel(id: string): Promise<void> {
+    await this.removeProfile(id, "pending", false);
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.removeProfile(id, "confirmed", true);
+  }
+
+  private async removeProfile(
+    id: string,
+    requiredStatus: CodexLoginProfileStatus,
+    allowAlreadyRemoved: boolean,
+  ): Promise<void> {
     await this.withMutation(async () => {
       this.assertProfileId(id);
       for (;;) {
         try {
           await this.privatePaths.verifyRoots();
           const state = await this.settleState();
+          const entry = state.profiles.find((candidate) => candidate.id === id);
+          if (!entry && allowAlreadyRemoved) {
+            if (state.cleanup.some((cleanup) => cleanup.id === id)) throw new CodexLoginProfileRegistryError();
+            return;
+          }
           if (state.cleanup.length > 0 || state.profiles.some((candidate) => candidate.cancelingRootName)) {
             throw new CodexLoginProfileRegistryError();
           }
-          const entry = state.profiles.find((candidate) => candidate.id === id);
-          if (!entry || entry.status !== "pending" || entry.cancelingRootName) {
+          if (!entry || entry.status !== requiredStatus || entry.cancelingRootName) {
             throw new CodexLoginProfileRegistryError();
           }
           await this.recordFor(entry);

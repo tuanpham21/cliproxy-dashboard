@@ -18,6 +18,7 @@ export type CodexProfileObservationSnapshot = Readonly<{
 
 export type CodexProfileRowStatus =
   | "pending"
+    | "cleanup-required"
   | "identity-changed"
   | "disabled"
   | "fresh"
@@ -46,6 +47,7 @@ export type CodexProfileObservationSummaryView = {
   reLoginRequired: number;
   disabled: number;
   identityChanged: number;
+  cleanupRequired: number;
   neverObserved: number;
   profilesWithResets: number;
 };
@@ -68,6 +70,7 @@ export function summarizeCodexProfileObservations(
     reLoginRequired: 0,
     disabled: 0,
     identityChanged: 0,
+    cleanupRequired: 0,
     neverObserved: 0,
     profilesWithResets: 0,
   };
@@ -76,6 +79,7 @@ export function summarizeCodexProfileObservations(
     else if (profile.status === "refresh-needed") summary.refreshNeeded += 1;
     else if (profile.status === "re-login-required") summary.reLoginRequired += 1;
     else if (profile.status === "identity-changed") summary.identityChanged += 1;
+    else if (profile.status === "cleanup-required") summary.cleanupRequired += 1;
     else if (profile.status === "never-observed") summary.neverObserved += 1;
     else summary[profile.status] += 1;
     if (profile.status !== "identity-changed" && profile.status !== "re-login-required" &&

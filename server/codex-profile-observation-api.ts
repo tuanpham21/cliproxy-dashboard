@@ -11,10 +11,11 @@ import {
 } from "./codex-profile-observation-service.js";
 import type { CodexProfileRefreshCoordinator } from "./codex-profile-refresh-coordinator.js";
 import type { DashboardOptions } from "./types.js";
+import { CodexProfileLifecycleServiceError } from "./codex-profile-lifecycle-service.js";
 
 export type CodexProfileObservationController = Pick<
   CodexProfileObservationService,
-  "list" | "refresh" | "reorder" | "updateMetadata"
+  "deleteProfile" | "list" | "refresh" | "reorder" | "updateMetadata"
 >;
 export type CodexProfileRefreshController = Pick<CodexProfileRefreshCoordinator, "cancel" | "refreshAll" | "status">;
 
@@ -72,11 +73,15 @@ export async function handleCodexProfileObservationApi(
       jsonResponse(res, 200, await service.updateMetadata(profileId, metadataInput(await safeBody(req, readJsonBody))));
       return true;
     }
-    if (method === "POST" && segments.length === 5 && segments[4] === "refresh") {
+      if (method === "POST" && segments.length === 5 && segments[4] === "refresh") {
       if (Object.keys(await safeBody(req, readJsonBody)).length > 0) throw new CodexProfileObservationRequestError();
       jsonResponse(res, 200, await service.refresh(profileId));
-      return true;
-    }
+        return true;
+      }
+      if (method === "POST" && segments.length === 5 && segments[4] === "delete") {
+        jsonResponse(res, 200, await service.deleteProfile(profileId, deleteInput(await safeBody(req, readJsonBody))));
+        return true;
+      }
   } catch (error) {
     respondError(res, error, jsonResponse);
     return true;
@@ -115,6 +120,13 @@ function reorderInput(body: Record<string, unknown>): ReorderCodexProfilesInput 
   return { profileIds: [...body.profileIds] };
 }
 
+function deleteInput(body: Record<string, unknown>): { confirmed: true } {
+  if (Object.keys(body).join(",") !== "confirmed" || body.confirmed !== true) {
+    throw new CodexProfileObservationRequestError();
+  }
+  return { confirmed: true };
+}
+
 class CodexProfileObservationRequestError extends Error {}
 
 function respondError(res: ServerResponse, error: unknown, jsonResponse: JsonResponse): void {
@@ -122,7 +134,7 @@ function respondError(res: ServerResponse, error: unknown, jsonResponse: JsonRes
     jsonResponse(res, 400, { code: "invalid-profile-observation-request", error: "Valid Codex Login Profile fields are required." });
     return;
   }
-  if (error instanceof CodexProfileObservationServiceError) {
+    if (error instanceof CodexProfileObservationServiceError) {
     const status = error.code === "identity-changed" || error.code === "profile-not-refreshable" ? 409 : 503;
     const message = error.code === "identity-changed"
       ? "The Codex app account changed. Confirm the intended account before refreshing again."
@@ -130,7 +142,24 @@ function respondError(res: ServerResponse, error: unknown, jsonResponse: JsonRes
         ? "This Codex Login Profile cannot be refreshed."
         : "Couldn’t refresh this Codex Login Profile.";
     jsonResponse(res, status, { code: error.code, error: message });
-    return;
-  }
+      return;
+    }
+    if (error instanceof CodexProfileLifecycleServiceError) {
+      const status = error.code === "invalid-confirmation" ? 400
+        : error.code === "profile-not-deletable" ? 404
+          : error.code === "redemption-active" || error.code === "profile-busy" ? 409
+            : 503;
+      const message = error.code === "redemption-active"
+        ? "This Codex Login Profile has retained reset-redemption recovery state and cannot be deleted."
+        : error.code === "profile-busy"
+          ? "This Codex Login Profile is busy. Try again after its current action finishes."
+          : error.code === "cleanup-required"
+            ? "Codex Login Profile deletion needs cleanup. Retry the delete action."
+            : error.code === "profile-not-deletable"
+              ? "Codex Login Profile not found."
+              : "Couldn’t safely delete this Codex Login Profile.";
+      jsonResponse(res, status, { code: error.code, error: message });
+      return;
+    }
   jsonResponse(res, 503, { code: "profile-observation-unavailable", error: "Couldn’t load Codex Login Profiles." });
 }

@@ -6,6 +6,7 @@ import { summarizeCodexProfileObservations } from "../../shared/codex-profile-ob
 import type { CodexProfileRefreshRunView } from "../../shared/codex-profile-refresh-types";
 import {
   cancelCodexLoginProfileRefreshAll,
+  deleteCodexLoginProfile,
   DashboardApiError,
   readCodexLoginProfiles,
   readCodexLoginProfileRefreshAll,
@@ -15,7 +16,7 @@ import {
   updateCodexLoginProfile,
 } from "./api";
 
-type RowAction = "refresh" | "toggle" | "save" | "up" | "down";
+type RowAction = "refresh" | "toggle" | "save" | "up" | "down" | "relogin" | "delete";
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -106,14 +107,19 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
   const actionsCell = document.createElement("td");
   actionsCell.dataset.label = "Actions";
   actionsCell.className = "codex-profile-observation-actions";
-  const actions: Array<[RowAction, string, boolean]> = [
-    ["save", `Save label for ${profile.label}`, false],
-    ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled],
-      ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" ||
-        profile.status === "identity-changed" || profile.status === "re-login-required"],
-    ["up", `Move ${profile.label} up`, profile.order === 0],
-    ["down", `Move ${profile.label} down`, profile.order === count - 1],
-  ];
+    const actions: Array<[RowAction, string, boolean]> = profile.status === "cleanup-required"
+      ? [["delete", `Retry cleanup for ${profile.label}`, false]]
+      : [
+        ["save", `Save label for ${profile.label}`, false],
+        ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled],
+        ...(profile.status === "identity-changed" || profile.status === "re-login-required"
+          ? [["relogin", `Log in again for ${profile.label}`, false] as [RowAction, string, boolean]] : []),
+        ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" ||
+          profile.status === "identity-changed" || profile.status === "re-login-required"],
+        ["up", `Move ${profile.label} up`, profile.order === 0],
+        ["down", `Move ${profile.label} down`, profile.order === count - 1],
+        ["delete", `Delete ${profile.label}`, false],
+      ];
   for (const [action, accessibleName, disabled] of actions) {
     const button = document.createElement("button");
     button.type = "button";
@@ -124,14 +130,18 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
       : action === "save" ? "Save label"
         : action === "refresh" ? "Refresh"
           : action === "up" ? "↑"
-            : "↓";
+            : action === "down" ? "↓"
+              : action === "relogin" ? "Log in again"
+                : "Delete";
     actionsCell.append(button);
   }
   row.append(profileCell, accountCell, evidenceCell, resetsCell, statusCell, actionsCell);
   return row;
 }
 
-export function setupCodexProfileObservations() {
+export function setupCodexProfileObservations(options: {
+  onReLogin?: (profileId: string) => void | Promise<void>;
+} = {}) {
   const summary = byId("codex-profile-observation-summary");
   const status = byId("codex-profile-observation-status");
   const error = byId("codex-profile-observation-error");
@@ -143,7 +153,7 @@ export function setupCodexProfileObservations() {
 
   const render = () => {
     const value = current.summary;
-    summary.textContent = `${value.total} profiles · ${value.profilesWithResets} with resets · ${value.fresh} fresh · ${value.refreshNeeded} refresh-needed · ${value.stale} stale · ${value.latestKnown} latest-known · ${value.pending} pending · ${value.reLoginRequired} re-login-required · ${value.identityChanged} identity-changed · ${value.disabled} disabled · ${value.neverObserved} never-observed`;
+      summary.textContent = `${value.total} profiles · ${value.profilesWithResets} with resets · ${value.fresh} fresh · ${value.refreshNeeded} refresh-needed · ${value.stale} stale · ${value.latestKnown} latest-known · ${value.pending} pending · ${value.reLoginRequired} re-login-required · ${value.identityChanged} identity-changed · ${value.cleanupRequired} cleanup-required · ${value.disabled} disabled · ${value.neverObserved} never-observed`;
     rows.replaceChildren(...current.profiles.map((profile) => rowElement(profile, current.profiles.length)));
     if (current.profiles.length === 0) {
       const row = document.createElement("tr");
@@ -267,10 +277,21 @@ export function setupCodexProfileObservations() {
           const input = row.querySelector<HTMLInputElement>('[data-field="label"]');
           replaceRow(await updateCodexLoginProfile(profileId, { label: input?.value ?? profile.label }));
           status.textContent = "Profile label saved.";
-        } else if (action === "toggle") {
-          replaceRow(await updateCodexLoginProfile(profileId, { enabled: !profile.enabled }));
-          status.textContent = `${profile.label} ${profile.enabled ? "disabled" : "enabled"}.`;
-        } else {
+          } else if (action === "toggle") {
+            replaceRow(await updateCodexLoginProfile(profileId, { enabled: !profile.enabled }));
+            status.textContent = `${profile.label} ${profile.enabled ? "disabled" : "enabled"}.`;
+          } else if (action === "relogin") {
+            await options.onReLogin?.(profileId);
+            status.textContent = `Log in again started for ${profile.label}.`;
+          } else if (action === "delete") {
+            if (!window.confirm(`Delete Codex Login Profile "${profile.label}"?\n\nThis removes its local metadata, latest observation, and managed login root.`)) {
+              return;
+            }
+            await deleteCodexLoginProfile(profileId);
+            current = await readCodexLoginProfiles();
+            render();
+            status.textContent = `${profile.label} deleted.`;
+          } else {
           const ids = current.profiles.map((candidate) => candidate.profileId);
           const from = ids.indexOf(profileId);
           const to = action === "up" ? from - 1 : from + 1;
@@ -280,7 +301,7 @@ export function setupCodexProfileObservations() {
           status.textContent = `${profile.label} moved.`;
         }
       } catch (caught) {
-        if (action === "refresh") {
+          if (action === "refresh" || action === "delete") {
           try {
             current = await readCodexLoginProfiles();
             render();
@@ -297,5 +318,5 @@ export function setupCodexProfileObservations() {
 
   render();
   void refresh();
-  return { refresh };
+    return { refresh };
 }
