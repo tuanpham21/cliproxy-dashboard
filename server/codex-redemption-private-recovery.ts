@@ -2,8 +2,8 @@ import { lstat, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import {
-    parseRedemptionJournal,
-    terminalTombstoneMatchesJournal,
+  parseRedemptionJournal,
+  terminalTombstoneMatchesJournal,
   type PreparedRedemptionJournal,
   type RedemptionJournal,
   type RedemptionJournalPhase,
@@ -43,10 +43,11 @@ export type PrivateRecoveryDependencies = {
     next: RedemptionJournal,
   ) => Promise<RedemptionJournal>;
   readPrivateFile: (filePath: string, canonicalRoot: string, minimumBytes: number, maximumBytes: number) => Promise<Buffer>;
-    syncDirectory: () => Promise<void>;
-    recoverRetryClaim: (canonicalRoot: string) => Promise<"missing" | "active" | "invalid">;
-    readTombstone: (proposalId: string) => Promise<import("./codex-redemption-journal.js").TerminalRedemptionTombstone | null>;
-    pruneExpiredTombstones: (canonicalRoot: string) => Promise<void>;
+  syncDirectory: () => Promise<void>;
+  recoverRetryClaim: (canonicalRoot: string) => Promise<"missing" | "active" | "invalid">;
+  readTombstone: (proposalId: string) => Promise<import("./codex-redemption-journal.js").TerminalRedemptionTombstone | null>;
+  pruneExpiredTombstones: (canonicalRoot: string) => Promise<void>;
+  journalMatchesScope: (journal: RedemptionJournal) => boolean;
 };
 
 function isEnoent(error: unknown): boolean {
@@ -78,7 +79,7 @@ async function cleanPreparedReclaimFiles(
         const metadata = await lstat(cleanupPath);
         const content = await dependencies.readPrivateFile(cleanupPath, canonicalRoot, 2, JOURNAL_MAX_BYTES);
         const journal = parseRedemptionJournal(JSON.parse(content.toString("utf8")) as unknown);
-        if (!journal) return false;
+        if (!journal || !dependencies.journalMatchesScope(journal)) return false;
         const active = await dependencies.readOptionalJournal(path.join(dependencies.rootPath, ACTIVE_JOURNAL_FILE), canonicalRoot);
         if (active.kind === "journal" && JSON.stringify(active.journal) === JSON.stringify(journal)) {
           await unlink(cleanupPath);
@@ -168,7 +169,13 @@ export async function initializePrivateRecovery(
     try {
       const content = await dependencies.readPrivateFile(cleanupPath, canonicalRoot, 2, JOURNAL_MAX_BYTES);
       const moved = parseRedemptionJournal(JSON.parse(content.toString("utf8")) as unknown);
-      if (!moved || moved.phase !== "prepared" || moved.proposalId !== prepared.proposalId || moved.ownerNonce !== prepared.ownerNonce) {
+      if (
+        !moved ||
+        !dependencies.journalMatchesScope(moved) ||
+        moved.phase !== "prepared" ||
+        moved.proposalId !== prepared.proposalId ||
+        moved.ownerNonce !== prepared.ownerNonce
+      ) {
         return { status: "recovery-required" };
       }
         await unlink(cleanupPath);

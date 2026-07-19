@@ -26,6 +26,11 @@ const validJournal = {
   updatedAt: "2026-07-16T12:00:00.000Z",
 };
 
+const validProfileBinding = {
+  profileId: `profile_${"a".repeat(32)}`,
+  profileRootRuntimeDigest: "b".repeat(43),
+};
+
 describe("prepared redemption journal codec", () => {
   it("requires exact opaque proposal and UUID idempotency identifiers", () => {
     expect(parsePreparedRedemptionJournal(validJournal)).not.toBeNull();
@@ -65,6 +70,27 @@ describe("prepared redemption journal codec", () => {
     })).toBeNull();
   });
 
+  it("accepts only opaque profile binding and rejects private or provider fields", () => {
+    const profileJournal = { ...validJournal, schemaVersion: 2, profileBinding: validProfileBinding };
+    expect(parsePreparedRedemptionJournal(profileJournal)).toMatchObject({ profileBinding: validProfileBinding });
+    for (const forbidden of [
+      { profileRoot: "/Users/operator/private-codex" },
+      { email: "operator@example.com" },
+      { plan: "pro" },
+      { token: "secret" },
+      { accountId: "account-1" },
+      { workspaceId: "workspace-1" },
+      { quota: { usedPercent: 50 } },
+      { providerResponse: { resetCredits: [] } },
+    ]) {
+      expect(parsePreparedRedemptionJournal({ ...profileJournal, ...forbidden })).toBeNull();
+    }
+    expect(parsePreparedRedemptionJournal({
+      ...profileJournal,
+      profileBinding: { ...validProfileBinding, profileRoot: "/private/profile" },
+    })).toBeNull();
+  });
+
   it("accepts strict dispatch and terminal records plus non-secret tombstones", () => {
     const dispatched = {
       ...validJournal,
@@ -82,7 +108,7 @@ describe("prepared redemption journal codec", () => {
       auditEventId: "a".repeat(43),
       updatedAt: "2026-07-16T12:00:03.000Z",
     })).toMatchObject({ phase: "terminal", outcome: "reset" });
-    expect(parseTerminalRedemptionTombstone({
+      expect(parseTerminalRedemptionTombstone({
       schemaVersion: 1,
       proposalId: validJournal.proposalId,
       selectionMode: "generic",
@@ -92,7 +118,19 @@ describe("prepared redemption journal codec", () => {
       message: "No eligible usage limit needs a reset right now. No reset was applied.",
       createdAt: "2026-07-16T12:00:03.000Z",
       expiresAt: "2026-07-16T12:10:03.000Z",
-    })).not.toBeNull();
+      })).not.toBeNull();
+      expect(parseTerminalRedemptionTombstone({
+        schemaVersion: 2,
+        proposalId: validJournal.proposalId,
+        selectionMode: "generic",
+        outcome: "nothingToReset",
+        reconciliation: "not-required",
+        auditEventId: "a".repeat(43),
+        message: "No eligible usage limit needs a reset right now. No reset was applied.",
+        createdAt: "2026-07-16T12:00:03.000Z",
+        expiresAt: "2026-07-16T12:10:03.000Z",
+        profileBinding: validProfileBinding,
+      })).toMatchObject({ profileBinding: validProfileBinding });
   });
 
   it("rejects impossible terminal outcome and reconciliation combinations", () => {

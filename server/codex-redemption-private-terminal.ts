@@ -55,9 +55,9 @@ function transitionAllowed(from: RedemptionJournalPhase, to: RedemptionJournalPh
 }
 
 function immutableFieldsMatch(existing: RedemptionJournal, next: RedemptionJournal): boolean {
-  for (const key of [
-    "schemaVersion", "proposalId", "ownerNonce", "owner", "accountCheckDigest", "idempotencyKey", "selection",
-    "runtimeIdentity", "createdAt", "expiresAt",
+    for (const key of [
+      "schemaVersion", "proposalId", "ownerNonce", "owner", "accountCheckDigest", "idempotencyKey", "selection",
+      "runtimeIdentity", "profileBinding", "createdAt", "expiresAt",
   ] as const) {
     if (JSON.stringify(existing[key]) !== JSON.stringify(next[key])) return false;
   }

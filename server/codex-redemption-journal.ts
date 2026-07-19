@@ -2,6 +2,11 @@ import {
   isCodexRedemptionIdempotencyKey,
   isCodexRedemptionProposalId,
 } from "../shared/codex-redemption-identifiers.js";
+import {
+  parseVersionedRedemptionProfileBinding,
+  redemptionProfileBindingsEqual,
+  type RedemptionProfileBinding,
+} from "./codex-redemption-profile-binding.js";
 import { terminalMessage } from "./codex-redemption-terminal-message.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -10,8 +15,10 @@ export type RedemptionSelection =
   | { mode: "specific"; creditId: string }
   | { mode: "generic" };
 
+export type { RedemptionProfileBinding } from "./codex-redemption-profile-binding.js";
+
 export type PreparedRedemptionJournal = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   phase: "prepared";
   proposalId: string;
   ownerNonce: string;
@@ -25,6 +32,7 @@ export type PreparedRedemptionJournal = {
     fileIdentity: string;
     schemaHash: string;
   };
+  profileBinding?: RedemptionProfileBinding;
   createdAt: string;
   expiresAt: string;
   updatedAt: string;
@@ -62,7 +70,7 @@ export type RedemptionJournalPatch = Partial<{
 }>;
 
 export type TerminalRedemptionTombstone = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   proposalId: string;
   selectionMode: RedemptionSelection["mode"];
   outcome: RedemptionOutcome;
@@ -71,6 +79,7 @@ export type TerminalRedemptionTombstone = {
   message: string;
   createdAt: string;
   expiresAt: string;
+  profileBinding?: RedemptionProfileBinding;
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -109,7 +118,10 @@ function validTerminalReconciliation(outcome: RedemptionOutcome, reconciliation:
 }
 
 export function parsePreparedRedemptionJournal(value: unknown): PreparedRedemptionJournal | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return null;
+  const profileBindingCodec = parseVersionedRedemptionProfileBinding(value);
+  if (!profileBindingCodec) return null;
+  if (!hasExactKeys(value, [
     "schemaVersion",
     "phase",
     "proposalId",
@@ -122,21 +134,22 @@ export function parsePreparedRedemptionJournal(value: unknown): PreparedRedempti
     "createdAt",
     "expiresAt",
     "updatedAt",
+    ...profileBindingCodec.expectedKeys,
   ])) return null;
-  if (value.schemaVersion !== 1 || value.phase !== "prepared") return null;
+  if (value.phase !== "prepared") return null;
   if (!isCodexRedemptionProposalId(value.proposalId)) return null;
   if (typeof value.ownerNonce !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.ownerNonce)) return null;
   if (typeof value.accountCheckDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.accountCheckDigest)) return null;
   if (!isCodexRedemptionIdempotencyKey(value.idempotencyKey)) return null;
-    if (!isIso(value.createdAt) || !isIso(value.expiresAt) || !isIso(value.updatedAt)) return null;
-    const createdAt = Date.parse(value.createdAt);
-    const expiresAt = Date.parse(value.expiresAt);
-    const updatedAt = Date.parse(value.updatedAt);
-    if (
-      expiresAt - createdAt !== 120_000 ||
-      updatedAt < createdAt ||
-      updatedAt > expiresAt
-    ) return null;
+  if (!isIso(value.createdAt) || !isIso(value.expiresAt) || !isIso(value.updatedAt)) return null;
+  const createdAt = Date.parse(value.createdAt);
+  const expiresAt = Date.parse(value.expiresAt);
+  const updatedAt = Date.parse(value.updatedAt);
+  if (
+    expiresAt - createdAt !== 120_000 ||
+    updatedAt < createdAt ||
+    updatedAt > expiresAt
+  ) return null;
   if (!isRecord(value.owner) || !hasExactKeys(value.owner, ["pid", "processStartIdentity"])) return null;
   if (!Number.isSafeInteger(value.owner.pid) || (value.owner.pid as number) <= 0) return null;
   if (typeof value.owner.processStartIdentity !== "string" || value.owner.processStartIdentity.length === 0) return null;
@@ -149,19 +162,19 @@ export function parsePreparedRedemptionJournal(value: unknown): PreparedRedempti
     "schemaHash",
   ])) return null;
   if (
-      typeof value.runtimeIdentity.canonicalPathDigest !== "string" ||
-      !/^[A-Za-z0-9_-]{43}$/.test(value.runtimeIdentity.canonicalPathDigest) ||
-      typeof value.runtimeIdentity.version !== "string" ||
-      value.runtimeIdentity.version.length === 0 ||
-      Buffer.byteLength(value.runtimeIdentity.version, "utf8") > 512 ||
-      typeof value.runtimeIdentity.fileIdentity !== "string" ||
-      value.runtimeIdentity.fileIdentity.length === 0 ||
-      Buffer.byteLength(value.runtimeIdentity.fileIdentity, "utf8") > 512 ||
-      typeof value.runtimeIdentity.schemaHash !== "string" ||
+    typeof value.runtimeIdentity.canonicalPathDigest !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(value.runtimeIdentity.canonicalPathDigest) ||
+    typeof value.runtimeIdentity.version !== "string" ||
+    value.runtimeIdentity.version.length === 0 ||
+    Buffer.byteLength(value.runtimeIdentity.version, "utf8") > 512 ||
+    typeof value.runtimeIdentity.fileIdentity !== "string" ||
+    value.runtimeIdentity.fileIdentity.length === 0 ||
+    Buffer.byteLength(value.runtimeIdentity.fileIdentity, "utf8") > 512 ||
+    typeof value.runtimeIdentity.schemaHash !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.runtimeIdentity.schemaHash)
   ) return null;
   return {
-    schemaVersion: 1,
+    schemaVersion: value.schemaVersion,
     phase: "prepared",
     proposalId: value.proposalId,
     ownerNonce: value.ownerNonce,
@@ -175,6 +188,7 @@ export function parsePreparedRedemptionJournal(value: unknown): PreparedRedempti
       fileIdentity: value.runtimeIdentity.fileIdentity,
       schemaHash: value.runtimeIdentity.schemaHash,
     },
+    ...(profileBindingCodec.profileBinding ? { profileBinding: profileBindingCodec.profileBinding } : {}),
     createdAt: value.createdAt,
     expiresAt: value.expiresAt,
     updatedAt: value.updatedAt,
@@ -204,13 +218,17 @@ export function parseRedemptionJournal(value: unknown): RedemptionJournal | null
     createdAt: value.createdAt,
     expiresAt: value.expiresAt,
     updatedAt: value.createdAt,
+    ...(value.schemaVersion === 2 ? { profileBinding: value.profileBinding } : {}),
   });
   if (!base || !isIso(value.updatedAt) || Date.parse(value.updatedAt) < Date.parse(base.createdAt) || typeof value.dispatchAt !== "string" || !isIso(value.dispatchAt)) return null;
+  const profileBindingCodec = parseVersionedRedemptionProfileBinding(base);
+  if (!profileBindingCodec) return null;
   const dispatchAt = value.dispatchAt;
   if (Date.parse(dispatchAt) < Date.parse(base.createdAt)) return null;
   const commonKeys = [
     "schemaVersion", "phase", "proposalId", "ownerNonce", "owner", "accountCheckDigest", "idempotencyKey",
     "selection", "runtimeIdentity", "createdAt", "expiresAt", "updatedAt", "dispatchAt",
+    ...profileBindingCodec.expectedKeys,
   ];
   if (value.phase === "terminal") {
     if (!hasExactKeys(value, [...commonKeys, "terminalAt", "outcome", "reconciliation", "auditEventId"])) return null;
@@ -219,26 +237,30 @@ export function parseRedemptionJournal(value: unknown): RedemptionJournal | null
     if (value.reconciliation !== "pending" && value.reconciliation !== "reconciled" && value.reconciliation !== "unreconciled" && value.reconciliation !== "availability-changed-unreconciled" && value.reconciliation !== "not-required") return null;
     if (!validTerminalReconciliation(value.outcome, value.reconciliation)) return null;
     if (typeof value.auditEventId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.auditEventId)) return null;
-      return {
-        ...base,
-        phase: "terminal",
-        dispatchAt,
-        updatedAt: value.updatedAt,
-        terminalAt: value.terminalAt,
+    return {
+      ...base,
+      phase: "terminal",
+      dispatchAt,
+      updatedAt: value.updatedAt,
+      terminalAt: value.terminalAt,
       outcome: value.outcome,
       reconciliation: value.reconciliation,
       auditEventId: value.auditEventId,
     };
   }
   if (!hasExactKeys(value, commonKeys)) return null;
-    return { ...base, phase: value.phase, dispatchAt, updatedAt: value.updatedAt };
+  return { ...base, phase: value.phase, dispatchAt, updatedAt: value.updatedAt };
 }
 
 export function parseTerminalRedemptionTombstone(value: unknown): TerminalRedemptionTombstone | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return null;
+  const profileBindingCodec = parseVersionedRedemptionProfileBinding(value);
+  if (!profileBindingCodec) return null;
+  if (!hasExactKeys(value, [
     "schemaVersion", "proposalId", "selectionMode", "outcome", "reconciliation", "auditEventId", "message", "createdAt", "expiresAt",
+    ...profileBindingCodec.expectedKeys,
   ])) return null;
-  if (value.schemaVersion !== 1 || !isCodexRedemptionProposalId(value.proposalId)) return null;
+  if (!isCodexRedemptionProposalId(value.proposalId)) return null;
   if (value.selectionMode !== "specific" && value.selectionMode !== "generic") return null;
   if (value.outcome !== "reset" && value.outcome !== "alreadyRedeemed" && value.outcome !== "nothingToReset" && value.outcome !== "noCredit") return null;
   if (value.reconciliation !== "reconciled" && value.reconciliation !== "unreconciled" && value.reconciliation !== "availability-changed-unreconciled" && value.reconciliation !== "not-required") return null;
@@ -246,7 +268,10 @@ export function parseTerminalRedemptionTombstone(value: unknown): TerminalRedemp
   if (typeof value.auditEventId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.auditEventId)) return null;
   if (typeof value.message !== "string" || value.message.length === 0 || Buffer.byteLength(value.message, "utf8") > 512) return null;
   if (!isIso(value.createdAt) || !isIso(value.expiresAt) || Date.parse(value.expiresAt) <= Date.parse(value.createdAt)) return null;
-  return value as TerminalRedemptionTombstone;
+  return {
+    ...value,
+    ...(profileBindingCodec.profileBinding ? { profileBinding: profileBindingCodec.profileBinding } : {}),
+  } as TerminalRedemptionTombstone;
 }
 
 export function terminalTombstoneMatchesJournal(
@@ -260,7 +285,8 @@ export function terminalTombstoneMatchesJournal(
     journal.outcome === tombstone.outcome &&
     journal.reconciliation === tombstone.reconciliation &&
     journal.auditEventId === tombstone.auditEventId &&
+    redemptionProfileBindingsEqual(journal.profileBinding, tombstone.profileBinding) &&
     tombstone.message === terminalMessage(journal.outcome, journal.selection.mode, journal.reconciliation) &&
-      Date.parse(tombstone.createdAt) >= Date.parse(journal.terminalAt) &&
+    Date.parse(tombstone.createdAt) >= Date.parse(journal.terminalAt) &&
     Date.parse(tombstone.expiresAt) > Date.parse(tombstone.createdAt);
 }

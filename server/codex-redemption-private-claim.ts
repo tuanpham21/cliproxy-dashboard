@@ -1,9 +1,18 @@
 import { chmod, link, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
-import { parseRedemptionJournal, type RedemptionJournal } from "./codex-redemption-journal.js";
+import {
+  parseRedemptionJournal,
+  type RedemptionJournal,
+} from "./codex-redemption-journal.js";
 import { readPrivateFile, type PrivateFileContext } from "./codex-redemption-private-files.js";
 import type { ProcessOwner, ProcessOwnerStatus } from "./codex-redemption-private-owner.js";
+import {
+  parseVersionedRedemptionProfileBinding,
+  redemptionProfileBindingsEqual,
+  redemptionStateTargetsProfileId,
+  type RedemptionProfileBinding,
+} from "./codex-redemption-profile-binding.js";
 
 const ACTIVE_JOURNAL_FILE = "active-redemption.json";
 const RETRY_CLAIM_FILE = "active-redemption.retry-claim.json";
@@ -14,11 +23,12 @@ const RETRY_CLAIM_CANDIDATE = /^\.retry-claim\.[A-Za-z0-9-]+\.candidate$/;
 const RETRY_CLAIM_CLEANUP = /^\.retry-claim\.[A-Za-z0-9-]+\.cleanup$/;
 
 type RetryClaim = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   proposalId: string;
   claimOwnerNonce: string;
   owner: ProcessOwner;
   createdAt: string;
+  profileBinding?: RedemptionProfileBinding;
 };
 
 export type RetryClaimResult =
@@ -35,6 +45,7 @@ export type RetryClaimDependencies = {
   now: () => number;
   syncDirectory: () => Promise<void>;
   createError: () => Error;
+  profileId?: string;
 };
 
 function isEnoent(error: unknown): boolean {
@@ -48,15 +59,33 @@ function isEexist(error: unknown): boolean {
 function parseClaim(value: unknown): RetryClaim | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const claim = value as Record<string, unknown>;
-  if (Object.keys(claim).sort().join(",") !== "claimOwnerNonce,createdAt,owner,proposalId,schemaVersion") return null;
-  if (claim.schemaVersion !== 1 || typeof claim.proposalId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(claim.proposalId)) return null;
+  if (claim.schemaVersion !== 1 && claim.schemaVersion !== 2) return null;
+  const profileBindingCodec = parseVersionedRedemptionProfileBinding(claim);
+  if (!profileBindingCodec) return null;
+  const expectedKeys = [
+    "claimOwnerNonce",
+    "createdAt",
+    "owner",
+    "proposalId",
+    "schemaVersion",
+    ...profileBindingCodec.expectedKeys,
+  ].sort().join(",");
+  if (Object.keys(claim).sort().join(",") !== expectedKeys) return null;
+  if (typeof claim.proposalId !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(claim.proposalId)) return null;
   if (typeof claim.claimOwnerNonce !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(claim.claimOwnerNonce)) return null;
   if (typeof claim.createdAt !== "string" || !Number.isFinite(Date.parse(claim.createdAt))) return null;
   if (typeof claim.owner !== "object" || claim.owner === null || Array.isArray(claim.owner)) return null;
   const owner = claim.owner as Record<string, unknown>;
   if (Object.keys(owner).sort().join(",") !== "pid,processStartIdentity") return null;
   if (!Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0 || typeof owner.processStartIdentity !== "string" || !owner.processStartIdentity) return null;
-  return claim as RetryClaim;
+  return {
+    schemaVersion: claim.schemaVersion,
+    proposalId: claim.proposalId,
+    claimOwnerNonce: claim.claimOwnerNonce,
+    owner: { pid: owner.pid as number, processStartIdentity: owner.processStartIdentity },
+    createdAt: claim.createdAt,
+    ...(profileBindingCodec.profileBinding ? { profileBinding: profileBindingCodec.profileBinding } : {}),
+  };
 }
 
 async function readClaim(dependencies: RetryClaimDependencies): Promise<RetryClaim | null> {
@@ -70,7 +99,7 @@ async function readClaim(dependencies: RetryClaimDependencies): Promise<RetryCla
       RETRY_CLAIM_CANDIDATE,
     );
     const claim = parseClaim(JSON.parse(content.toString("utf8")) as unknown);
-    if (!claim) throw dependencies.createError();
+    if (!claim || !redemptionStateTargetsProfileId(claim, dependencies.profileId)) throw dependencies.createError();
     return claim;
   } catch (error) {
     if (isEnoent(error)) return null;
@@ -99,7 +128,14 @@ function claimsMatch(left: RetryClaim, right: RetryClaim): boolean {
     left.claimOwnerNonce === right.claimOwnerNonce &&
     left.owner.pid === right.owner.pid &&
     left.owner.processStartIdentity === right.owner.processStartIdentity &&
-    left.createdAt === right.createdAt;
+    left.createdAt === right.createdAt &&
+    redemptionProfileBindingsEqual(left.profileBinding, right.profileBinding);
+}
+
+function claimMatchesJournal(claim: RetryClaim, journal: RedemptionJournal): boolean {
+  return claim.proposalId === journal.proposalId &&
+    claim.schemaVersion === journal.schemaVersion &&
+    redemptionProfileBindingsEqual(claim.profileBinding, journal.profileBinding);
 }
 
 async function restoreMovedClaim(dependencies: RetryClaimDependencies, cleanupPath: string): Promise<void> {
@@ -119,7 +155,12 @@ async function readAmbiguousJournal(dependencies: RetryClaimDependencies, propos
     ACTIVE_JOURNAL_CANDIDATE,
   );
   const journal = parseRedemptionJournal(JSON.parse(content.toString("utf8")) as unknown);
-  if (!journal || journal.phase !== "ambiguous" || journal.proposalId !== proposalId) throw dependencies.createError();
+  if (
+    !journal ||
+    journal.phase !== "ambiguous" ||
+    journal.proposalId !== proposalId ||
+    !redemptionStateTargetsProfileId(journal, dependencies.profileId)
+  ) throw dependencies.createError();
   return journal;
 }
 
@@ -153,25 +194,25 @@ export async function recoverRetryClaim(
   if (ownerStatus === "alive") return "active";
   if (ownerStatus === "unverifiable") return "invalid";
   const cleanupPath = path.join(dependencies.context.rootPath, `.retry-claim.${dependencies.randomUUID()}.cleanup`);
-    try {
-      await rename(path.join(dependencies.context.rootPath, RETRY_CLAIM_FILE), cleanupPath);
-    } catch (error) {
-      return isEnoent(error) ? "missing" : "invalid";
-    }
-    await dependencies.syncDirectory();
-    let moved: RetryClaim;
-    try {
-      moved = await readMovedClaim(dependencies, cleanupPath);
-    } catch {
-      return "invalid";
-    }
-    if (!claimsMatch(claim, moved)) {
-      await restoreMovedClaim(dependencies, cleanupPath).catch(() => {});
-      return "invalid";
-    }
-    await unlink(cleanupPath);
-    await dependencies.syncDirectory();
-    return "missing";
+  try {
+    await rename(path.join(dependencies.context.rootPath, RETRY_CLAIM_FILE), cleanupPath);
+  } catch (error) {
+    return isEnoent(error) ? "missing" : "invalid";
+  }
+  await dependencies.syncDirectory();
+  let moved: RetryClaim;
+  try {
+    moved = await readMovedClaim(dependencies, cleanupPath);
+  } catch {
+    return "invalid";
+  }
+  if (!claimsMatch(claim, moved)) {
+    await restoreMovedClaim(dependencies, cleanupPath).catch(() => {});
+    return "invalid";
+  }
+  await unlink(cleanupPath);
+  await dependencies.syncDirectory();
+  return "missing";
 }
 
 export async function claimAmbiguousRetry(
@@ -182,11 +223,12 @@ export async function claimAmbiguousRetry(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const owner = await dependencies.currentOwner();
     const claim: RetryClaim = {
-      schemaVersion: 1,
+      schemaVersion: journal.schemaVersion,
       proposalId,
       claimOwnerNonce: dependencies.randomBytes(32).toString("base64url"),
       owner,
       createdAt: new Date(dependencies.now()).toISOString(),
+      ...(journal.profileBinding ? { profileBinding: journal.profileBinding } : {}),
     };
     const candidatePath = path.join(dependencies.context.rootPath, `.retry-claim.${dependencies.randomUUID()}.candidate`);
     let handle;
@@ -205,24 +247,24 @@ export async function claimAmbiguousRetry(
       } catch (error) {
         if (!isEexist(error)) throw error;
         const existing = await readClaim(dependencies);
-        if (!existing || existing.proposalId !== proposalId) throw dependencies.createError();
+        if (!existing || !claimMatchesJournal(existing, journal)) throw dependencies.createError();
         const ownerStatus = await dependencies.inspectOwner(existing.owner);
         if (ownerStatus === "alive") return { status: "busy", proposalId };
         if (ownerStatus === "unverifiable") throw dependencies.createError();
         const cleanupPath = path.join(dependencies.context.rootPath, `.retry-claim.${dependencies.randomUUID()}.cleanup`);
-          try {
-            await rename(path.join(dependencies.context.rootPath, RETRY_CLAIM_FILE), cleanupPath);
-          } catch (renameError) {
+        try {
+          await rename(path.join(dependencies.context.rootPath, RETRY_CLAIM_FILE), cleanupPath);
+        } catch (renameError) {
           if (isEnoent(renameError)) continue;
-            throw renameError;
-          }
-          await dependencies.syncDirectory();
-          const moved = await readMovedClaim(dependencies, cleanupPath);
-          if (!claimsMatch(existing, moved)) {
-            await restoreMovedClaim(dependencies, cleanupPath).catch(() => {});
-            throw dependencies.createError();
-          }
-          await unlink(cleanupPath);
+          throw renameError;
+        }
+        await dependencies.syncDirectory();
+        const moved = await readMovedClaim(dependencies, cleanupPath);
+        if (!claimsMatch(existing, moved)) {
+          await restoreMovedClaim(dependencies, cleanupPath).catch(() => {});
+          throw dependencies.createError();
+        }
+        await unlink(cleanupPath);
         await dependencies.syncDirectory();
         continue;
       }

@@ -17,6 +17,10 @@ import {
 } from "./codex-redemption-terminal-recovery.js";
 import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
+import type {
+  RedemptionRecoveryEvidence,
+  RedemptionRecoveryEvidenceMatch,
+} from "./codex-redemption-private-digests.js";
 
 type RecoverySession = { close(): Promise<void> };
 type RecoveryGateway = {
@@ -38,10 +42,10 @@ export type RecoveryCoordinatorStore = TerminalRecoveryStore & {
     | { status: "busy"; proposalId: string }
   >;
   releaseRetryClaim(proposalId: string, claimOwnerNonce: string): Promise<void>;
-  verifyRecoveryEvidence(
-    journal: RedemptionJournal,
-    evidence: { accountCheck: { email: string; plan: string }; runtimeIdentity: CodexRuntimeIdentity },
-  ): Promise<{ accountMatches: boolean; runtimeMatches: boolean }>;
+    verifyRecoveryEvidence(
+      journal: RedemptionJournal,
+      evidence: RedemptionRecoveryEvidence,
+    ): Promise<RedemptionRecoveryEvidenceMatch>;
   readPublicState(proposalId?: string): Promise<PublicPrivateRedemptionState>;
   transitionJournal(
     proposalId: string,

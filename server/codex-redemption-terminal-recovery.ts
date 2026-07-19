@@ -11,6 +11,10 @@ import {
 } from "./codex-redemption-journal.js";
 import { runtimeContextFromIdentity, type CodexRuntimeContext } from "./codex-runtime-context.js";
 import type { CodexRuntimeIdentity, CodexRuntimeQualifierLike } from "./codex-runtime-qualifier.js";
+import type {
+  RedemptionRecoveryEvidence,
+  RedemptionRecoveryEvidenceMatch,
+} from "./codex-redemption-private-digests.js";
 import { terminalMessage } from "./codex-redemption-terminal-message.js";
 
 type TerminalRecoverySession = { close(): Promise<void> };
@@ -21,10 +25,10 @@ type TerminalRecoveryGateway = {
 
 export type TerminalRecoveryStore = {
   readTombstone(proposalId: string): Promise<TerminalRedemptionTombstone | null>;
-  verifyRecoveryEvidence(
-    journal: RedemptionJournal,
-    evidence: { accountCheck: { email: string; plan: string }; runtimeIdentity: CodexRuntimeIdentity },
-  ): Promise<{ accountMatches: boolean; runtimeMatches: boolean }>;
+    verifyRecoveryEvidence(
+      journal: RedemptionJournal,
+      evidence: RedemptionRecoveryEvidence,
+    ): Promise<RedemptionRecoveryEvidenceMatch>;
   transitionJournal(
     proposalId: string,
     ownerNonce: string,
