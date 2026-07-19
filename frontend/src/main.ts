@@ -2,6 +2,7 @@ import { deleteJson, postJson, putJson, readCodexAccountUsage, readCurrentCodexR
 import { codexLoadingView } from "./codex-app-account";
 import { setupCodexRedemption } from "./codex-redemption";
 import { setupCodexProfileOnboarding } from "./codex-profile-onboarding";
+import { setupCodexProfileObservations } from "./codex-profile-observations";
 import type { CodexRedemptionCurrentView, CodexRedemptionUsageSnapshot } from "../../shared/codex-account-types";
 import { inferPlan } from "./format";
 import {
@@ -17,6 +18,7 @@ import "./account.css";
 import "./rotation.css";
 import "./codex-account.css";
 import "./codex-profile-onboarding.css";
+import "./codex-profile-observations.css";
 import "./styles.css";
 
 const state: AppState = {
@@ -66,7 +68,8 @@ const els: DashboardElements = {
 
 let codexRefreshPromise: Promise<void> | null = null;
 let codexRedemptionController: ReturnType<typeof setupCodexRedemption> | null = null;
-setupCodexProfileOnboarding();
+const codexProfileObservations = setupCodexProfileObservations();
+setupCodexProfileOnboarding(codexProfileObservations.refresh);
 
 function activeElementBlocksRefresh(): boolean {
   const active = document.activeElement;

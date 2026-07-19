@@ -10,6 +10,8 @@ export type RegistryEntry = {
   id: string;
   status: "pending" | "confirmed";
   rootName: string;
+  label: string;
+  enabled: boolean;
   cancelingRootName?: string;
 };
 
@@ -36,6 +38,27 @@ export function isRegistryProfileId(id: string): boolean {
   return PROFILE_ID_PATTERN.test(id);
 }
 
+export function defaultRegistryProfileLabel(order: number): string {
+  return `Codex Login Profile ${order + 1}`;
+}
+
+export function normalizeRegistryEntry(entry: unknown, order: number): RegistryEntry {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error("Invalid registry entry.");
+  }
+  const candidate = entry as Partial<RegistryEntry>;
+  const normalized: RegistryEntry = {
+    id: candidate.id as string,
+    status: candidate.status as RegistryEntry["status"],
+    rootName: candidate.rootName as string,
+    label: candidate.label ?? defaultRegistryProfileLabel(order),
+    enabled: candidate.enabled ?? candidate.status === "confirmed",
+    ...(candidate.cancelingRootName === undefined ? {} : { cancelingRootName: candidate.cancelingRootName }),
+  };
+  assertRegistryEntry(normalized);
+  return normalized;
+}
+
 export function assertRegistryEntry(entry: unknown): asserts entry is RegistryEntry {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("Invalid registry entry.");
@@ -45,7 +68,13 @@ export function assertRegistryEntry(entry: unknown): asserts entry is RegistryEn
     typeof candidate.id !== "string" ||
     !isRegistryProfileId(candidate.id) ||
     (candidate.status !== "pending" && candidate.status !== "confirmed") ||
-    typeof candidate.rootName !== "string"
+    typeof candidate.rootName !== "string" ||
+    typeof candidate.label !== "string" ||
+    !candidate.label.trim() ||
+    candidate.label !== candidate.label.trim() ||
+    Buffer.byteLength(candidate.label, "utf8") > 80 ||
+    typeof candidate.enabled !== "boolean" ||
+    (candidate.status === "pending" && candidate.enabled)
   ) {
     throw new Error("Invalid registry entry.");
   }

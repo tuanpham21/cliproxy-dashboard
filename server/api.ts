@@ -7,6 +7,10 @@ import { mutateAccountFile, normalizeAccount, parseJwtExp, promotePrimary, publi
 import { handleCodexApi } from "./codex-api.js";
 import type { CodexAccountUsageReader } from "./codex-app-account-usage.js";
 import { handleCodexProfileApi, type CodexProfileOnboardingController } from "./codex-profile-api.js";
+import {
+  handleCodexProfileObservationApi,
+  type CodexProfileObservationController,
+} from "./codex-profile-observation-api.js";
 import type { CodexRedemptionController } from "./codex-redemption-service.js";
 import { cleanupStuckOauthLogins, resolveCliProxyBin, startOauthLogin } from "./commands.js";
 import { DEFAULT_BACKUP_PRIORITY, DEFAULT_CONFIG_PATH, DEFAULT_PRIORITY, DEFAULT_TEST_MODEL, DEFAULT_TEST_OUTPUT_TOKENS, DEFAULT_TEST_PROMPT, DASHBOARD_OPERATOR_TOKEN_HEADER } from "./constants.js";
@@ -166,9 +170,10 @@ export async function handleApi(
   res: ServerResponse,
   options: DashboardOptions & {
     rotationCoordinator?: RotationCoordinator | null;
-      codexAccountUsageService?: CodexAccountUsageReader;
-      codexProfileOnboardingService?: CodexProfileOnboardingController;
-      codexRedemptionService?: CodexRedemptionController;
+    codexAccountUsageService?: CodexAccountUsageReader;
+    codexProfileOnboardingService?: CodexProfileOnboardingController;
+    codexProfileObservationService?: CodexProfileObservationController;
+    codexRedemptionService?: CodexRedemptionController;
   },
 ): Promise<boolean> {
   const method = (req.method ?? "GET").toUpperCase();
@@ -184,6 +189,7 @@ export async function handleApi(
     return true;
   }
 
+  if (await handleCodexProfileObservationApi(req, res, method, url.pathname, segments, options, options.codexProfileObservationService, jsonResponse, readJsonBody)) return true;
   if (await handleCodexProfileApi(req, res, method, url.pathname, segments, options, options.codexProfileOnboardingService, jsonResponse, readJsonBody)) return true;
 
   if (await handleRotationApi(req, res, method, url.pathname, segments, options.rotationCoordinator)) return true;

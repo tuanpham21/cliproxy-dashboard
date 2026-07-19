@@ -142,12 +142,12 @@ function respondOnboardingError(res: ServerResponse, error: unknown, jsonRespons
   jsonResponse(res, 503, { code: "read-failed", error: "Couldn’t check this Codex Login Profile." });
 }
 
-function isLoopbackHost(host: string | undefined): boolean {
+export function isLoopbackHost(host: string | undefined): boolean {
   const normalized = (host ?? "").toLowerCase().replace(/^\[|\]$/g, "");
   return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
 }
 
-function isLoopbackAddress(address: string | undefined): boolean {
+export function isLoopbackAddress(address: string | undefined): boolean {
   if (!address) return false;
   const normalized = address.toLowerCase();
   return normalized === "127.0.0.1" || normalized === "::1" || normalized === "::ffff:127.0.0.1";

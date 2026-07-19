@@ -74,6 +74,26 @@
                 <button type="button" id="cancel-codex-login-profile" hidden>Cancel Codex profile onboarding</button>
               </div>
             </div>
+            <div class="codex-profile-observation-header">
+              <p id="codex-profile-observation-summary" class="codex-profile-observation-summary">Loading Codex Login Profiles…</p>
+              <p id="codex-profile-observation-status" class="muted small" role="status" aria-live="polite" aria-atomic="true"></p>
+            </div>
+            <p id="codex-profile-observation-error" class="codex-profile-observation-error" role="alert" hidden></p>
+            <div class="codex-profile-observation-table-wrap">
+              <table class="codex-profile-observation-table" aria-label="Codex Login Profile evidence">
+                <thead>
+                  <tr>
+                    <th>Profile</th>
+                    <th>Account</th>
+                    <th>Evidence rail</th>
+                    <th>Resets</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="codex-profile-observation-rows"></tbody>
+              </table>
+            </div>
           </section>
 
           <section id="codex-app-account-section" aria-labelledby="codex-app-account-title">

@@ -31,6 +31,10 @@ async function onboardingApi(page: Page) {
     const method = request.method();
     const body = request.postData() ? request.postDataJSON() : null;
     requests.push({ method, path: pathname, body });
+    if (method === "GET" && pathname === "/api/codex/login-profiles") {
+      await route.fulfill({ json: { profiles: [], summary: { total: 0, pending: 0, fresh: 0, latestKnown: 0, disabled: 0, identityChanged: 0, neverObserved: 0, profilesWithResets: 0 } } });
+      return;
+    }
     if (method === "POST" && pathname === "/api/codex/login-profiles") {
       await route.fulfill({ status: 201, json: { profileId, status: "login-in-progress" } });
       return;
@@ -165,7 +169,7 @@ test("cancels onboarding and reports pending private-root cleanup", async ({ pag
   );
   await expect(page.getByRole("button", { name: "Add Codex Login Profile" })).toBeFocused();
   api.releaseObservation();
-  expect(api.requests.at(-1)).toEqual({
+  expect(api.requests).toContainEqual({
     method: "DELETE",
     path: `/api/codex/login-profiles/${profileId}`,
     body: null,

@@ -36,7 +36,7 @@ function usageLabel(window: CodexProfileCandidateView["usage"]["primary"]): stri
   return `${percent} · ${duration} · ${reset}`;
 }
 
-export function setupCodexProfileOnboarding() {
+export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promise<void> = () => {}) {
   const addButton = byId<HTMLButtonElement>("add-codex-login-profile");
   const status = byId("codex-profile-onboarding-status");
   const error = byId("codex-profile-onboarding-error");
@@ -154,6 +154,7 @@ export function setupCodexProfileOnboarding() {
     const created = await createCodexLoginProfile();
     if (!isCurrent()) return null;
     activeProfileId = created.profileId;
+    void onProfileChanged();
     showLogin("Finish the official browser login, then check the logged-in Codex app account.");
     return checkButton;
   }));
@@ -186,6 +187,7 @@ export function setupCodexProfileOnboarding() {
     });
     if (!isCurrent()) return null;
     activeProfileId = null;
+    void onProfileChanged();
     showCandidate(confirmed);
     status.textContent = `Codex Login Profile confirmed for ${confirmed.account.email}.`;
     return addButton;
@@ -199,6 +201,7 @@ export function setupCodexProfileOnboarding() {
     activeProfileId = null;
     candidate = null;
     mode = "idle";
+    void onProfileChanged();
     workspace.hidden = true;
     status.textContent = "Onboarding cancelled. Pending Codex Login Profile data was cleaned up.";
     clearError();

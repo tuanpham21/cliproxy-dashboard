@@ -15,6 +15,10 @@ import {
   type CodexMultiProfileReadGatewayLike,
   type CodexMultiProfileReadGatewayStartOptions,
 } from "./codex-multi-profile-read-gateway.js";
+import {
+  type CodexProfileObservationSnapshot,
+  type CodexProfileObservationStore,
+} from "./codex-profile-observation-store.js";
 import type {
   CodexProfileLoginInput,
   CodexProfileLoginRunner,
@@ -26,6 +30,7 @@ import type {
 } from "./codex-runtime-qualifier.js";
 
 type CodexProfileRegistryLike = Pick<CodexLoginProfileRegistry, "create" | "get" | "confirm" | "cancel">;
+type CodexProfileObservationStoreLike = Pick<CodexProfileObservationStore, "get" | "replace" | "remove">;
 type CodexProfileLoginRunnerLike = Pick<CodexProfileLoginRunner, "start" | "wait" | "cancel">;
 type StartReadGateway = (
   input: Pick<CodexMultiProfileReadGatewayStartOptions, "codexBin" | "runtimeContext" | "qualifier">,
@@ -33,6 +38,7 @@ type StartReadGateway = (
 
 type CodexProfileOnboardingServiceDependencies = {
   registry: CodexProfileRegistryLike;
+  observationStore: CodexProfileObservationStoreLike;
   loginRunner: CodexProfileLoginRunnerLike;
   codexBin: string;
   qualifier: CodexRuntimeQualifierLike;
@@ -43,6 +49,10 @@ type CodexProfileOnboardingServiceDependencies = {
 type QualifiedProfileRuntime = {
   identity: CodexRuntimeIdentity;
   loginInput: CodexProfileLoginInput;
+};
+type CandidateObservation = {
+  view: CodexProfileCandidateView;
+  runtimeVersion: string;
 };
 
 export type CodexProfileOnboardingErrorCode =
@@ -70,16 +80,19 @@ function loginInput(
 
 export class CodexProfileOnboardingService {
   private readonly registry: CodexProfileRegistryLike;
+  private readonly observationStore: CodexProfileObservationStoreLike;
   private readonly loginRunner: CodexProfileLoginRunnerLike;
   private readonly codexBin: string;
   private readonly qualifier: CodexRuntimeQualifierLike;
   private readonly startReadGateway: StartReadGateway;
   private readonly now: () => Date;
-  private readonly candidates = new Map<string, CodexProfileCandidateView>();
+  private readonly candidates = new Map<string, CandidateObservation>();
   private readonly qualifiedProfiles = new Map<string, QualifiedProfileRuntime>();
+  private readonly profileOperations = new Map<string, Promise<void>>();
 
   constructor(dependencies: CodexProfileOnboardingServiceDependencies) {
     this.registry = dependencies.registry;
+    this.observationStore = dependencies.observationStore;
     this.loginRunner = dependencies.loginRunner;
     this.codexBin = dependencies.codexBin;
     this.qualifier = dependencies.qualifier;
@@ -120,7 +133,7 @@ export class CodexProfileOnboardingService {
 
   async observe(profileId: string): Promise<CodexProfileCandidateView> {
     const cached = this.candidates.get(profileId);
-    if (cached) return cached;
+    if (cached) return cached.view;
     const profile = await this.pendingProfile(profileId);
     try {
       await this.loginRunner.wait(profileId);
@@ -140,11 +153,7 @@ export class CodexProfileOnboardingService {
       });
       const accountRead = await gateway.readAccount();
       const account = accountRead.account;
-      if (
-        account?.type !== "chatgpt" ||
-        !account.email?.trim() ||
-        account.plan === "unknown"
-      ) {
+      if (account?.type !== "chatgpt" || !account.email?.trim() || account.plan === "unknown") {
         throw new CodexProfileOnboardingError("account-unavailable");
       }
       const rateLimits = await gateway.readRateLimits();
@@ -169,62 +178,102 @@ export class CodexProfileOnboardingService {
     }
     if (operationError instanceof CodexProfileOnboardingError) throw operationError;
     if (operationError || !candidate) throw new CodexProfileOnboardingError("read-failed");
-    this.candidates.set(profileId, candidate);
+    this.candidates.set(profileId, { view: candidate, runtimeVersion: qualified.identity.version });
     return candidate;
   }
 
   async confirm(profileId: string, input: ConfirmCodexProfileInput): Promise<CodexProfileConfirmedView> {
-    const profile = await this.pendingProfile(profileId);
-    const candidate = this.candidates.get(profile.id);
-    if (
-      !candidate ||
-      input.confirmed !== true ||
-      input.email.trim() !== candidate.account.email ||
-      input.plan !== candidate.account.plan
-    ) {
-      throw new CodexProfileOnboardingError("confirmation-mismatch");
-    }
-    await this.registry.confirm(profile.id);
-    this.candidates.delete(profile.id);
-    this.qualifiedProfiles.delete(profile.id);
-    return { ...candidate, status: "confirmed" };
+    return await this.withProfileOperation(profileId, async () => {
+      const profile = await this.pendingProfile(profileId);
+      const candidate = this.candidates.get(profile.id);
+      if (!candidate || input.confirmed !== true ||
+        input.email.trim() !== candidate.view.account.email || input.plan !== candidate.view.account.plan) {
+        throw new CodexProfileOnboardingError("confirmation-mismatch");
+      }
+      const current = await this.observationStore.get(profile.id);
+      const snapshot: CodexProfileObservationSnapshot = {
+        account: { ...candidate.view.account },
+        observedAt: candidate.view.observedAt,
+        usage: {
+          primary: candidate.view.usage.primary ? { ...candidate.view.usage.primary } : null,
+          secondary: candidate.view.usage.secondary ? { ...candidate.view.usage.secondary } : null,
+        },
+        resetCredits: { ...candidate.view.resetCredits },
+        runtimeVersion: candidate.runtimeVersion,
+        freshness: "fresh",
+      };
+      await this.observationStore.replace(profile.id, current?.generation ?? null, snapshot);
+      try {
+        await this.registry.confirm(profile.id);
+      } catch (error) {
+        try {
+          await this.observationStore.remove(profile.id);
+        } catch {
+          throw new CodexProfileOnboardingError("cleanup-failed");
+        }
+        throw error;
+      }
+      this.candidates.delete(profile.id);
+      this.qualifiedProfiles.delete(profile.id);
+      return { ...candidate.view, status: "confirmed" };
+    });
   }
 
   async retry(profileId: string): Promise<CodexProfileLoginStartedView> {
-    const profile = await this.pendingProfile(profileId);
-    const qualified = await this.qualifyProfile(profile, "login-failed");
-    const input = qualified.loginInput;
-    try {
-      await this.loginRunner.cancel(input);
-    } catch {
-      throw new CodexProfileOnboardingError("cleanup-failed");
-    }
-    this.candidates.delete(profile.id);
-    try {
-      await this.loginRunner.start(input);
-      if (!(await this.qualifier.matchesIdentity(qualified.identity))) {
-        await this.loginRunner.cancel(input).catch(() => {});
+    return await this.withProfileOperation(profileId, async () => {
+      const profile = await this.pendingProfile(profileId);
+      const qualified = await this.qualifyProfile(profile, "login-failed");
+      const input = qualified.loginInput;
+      try {
+        await this.loginRunner.cancel(input);
+        await this.observationStore.remove(profile.id);
+      } catch {
+        throw new CodexProfileOnboardingError("cleanup-failed");
+      }
+      this.candidates.delete(profile.id);
+      try {
+        await this.loginRunner.start(input);
+        if (!(await this.qualifier.matchesIdentity(qualified.identity))) {
+          await this.loginRunner.cancel(input).catch(() => {});
+          throw new CodexProfileOnboardingError("login-failed");
+        }
+        this.qualifiedProfiles.set(profile.id, qualified);
+        return { profileId: profile.id, status: "login-in-progress" };
+      } catch {
         throw new CodexProfileOnboardingError("login-failed");
       }
-      this.qualifiedProfiles.set(profile.id, qualified);
-      return { profileId: profile.id, status: "login-in-progress" };
-    } catch {
-      throw new CodexProfileOnboardingError("login-failed");
-    }
+    });
   }
 
   async cancel(profileId: string): Promise<CodexProfileCancelledView> {
-    const profile = await this.pendingProfile(profileId);
-    const qualified = await this.currentQualifiedProfile(profile);
+    return await this.withProfileOperation(profileId, async () => {
+      const profile = await this.pendingProfile(profileId);
+      const qualified = await this.currentQualifiedProfile(profile);
+      try {
+        await this.loginRunner.cancel(qualified.loginInput);
+        await this.registry.cancel(profile.id);
+        await this.observationStore.remove(profile.id);
+      } catch {
+        throw new CodexProfileOnboardingError("cleanup-failed");
+      }
+      this.candidates.delete(profile.id);
+      this.qualifiedProfiles.delete(profile.id);
+      return { profileId: profile.id, status: "cancelled" };
+    });
+  }
+
+  private async withProfileOperation<T>(profileId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.profileOperations.get(profileId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    this.profileOperations.set(profileId, tail);
+    await previous;
     try {
-      await this.loginRunner.cancel(qualified.loginInput);
-      await this.registry.cancel(profile.id);
-    } catch {
-      throw new CodexProfileOnboardingError("cleanup-failed");
+      return await action();
+    } finally {
+      release();
+      if (this.profileOperations.get(profileId) === tail) this.profileOperations.delete(profileId);
     }
-    this.candidates.delete(profile.id);
-    this.qualifiedProfiles.delete(profile.id);
-    return { profileId: profile.id, status: "cancelled" };
   }
 
   private async pendingProfile(profileId: string): Promise<CodexLoginProfileRecord> {

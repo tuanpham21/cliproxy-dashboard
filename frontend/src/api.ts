@@ -12,6 +12,12 @@ import type {
   CodexProfileLoginStartedView,
   ConfirmCodexProfileInput,
 } from "../../shared/codex-profile-onboarding-types";
+import type {
+  CodexProfileObservationListView,
+  CodexProfileObservationRowView,
+  ReorderCodexProfilesInput,
+  UpdateCodexProfileMetadataInput,
+} from "../../shared/codex-profile-observation-types";
 
 const TOKEN_PLACEHOLDER = "__CLIPROXY_OPERATOR_TOKEN__";
 const OPERATOR_TOKEN_HEADER = "x-cliproxy-dashboard-token";
@@ -182,6 +188,33 @@ export async function cancelCodexLoginProfile(profileId: string): Promise<CodexP
   );
 }
 
+export async function readCodexLoginProfiles(): Promise<CodexProfileObservationListView> {
+  return await requestJson<CodexProfileObservationListView>("/api/codex/login-profiles", {}, true);
+}
+
+export async function refreshCodexLoginProfile(profileId: string): Promise<CodexProfileObservationRowView> {
+  return await postJson<CodexProfileObservationRowView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}/refresh`,
+    {},
+  );
+}
+
+export async function updateCodexLoginProfile(
+  profileId: string,
+  input: UpdateCodexProfileMetadataInput,
+): Promise<CodexProfileObservationRowView> {
+  return await patchJson<CodexProfileObservationRowView>(
+    `/api/codex/login-profiles/${encodeURIComponent(profileId)}`,
+    input,
+  );
+}
+
+export async function reorderCodexLoginProfiles(
+  input: ReorderCodexProfilesInput,
+): Promise<CodexProfileObservationListView> {
+  return await putJson<CodexProfileObservationListView>("/api/codex/login-profiles/order", input);
+}
+
 export async function prepareCodexRedemption(
   input: PrepareCodexRedemptionInput,
 ): Promise<CodexRedemptionProposalView> {
@@ -220,6 +253,10 @@ export async function cancelCodexRedemption(
 
 export async function putJson<T>(url: string, payload: unknown): Promise<T> {
   return await requestJson<T>(url, { method: "PUT", body: JSON.stringify(payload) }, true);
+}
+
+export async function patchJson<T>(url: string, payload: unknown): Promise<T> {
+  return await requestJson<T>(url, { method: "PATCH", body: JSON.stringify(payload) }, true);
 }
 
 export async function deleteJson<T>(url: string): Promise<T> {

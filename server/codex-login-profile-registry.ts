@@ -1,28 +1,34 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { link, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
 
 import type { CodexRuntimeContext } from "./codex-runtime-context.js";
+import { CodexLoginProfilePrivatePaths } from "./codex-login-profile-private-paths.js";
 import {
   assertRegistryEntry,
   assertRegistryCleanupEntry,
   discoverLegacyCancellationArtifacts,
+  defaultRegistryProfileLabel,
   isRegistryProfileId,
+  normalizeRegistryEntry,
   syncRegistryDirectory,
   type RegistryCleanupEntry as CleanupEntry,
   type RegistryEntry,
 } from "./codex-login-profile-registry-migration.js";
-import { createWindowsPrivatePathSecurity, type WindowsPrivatePathSecurity } from "./codex-redemption-windows-security.js";
+import type { WindowsPrivatePathSecurity } from "./codex-redemption-windows-security.js";
 
 export type CodexLoginProfileStatus = "pending" | "confirmed";
 export type CodexLoginProfileRecord = Readonly<{
   id: string;
   status: CodexLoginProfileStatus;
+  label: string;
+  enabled: boolean;
+  order: number;
   runtimeContext: CodexRuntimeContext;
 }>;
+export type CodexLoginProfileMetadataInput = Readonly<{ label?: string; enabled?: boolean }>;
 type RegistryState = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   generation: number;
   idNamespace: string;
   profiles: RegistryEntry[];
@@ -57,25 +63,23 @@ export class CodexLoginProfileRegistryError extends Error {
 
 export class CodexLoginProfileRegistry {
   private readonly managerRoot: string;
-  private readonly stateRoot: string;
   private readonly profilesRoot: string;
   private readonly registryPath: string;
   private readonly platform: NodeJS.Platform;
+  private readonly privatePaths: CodexLoginProfilePrivatePaths;
   private readonly generateId: () => string;
-  private readonly windowsSecurity: WindowsPrivatePathSecurity;
   private readonly renamePath: typeof rename;
   private readonly linkPath: typeof link;
   private readonly removePath: (targetPath: string, options: { recursive: true; force: boolean }) => Promise<void>;
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(dependencies: CodexLoginProfileRegistryDependencies) {
-    this.managerRoot = path.resolve(dependencies.managerRoot);
-    this.stateRoot = path.dirname(this.managerRoot);
-    this.profilesRoot = path.join(this.managerRoot, "profiles");
-    this.registryPath = path.join(this.managerRoot, "registry.json");
-    this.platform = dependencies.platform ?? process.platform;
+    this.privatePaths = new CodexLoginProfilePrivatePaths(dependencies);
+    this.managerRoot = this.privatePaths.managerRoot;
+    this.profilesRoot = this.privatePaths.profilesRoot;
+    this.registryPath = this.privatePaths.legacyRegistryPath;
+    this.platform = this.privatePaths.platform;
     this.generateId = dependencies.generateId ?? (() => randomBytes(24).toString("base64url"));
-    this.windowsSecurity = dependencies.windowsSecurity ?? createWindowsPrivatePathSecurity();
     this.renamePath = dependencies.renamePath ?? rename;
     this.linkPath = dependencies.linkPath ?? link;
     this.removePath = dependencies.removePath ?? rm;
@@ -85,9 +89,7 @@ export class CodexLoginProfileRegistry {
     return await this.withMutation(async () => {
       let rawId: string;
       try {
-        await this.ensurePrivateDirectory(this.stateRoot);
-        await this.ensurePrivateDirectory(this.managerRoot);
-        await this.ensurePrivateDirectory(this.profilesRoot);
+        await this.privatePaths.ensureRoots();
         rawId = this.generateId();
         this.assertProfileId(rawId);
       } catch (error) {
@@ -101,10 +103,16 @@ export class CodexLoginProfileRegistry {
           const id = this.deriveProfileId(rawId, state.idNamespace);
           if (state.profiles.some((entry) => entry.id === id)) throw new CodexLoginProfileRegistryError();
           const rootName = `.${id}.${randomBytes(12).toString("hex")}.profile`;
-          const entry: RegistryEntry = { id, status: "pending", rootName };
-            assertRegistryEntry(entry);
+          const entry: RegistryEntry = {
+            id,
+            status: "pending",
+            rootName,
+            label: defaultRegistryProfileLabel(state.profiles.length),
+            enabled: false,
+          };
+          assertRegistryEntry(entry);
           rootPath = path.join(this.profilesRoot, rootName);
-          await this.ensurePrivateDirectory(rootPath);
+          await this.privatePaths.ensurePrivateDirectory(rootPath);
           const committed = await this.tryCommitState(state, {
             ...state,
             profiles: [...state.profiles, entry],
@@ -113,7 +121,7 @@ export class CodexLoginProfileRegistry {
             await rm(rootPath, { recursive: true, force: true }).catch(() => {});
             continue;
           }
-          return await this.recordFor(entry);
+          return await this.recordFor(entry, state.profiles.length);
         } catch (error) {
           if (rootPath) {
             const committed = await this.loadState().then(
@@ -130,36 +138,97 @@ export class CodexLoginProfileRegistry {
   async get(id: string): Promise<CodexLoginProfileRecord> {
     try {
       this.assertProfileId(id);
-      await this.verifyPrivateRoots();
+      await this.privatePaths.verifyRoots();
       const state = await this.settleState();
       const entry = state.profiles.find((candidate) => candidate.id === id && !candidate.cancelingRootName);
       if (!entry) throw new CodexLoginProfileRegistryError();
-      return await this.recordFor(entry);
+      return await this.recordFor(entry, state.profiles.indexOf(entry));
     } catch (error) {
       if (error instanceof CodexLoginProfileRegistryError) throw error;
       throw new CodexLoginProfileRegistryError();
     }
   }
 
+  async list(): Promise<CodexLoginProfileRecord[]> {
+    try {
+      await this.privatePaths.ensureRoots();
+      return await this.recordsFor(await this.settleState());
+    } catch (error) {
+      if (error instanceof CodexLoginProfileRegistryError) throw error;
+      throw new CodexLoginProfileRegistryError();
+    }
+  }
+
+  async updateMetadata(id: string, input: CodexLoginProfileMetadataInput): Promise<CodexLoginProfileRecord> {
+    return await this.withMutation(async () => {
+      this.assertProfileId(id);
+      const keys = input && typeof input === "object" ? Object.keys(input).sort() : [];
+      if (keys.length === 0 || keys.some((key) => key !== "enabled" && key !== "label")) {
+        throw new CodexLoginProfileRegistryError();
+      }
+      for (;;) {
+        const state = await this.settleState();
+        const order = state.profiles.findIndex((entry) => entry.id === id && !entry.cancelingRootName);
+        const entry = state.profiles[order];
+        if (!entry) throw new CodexLoginProfileRegistryError();
+        const label = input.label === undefined ? entry.label : input.label.trim();
+        const enabled = input.enabled ?? entry.enabled;
+        const updated = { ...entry, label, enabled };
+        try {
+          assertRegistryEntry(updated);
+        } catch {
+          throw new CodexLoginProfileRegistryError();
+        }
+        const committed = await this.tryCommitState(state, {
+          ...state,
+          profiles: state.profiles.map((candidate) => (candidate.id === id ? updated : candidate)),
+        });
+        if (committed) return await this.recordFor(updated, order);
+      }
+    });
+  }
+
+  async reorder(ids: readonly string[]): Promise<CodexLoginProfileRecord[]> {
+    return await this.withMutation(async () => {
+      if (!Array.isArray(ids) || new Set(ids).size !== ids.length || ids.some((id) => !isRegistryProfileId(id))) {
+        throw new CodexLoginProfileRegistryError();
+      }
+      for (;;) {
+        const state = await this.settleState();
+        if (state.cleanup.length > 0 || state.profiles.some((entry) => entry.cancelingRootName)) {
+          throw new CodexLoginProfileRegistryError();
+        }
+        const byId = new Map(state.profiles.map((entry) => [entry.id, entry]));
+        if (ids.length !== state.profiles.length || ids.some((id) => !byId.has(id))) {
+          throw new CodexLoginProfileRegistryError();
+        }
+        const committed = await this.tryCommitState(state, {
+          ...state,
+          profiles: ids.map((id) => byId.get(id)!),
+        });
+        if (committed) return await this.recordsFor(committed);
+      }
+    });
+  }
   async confirm(id: string): Promise<CodexLoginProfileRecord> {
     return await this.withMutation(async () => {
       this.assertProfileId(id);
       for (;;) {
         try {
-          await this.verifyPrivateRoots();
+          await this.privatePaths.verifyRoots();
           const state = await this.settleState();
           const entry = state.profiles.find((candidate) => candidate.id === id);
           if (!entry || entry.status !== "pending" || entry.cancelingRootName) {
             throw new CodexLoginProfileRegistryError();
           }
           await this.recordFor(entry);
-          const confirmed = { ...entry, status: "confirmed" as const };
+          const confirmed = { ...entry, status: "confirmed" as const, enabled: true };
           const committed = await this.tryCommitState(state, {
             ...state,
             profiles: state.profiles.map((candidate) => (candidate.id === id ? confirmed : candidate)),
           });
           if (!committed) continue;
-          return await this.recordFor(confirmed);
+          return await this.recordFor(confirmed, state.profiles.indexOf(entry));
         } catch (error) {
           if (error instanceof CodexLoginProfileRegistryError) throw error;
           throw new CodexLoginProfileRegistryError();
@@ -173,7 +242,7 @@ export class CodexLoginProfileRegistry {
       this.assertProfileId(id);
       for (;;) {
         try {
-          await this.verifyPrivateRoots();
+          await this.privatePaths.verifyRoots();
           const state = await this.settleState();
           if (state.cleanup.length > 0 || state.profiles.some((candidate) => candidate.cancelingRootName)) {
             throw new CodexLoginProfileRegistryError();
@@ -199,63 +268,12 @@ export class CodexLoginProfileRegistry {
       }
     });
   }
-  private async verifyPrivateRoots(): Promise<void> {
-    await this.verifyPrivateDirectory(this.stateRoot);
-    await this.verifyPrivateDirectory(this.managerRoot);
-    await this.verifyPrivateDirectory(this.profilesRoot);
-  }
   private assertProfileId(id: string): void {
     if (!isRegistryProfileId(id)) throw new CodexLoginProfileRegistryError();
   }
   private deriveProfileId(rawId: string, namespace: string): string {
     if (!namespace) return rawId;
     return `profile_${createHash("sha256").update(rawId).digest("base64url")}_${namespace}`;
-  }
-  private profileRoot(rootName: string): string {
-    const root = path.resolve(this.profilesRoot, rootName);
-    const relative = path.relative(this.profilesRoot, root);
-    if (!relative || relative !== rootName || relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw new CodexLoginProfileRegistryError();
-    }
-    return root;
-  }
-  private async ensurePrivateDirectory(directory: string): Promise<void> {
-    let created = false;
-    try {
-      await lstat(directory);
-    } catch (error) {
-      if (!isEnoent(error)) throw error;
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      created = true;
-    }
-    await this.verifyPrivateDirectory(directory, created);
-  }
-  private async verifyPrivateDirectory(directory: string, created = false): Promise<void> {
-    const metadata = await lstat(directory);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new CodexLoginProfileRegistryError();
-    if (this.platform === "win32") {
-      if (created) await this.windowsSecurity.secureCreatedDirectory(directory);
-      await this.windowsSecurity.verifyPrivatePath(directory, true);
-      return;
-    }
-    if (created) await chmod(directory, 0o700);
-    const secured = await lstat(directory);
-    if ((secured.mode & 0o777) !== 0o700) throw new CodexLoginProfileRegistryError();
-    if (typeof process.getuid === "function" && secured.uid !== process.getuid()) {
-      throw new CodexLoginProfileRegistryError();
-    }
-  }
-  private async verifyPrivateFile(filePath: string): Promise<void> {
-    const metadata = await lstat(filePath);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new CodexLoginProfileRegistryError();
-    if (this.platform === "win32") {
-      await this.windowsSecurity.verifyPrivatePath(filePath, true);
-      return;
-    }
-    if ((metadata.mode & 0o777) !== 0o600) throw new CodexLoginProfileRegistryError();
-    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
-      throw new CodexLoginProfileRegistryError();
-    }
   }
   private async settleState(): Promise<RegistryState> {
     for (;;) {
@@ -299,32 +317,32 @@ export class CodexLoginProfileRegistry {
   }
 
   private async finishReservedCancellation(entry: RegistryEntry): Promise<void> {
-    const oldRoot = this.profileRoot(entry.rootName);
-    const cancelingRoot = this.profileRoot(entry.cancelingRootName!);
+    const oldRoot = this.privatePaths.profileRoot(entry.rootName);
+    const cancelingRoot = this.privatePaths.profileRoot(entry.cancelingRootName!);
     await this.renamePath(oldRoot, cancelingRoot).catch(() => {});
     const settled = await this.settleState();
     if (settled.profiles.some((candidate) => candidate.id === entry.id) ||
-        settled.cleanup.some((candidate) => candidate.id === entry.id)) {
+      settled.cleanup.some((candidate) => candidate.id === entry.id)) {
       throw new CodexLoginProfileRegistryError();
     }
   }
 
   private async tryMoveToCancellationRoot(entry: RegistryEntry): Promise<boolean> {
-    const oldRoot = this.profileRoot(entry.rootName);
-    const cancelingRoot = this.profileRoot(entry.cancelingRootName!);
-    if (await this.privateDirectoryExists(cancelingRoot)) return true;
-    if (!(await this.privateDirectoryExists(oldRoot))) return true;
+    const oldRoot = this.privatePaths.profileRoot(entry.rootName);
+    const cancelingRoot = this.privatePaths.profileRoot(entry.cancelingRootName!);
+    if (await this.privatePaths.privateDirectoryExists(cancelingRoot)) return true;
+    if (!(await this.privatePaths.privateDirectoryExists(oldRoot))) return true;
     try {
       await this.renamePath(oldRoot, cancelingRoot);
       return true;
     } catch {
-      return await this.privateDirectoryExists(cancelingRoot);
+      return await this.privatePaths.privateDirectoryExists(cancelingRoot);
     }
   }
   private async tryCleanup(cleanup: CleanupEntry): Promise<boolean> {
-    const targetPath = this.profileRoot(cleanup.name);
+    const targetPath = this.privatePaths.profileRoot(cleanup.name);
     if (cleanup.kind !== "marker") {
-      if (await this.privateDirectoryExists(targetPath)) {
+      if (await this.privatePaths.privateDirectoryExists(targetPath)) {
         try {
           await this.removePath(targetPath, { recursive: true, force: true });
         } catch {
@@ -333,7 +351,7 @@ export class CodexLoginProfileRegistry {
       }
     } else {
       try {
-        await this.verifyPrivateFile(targetPath);
+        await this.privatePaths.verifyPrivateFile(targetPath);
         await rm(targetPath, { force: true });
       } catch (error) {
         if (!isEnoent(error)) return false;
@@ -345,8 +363,8 @@ export class CodexLoginProfileRegistry {
   private async tryMigrateLegacyArtifacts(state: RegistryState): Promise<RegistryState | null> {
     const artifacts = await discoverLegacyCancellationArtifacts({
       profilesRoot: this.profilesRoot,
-      verifyPrivateDirectory: async (targetPath) => await this.verifyPrivateDirectory(targetPath),
-      verifyPrivateFile: async (targetPath) => await this.verifyPrivateFile(targetPath),
+      verifyPrivateDirectory: async (targetPath) => await this.privatePaths.verifyPrivateDirectory(targetPath),
+      verifyPrivateFile: async (targetPath) => await this.privatePaths.verifyPrivateFile(targetPath),
     });
     if (!artifacts) return null;
     return await this.tryCommitState(state, {
@@ -376,12 +394,12 @@ export class CodexLoginProfileRegistry {
   private async readLegacyState(): Promise<RegistryState> {
     let parsed: unknown;
     try {
-      await this.verifyPrivateFile(this.registryPath);
+      await this.privatePaths.verifyPrivateFile(this.registryPath);
       parsed = JSON.parse(await readFile(this.registryPath, "utf8")) as unknown;
     } catch (error) {
       if (isEnoent(error)) {
         return {
-          schemaVersion: 2,
+          schemaVersion: 3,
           generation: 0,
           idNamespace: "",
           profiles: [],
@@ -390,12 +408,12 @@ export class CodexLoginProfileRegistry {
       }
       throw error;
     }
-    if ((parsed as { schemaVersion?: unknown } | null)?.schemaVersion === 2) {
+    if ([2, 3].includes((parsed as { schemaVersion?: number } | null)?.schemaVersion ?? -1)) {
       throw new CodexLoginProfileRegistryError();
     }
     const profiles = this.parseLegacyProfiles(parsed);
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       generation: 0,
       idNamespace: "",
       profiles,
@@ -411,7 +429,7 @@ export class CodexLoginProfileRegistry {
     if (!Array.isArray(rawProfiles)) {
       throw new CodexLoginProfileRegistryError();
     }
-    const profiles = rawProfiles.map((raw) => {
+    const profiles = rawProfiles.map((raw, order) => {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
         throw new CodexLoginProfileRegistryError();
       }
@@ -419,9 +437,7 @@ export class CodexLoginProfileRegistry {
       if (typeof entry.id !== "string" || (entry.status !== "pending" && entry.status !== "confirmed")) {
         throw new CodexLoginProfileRegistryError();
       }
-      const migrated = { id: entry.id, status: entry.status, rootName: entry.id };
-      assertRegistryEntry(migrated);
-      return migrated;
+      return normalizeRegistryEntry({ id: entry.id, status: entry.status, rootName: entry.id }, order);
     });
     if (new Set(profiles.map((entry) => entry.id)).size !== profiles.length) {
       throw new CodexLoginProfileRegistryError();
@@ -430,14 +446,14 @@ export class CodexLoginProfileRegistry {
   }
 
   private async readStateFile(filePath: string, expectedGeneration: number): Promise<RegistryState> {
-    await this.verifyPrivateFile(filePath);
+    await this.privatePaths.verifyPrivateFile(filePath);
     const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new CodexLoginProfileRegistryError();
     }
-    const raw = parsed as Partial<RegistryState>;
+    const raw = parsed as Omit<Partial<RegistryState>, "schemaVersion"> & { schemaVersion?: unknown };
     if (
-      raw.schemaVersion !== 2 ||
+      (raw.schemaVersion !== 2 && raw.schemaVersion !== 3) ||
       raw.generation !== expectedGeneration ||
       !Number.isSafeInteger(raw.generation) ||
       raw.generation < 1 ||
@@ -448,10 +464,7 @@ export class CodexLoginProfileRegistry {
     ) {
       throw new CodexLoginProfileRegistryError();
     }
-    const profiles = raw.profiles.map((entry) => {
-      assertRegistryEntry(entry);
-      return { ...entry };
-    });
+    const profiles = raw.profiles.map(normalizeRegistryEntry);
     const cleanup = raw.cleanup.map((entry) => {
       assertRegistryCleanupEntry(entry);
       return { ...entry };
@@ -459,7 +472,7 @@ export class CodexLoginProfileRegistry {
     if (new Set(profiles.map((entry) => entry.id)).size !== profiles.length) {
       throw new CodexLoginProfileRegistryError();
     }
-    return { ...raw, profiles, cleanup } as RegistryState;
+    return { ...raw, schemaVersion: 3, profiles, cleanup } as RegistryState;
   }
 
   private async tryCommitState(
@@ -477,11 +490,11 @@ export class CodexLoginProfileRegistry {
     if (!Number.isSafeInteger(generation)) {
       throw new CodexLoginProfileRegistryError();
     }
-    const state: RegistryState = { ...next, schemaVersion: 2, generation };
+    const state: RegistryState = { ...next, schemaVersion: 3, generation };
     const statePath = this.statePath(generation);
     const tempPath = path.join(this.managerRoot, `.registry-state.${randomBytes(12).toString("hex")}.tmp`);
     try {
-      await this.writePrivateJsonTemp(tempPath, state);
+      await this.privatePaths.writePrivateJsonTemp(tempPath, state);
       try {
         await this.linkPath(tempPath, statePath);
       } catch (error) {
@@ -489,7 +502,7 @@ export class CodexLoginProfileRegistry {
         throw error;
       }
       await syncRegistryDirectory(this.managerRoot, this.platform);
-      await this.verifyPrivateFile(statePath);
+      await this.privatePaths.verifyPrivateFile(statePath);
       const generations = await this.stateGenerations();
       if (generations.at(-1) !== generation) {
         await rm(statePath, { force: true }).catch(() => {});
@@ -501,26 +514,6 @@ export class CodexLoginProfileRegistry {
     } finally {
       await rm(tempPath, { force: true }).catch(() => {});
     }
-  }
-
-  private async writePrivateJsonTemp(tempPath: string, value: unknown): Promise<void> {
-    const handle = await open(tempPath, "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
-      await handle.sync();
-      if (this.platform !== "win32") {
-        await handle.chmod(0o600);
-      }
-    } finally {
-      await handle.close();
-    }
-    if (this.platform === "win32") {
-      if (!this.windowsSecurity.secureCreatedFile) {
-        throw new CodexLoginProfileRegistryError();
-      }
-      await this.windowsSecurity.secureCreatedFile(tempPath);
-    }
-    await this.verifyPrivateFile(tempPath);
   }
 
   private async stateGenerations(): Promise<number[]> {
@@ -555,16 +548,6 @@ export class CodexLoginProfileRegistry {
     }
   }
 
-  private async privateDirectoryExists(directory: string): Promise<boolean> {
-    try {
-      await this.verifyPrivateDirectory(directory);
-      return true;
-    } catch (error) {
-      if (isEnoent(error)) return false;
-      throw error;
-    }
-  }
-
   private async withMutation<T>(action: () => Promise<T>): Promise<T> {
     const previous = this.mutationTail;
     let release!: () => void;
@@ -579,18 +562,20 @@ export class CodexLoginProfileRegistry {
     }
   }
 
-  private async recordFor(entry: RegistryEntry): Promise<CodexLoginProfileRecord> {
-    const profileRoot = this.profileRoot(entry.rootName);
-    await this.verifyPrivateDirectory(profileRoot);
-    const canonicalProfilesRoot = await realpath(this.profilesRoot);
-    const canonicalRoot = await realpath(profileRoot);
-    if (path.relative(canonicalProfilesRoot, canonicalRoot) !== entry.rootName) {
-      throw new CodexLoginProfileRegistryError();
-    }
+  private async recordsFor(state: RegistryState): Promise<CodexLoginProfileRecord[]> {
+    return await Promise.all(state.profiles
+      .filter((entry) => !entry.cancelingRootName)
+      .map(async (entry) => await this.recordFor(entry, state.profiles.indexOf(entry))));
+  }
+
+  private async recordFor(entry: RegistryEntry, order = 0): Promise<CodexLoginProfileRecord> {
     return {
       id: entry.id,
       status: entry.status,
-      runtimeContext: { codexStateRoot: canonicalRoot, codexSqliteRoot: canonicalRoot },
+      label: entry.label,
+      enabled: entry.enabled,
+      order,
+      runtimeContext: await this.privatePaths.runtimeContext(entry.rootName),
     };
   }
 }

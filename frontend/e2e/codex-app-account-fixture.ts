@@ -127,6 +127,10 @@ export async function mockApi(
       });
       return;
     }
+    if (pathname === "/api/codex/login-profiles" && route.request().method() === "GET") {
+      await route.fulfill({ json: { profiles: [], summary: { total: 0, pending: 0, fresh: 0, latestKnown: 0, disabled: 0, identityChanged: 0, neverObserved: 0, profilesWithResets: 0 } } });
+      return;
+    }
     if (pathname === "/api/codex/account-usage") {
         if (deferFirstCodex && codexCallCount++ === 0) {
           await new Promise<void>((resolve) => {

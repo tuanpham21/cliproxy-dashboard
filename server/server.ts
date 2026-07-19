@@ -6,6 +6,8 @@ import { handleApi, isSameOriginRequest, jsonResponse } from "./api.js";
 import { CodexAppAccountUsageService } from "./codex-app-account-usage.js";
 import { CodexLoginProfileRegistry } from "./codex-login-profile-registry.js";
 import { CodexProfileLoginRunner } from "./codex-profile-login-runner.js";
+import { CodexProfileObservationStore } from "./codex-profile-observation-store.js";
+import { CodexProfileObservationService } from "./codex-profile-observation-service.js";
 import { CodexProfileOnboardingService } from "./codex-profile-onboarding-service.js";
 import { CodexRedemptionService } from "./codex-redemption-service.js";
 import { CodexRuntimeQualifier } from "./codex-runtime-qualifier.js";
@@ -24,35 +26,47 @@ export async function startServer(
     open?: boolean;
     onRotationObservation?: (batch: RotationObservationBatch) => Promise<void> | void;
   },
-  ): Promise<void> {
-          const codexRuntimeQualifier = new CodexRuntimeQualifier();
-          const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
-            const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
-            const dashboardPaths = await resolveDashboardPaths(options);
-            const codexProfileLoginRunner = new CodexProfileLoginRunner();
-            const codexProfileOnboardingService = new CodexProfileOnboardingService({
-            registry: new CodexLoginProfileRegistry({
-              managerRoot: codexLoginProfilesManagerRoot(dashboardPaths.quotaSnapshotStatePath),
-            }),
-              loginRunner: codexProfileLoginRunner,
-              codexBin: resolveCodexBin(options),
-              qualifier: codexRuntimeQualifier,
-            });
-          await codexRedemptionService.initializeRecovery(resolveCodexBin(options));
-        const serverOptions: DashboardOptions & {
-          operatorToken: string;
-          rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null;
-            codexAccountUsageService: CodexAppAccountUsageService;
-            codexProfileOnboardingService: CodexProfileOnboardingService;
-            codexRedemptionService: CodexRedemptionService;
-        } = {
-        ...options,
-        operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
-        rotationCoordinator: null,
-          codexAccountUsageService,
-          codexProfileOnboardingService,
-          codexRedemptionService,
-      };
+): Promise<void> {
+  const codexRuntimeQualifier = new CodexRuntimeQualifier();
+  const codexAccountUsageService = new CodexAppAccountUsageService({ qualifier: codexRuntimeQualifier });
+  const codexRedemptionService = new CodexRedemptionService({ qualifier: codexRuntimeQualifier });
+  const dashboardPaths = await resolveDashboardPaths(options);
+  const codexProfilesManagerRoot = codexLoginProfilesManagerRoot(dashboardPaths.quotaSnapshotStatePath);
+  const codexLoginProfileRegistry = new CodexLoginProfileRegistry({
+    managerRoot: codexProfilesManagerRoot,
+  });
+  const codexProfileLoginRunner = new CodexProfileLoginRunner();
+  const codexProfileObservationStore = new CodexProfileObservationStore({ managerRoot: codexProfilesManagerRoot });
+  const codexProfileObservationService = new CodexProfileObservationService({
+    registry: codexLoginProfileRegistry,
+    observationStore: codexProfileObservationStore,
+    codexBin: resolveCodexBin(options),
+    qualifier: codexRuntimeQualifier,
+  });
+  const codexProfileOnboardingService = new CodexProfileOnboardingService({
+    registry: codexLoginProfileRegistry,
+    observationStore: codexProfileObservationStore,
+    loginRunner: codexProfileLoginRunner,
+    codexBin: resolveCodexBin(options),
+    qualifier: codexRuntimeQualifier,
+  });
+  await codexRedemptionService.initializeRecovery(resolveCodexBin(options));
+  const serverOptions: DashboardOptions & {
+    operatorToken: string;
+    rotationCoordinator: Awaited<ReturnType<typeof createRotationCoordinator>> | null;
+    codexAccountUsageService: CodexAppAccountUsageService;
+    codexProfileOnboardingService: CodexProfileOnboardingService;
+    codexProfileObservationService: CodexProfileObservationService;
+    codexRedemptionService: CodexRedemptionService;
+  } = {
+    ...options,
+    operatorToken: options.operatorToken ?? randomBytes(32).toString("base64url"),
+    rotationCoordinator: null,
+    codexAccountUsageService,
+    codexProfileOnboardingService,
+    codexProfileObservationService,
+    codexRedemptionService,
+  };
   const server = createServer(async (req, res) => {
     try {
       if ((req.method ?? "GET").toUpperCase() === "OPTIONS") {
@@ -62,7 +76,7 @@ export async function startServer(
         }
         res.writeHead(204, {
           "Access-Control-Allow-Headers": "Content-Type, x-cliproxy-dashboard-token",
-            "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+          "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
           "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff",
         });

@@ -54,16 +54,22 @@ function setup() {
     })),
     close: vi.fn(async () => {}),
   };
+  const observationStore = {
+    get: vi.fn(async () => null),
+    replace: vi.fn(async (_profileId, _generation, snapshot) => ({ generation: 1, snapshot })),
+    remove: vi.fn(async () => {}),
+  };
   const startReadGateway = vi.fn(async () => gateway);
   const service = new CodexProfileOnboardingService({
     registry,
+    observationStore,
     loginRunner,
     codexBin: "/trusted/bin/codex",
     qualifier,
     startReadGateway,
     now: () => new Date("2026-07-19T04:00:00.000Z"),
   });
-  return { service, registry, loginRunner, gateway, qualifier, startReadGateway };
+  return { service, registry, observationStore, loginRunner, gateway, qualifier, startReadGateway };
 }
 
 describe("Codex Login Profile onboarding service", () => {

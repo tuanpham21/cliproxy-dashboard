@@ -211,11 +211,23 @@ describe("Codex Login Profile registry", () => {
     });
     const staleRead = staleRegistry.get(unrelated.id);
     await cleanupAttempted;
-    await expect(new CodexLoginProfileRegistry({ managerRoot }).get(unrelated.id)).resolves.toEqual(unrelated);
+    await expect(new CodexLoginProfileRegistry({ managerRoot }).get(unrelated.id)).resolves.toMatchObject({
+      id: unrelated.id,
+      status: unrelated.status,
+      runtimeContext: unrelated.runtimeContext,
+    });
     releaseCleanup();
 
-    await expect(staleRead).resolves.toEqual(unrelated);
-    await expect(new CodexLoginProfileRegistry({ managerRoot }).get(unrelated.id)).resolves.toEqual(unrelated);
+    await expect(staleRead).resolves.toMatchObject({
+      id: unrelated.id,
+      status: unrelated.status,
+      runtimeContext: unrelated.runtimeContext,
+    });
+    await expect(new CodexLoginProfileRegistry({ managerRoot }).get(unrelated.id)).resolves.toMatchObject({
+      id: unrelated.id,
+      status: unrelated.status,
+      runtimeContext: unrelated.runtimeContext,
+    });
     await expect(new CodexLoginProfileRegistry({ managerRoot }).get(canceled.id)).rejects.toThrow(
       "Codex Login Profile registry unavailable.",
     );

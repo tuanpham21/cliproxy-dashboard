@@ -1,0 +1,149 @@
+.codex-profile-observation-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-top: 1rem;
+}
+
+.codex-profile-observation-summary,
+.codex-profile-observation-header p {
+  margin: 0;
+}
+
+.codex-profile-observation-summary {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.codex-profile-observation-error {
+  margin: 0.65rem 0 0;
+  color: var(--danger, #c2413b);
+  font-weight: 600;
+}
+
+.codex-profile-observation-table-wrap {
+  margin-top: 0.75rem;
+  overflow-x: auto;
+}
+
+.codex-profile-observation-table {
+  min-width: 68rem;
+}
+
+.codex-profile-observation-table input[data-field="label"] {
+  min-width: 9rem;
+  width: 100%;
+  font-weight: 650;
+}
+
+.codex-profile-evidence-rail {
+  min-width: 18rem;
+}
+
+.codex-profile-evidence-track {
+  display: grid;
+  grid-template-columns: 4.4rem 1fr;
+  gap: 0.18rem 0.55rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.76rem;
+}
+
+.codex-profile-evidence-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.codex-profile-evidence-bar {
+  grid-column: 1 / -1;
+  height: 0.28rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.codex-profile-evidence-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 58%, #f59e0b));
+}
+
+.codex-profile-status {
+  display: inline-flex;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.codex-profile-status-fresh { color: var(--success, #2f855a); }
+.codex-profile-status-latest-known { color: var(--accent); }
+.codex-profile-status-disabled,
+.codex-profile-status-never-observed { color: var(--muted); }
+.codex-profile-status-identity-changed { color: var(--danger, #c2413b); }
+
+.codex-profile-observation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.codex-profile-observation-actions button {
+  padding: 0.38rem 0.58rem;
+}
+
+.codex-profile-observation-empty {
+  padding: 1.25rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .codex-profile-observation-table {
+    min-width: 0;
+  }
+
+  .codex-profile-observation-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .codex-profile-observation-table,
+  .codex-profile-observation-table tbody,
+  .codex-profile-observation-table tr,
+  .codex-profile-observation-table td {
+    display: block;
+  }
+
+  .codex-profile-observation-table tr {
+    margin-bottom: 0.8rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 0.8rem;
+    background: var(--panel);
+  }
+
+  .codex-profile-observation-table td {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: 0.7rem;
+    border: 0;
+  }
+
+  .codex-profile-observation-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
