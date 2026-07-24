@@ -1,4 +1,5 @@
 import type { CodexAccountUsageWindow } from "./types.js";
+import type { CodexRedemptionCurrentView } from "./codex-account-types.js";
 
 export type CodexProfileObservationFreshness =
   | "fresh"
@@ -35,6 +36,7 @@ export type CodexProfileObservationRowView = {
   order: number;
   status: CodexProfileRowStatus;
   observation: CodexProfileObservationSnapshot | null;
+  activeRedemption?: CodexRedemptionCurrentView;
 };
 
 export type CodexProfileObservationSummaryView = {

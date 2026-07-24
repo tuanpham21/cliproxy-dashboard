@@ -179,7 +179,6 @@ export type CodexAccountUsageWindow = {
 };
 
 export type CodexAccountResetCredit = {
-  id: string | null;
   availability: "available" | "unavailable" | "unsupported" | "malformed";
   title: string | null;
   description: string | null;

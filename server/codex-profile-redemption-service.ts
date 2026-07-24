@@ -1,9 +1,10 @@
 import type {
   CodexRedemptionCurrentView,
   CodexRedemptionProposalView,
-  CodexRedemptionStateView,
+  CodexRedemptionUsageSnapshot,
   PrepareCodexRedemptionInput,
 } from "../shared/codex-account-types.js";
+import type { CodexProfileObservationSnapshot } from "../shared/codex-profile-observation-types.js";
 import { isRegistryProfileId } from "./codex-login-profile-registry-migration.js";
 import type {
   CodexLoginProfileRecord,
@@ -47,9 +48,14 @@ export type CodexProfileRedemptionServiceDependencies = Omit<
   registry: CodexRedemptionProfileRegistry;
   createProfileStore?: (profileId: string) => CodexRedemptionPrivateStore;
   legacyStore?: CodexRedemptionPrivateStore;
-  lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
-  lifecycleStore?: Pick<CodexProfileLifecycleStore, "getCleanupRequired">;
-};
+    lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
+    lifecycleStore?: Pick<CodexProfileLifecycleStore, "getCleanupRequired">;
+    readProfileObservation: (profileId: string) => Promise<CodexProfileObservationSnapshot | null>;
+    reconcileProfileObservation: (
+      profileId: string,
+      snapshot: CodexRedemptionUsageSnapshot | undefined,
+    ) => Promise<void>;
+  };
 
 function incompatibleQualification(): CodexRuntimeQualification {
   return {
@@ -100,10 +106,14 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
   private readonly scopeDependencies: Omit<CodexRedemptionServiceDependencies, "qualifier" | "store">;
   private readonly qualifier: CodexRuntimeQualifierLike;
   private readonly lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
-  private readonly lifecycleStore?: Pick<CodexProfileLifecycleStore, "getCleanupRequired">;
-  private readonly legacy: ProfileScope;
-  private readonly profiles = new Map<string, ProfileScope>();
-  private readonly proposalScopes = new Map<string, ProfileScope>();
+    private readonly lifecycleStore?: Pick<CodexProfileLifecycleStore, "getCleanupRequired">;
+    private readonly readProfileObservation: CodexProfileRedemptionServiceDependencies["readProfileObservation"];
+    private readonly reconcileProfileObservation: CodexProfileRedemptionServiceDependencies["reconcileProfileObservation"];
+    private readonly legacy: ProfileScope;
+    private readonly profiles = new Map<string, ProfileScope>();
+    private readonly proposalScopes = new Map<string, ProfileScope>();
+    private readonly proposalViews = new Map<string, CodexRedemptionProposalView>();
+    private readonly reconciledProposals = new Set<string>();
 
   constructor(dependencies: CodexProfileRedemptionServiceDependencies) {
     const {
@@ -111,16 +121,20 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
       registry,
       createProfileStore,
       legacyStore,
-        lifecycleFence,
-        lifecycleStore,
-        ...scopeDependencies
+          lifecycleFence,
+          lifecycleStore,
+          readProfileObservation,
+          reconcileProfileObservation,
+          ...scopeDependencies
     } = dependencies;
     this.qualifier = qualifier;
     this.registry = registry;
       this.createProfileStore = createProfileStore ?? ((profileId) => new PrivateRedemptionStateStore({ profileId }));
       this.scopeDependencies = scopeDependencies;
-      this.lifecycleFence = lifecycleFence;
-      this.lifecycleStore = lifecycleStore;
+        this.lifecycleFence = lifecycleFence;
+        this.lifecycleStore = lifecycleStore;
+        this.readProfileObservation = readProfileObservation;
+        this.reconcileProfileObservation = reconcileProfileObservation;
     this.legacy = {
       service: new CodexRedemptionService({
         ...scopeDependencies,
@@ -148,30 +162,50 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
       throw new CodexRedemptionServiceError("codex_runtime_incompatible");
     }
     return await this.withProfileFence(input.profileId, "prepare", async () => {
-      const profile = await this.registry.get(input.profileId);
-      if (profile.status !== "confirmed" || !profile.enabled || await this.lifecycleStore?.getCleanupRequired(input.profileId)) {
-        throw new CodexRedemptionServiceError("codex_runtime_incompatible");
-      }
+        const profile = await this.registry.get(input.profileId);
+        if (profile.status !== "confirmed" || !profile.enabled || await this.lifecycleStore?.getCleanupRequired(input.profileId)) {
+          throw new CodexRedemptionServiceError("codex_runtime_incompatible");
+        }
+        const observation = await this.readProfileObservation(input.profileId);
+        if (!observation || observation.freshness === "identity-changed" || observation.freshness === "re-login-required") {
+          throw new CodexRedemptionServiceError("codex_runtime_incompatible");
+        }
       const scope = this.profileScope(input.profileId);
       const current = await scope.service.currentState();
       if (current.status === "recovery-required" || current.status === "unavailable") {
         throw new CodexRedemptionServiceError(current.code);
       }
-      const proposal = await scope.service.prepare(codexBin, input);
-      this.proposalScopes.set(proposal.proposalId, scope);
-      return proposal;
-    });
-  }
+            const proposal = await scope.service.prepare(codexBin, {
+              singleWorkspaceAttested: input.singleWorkspaceAttested,
+            }, { allowAutomaticSelection: true });
+        if (proposal.account.email !== observation.account.email || proposal.account.plan !== observation.account.plan) {
+          await scope.service.cancel(proposal.proposalId);
+          throw new CodexRedemptionServiceError("codex_account_changed");
+        }
+        const profileProposal = { ...proposal, profile: { profileId: profile.id, label: profile.label } };
+        this.proposalScopes.set(proposal.proposalId, scope);
+        this.proposalViews.set(proposal.proposalId, profileProposal);
+        return profileProposal;
+      });
+    }
 
-  async state(proposalId: string): Promise<CodexRedemptionStateView> {
-    const scope = await this.scopeForProposal(proposalId);
-    return scope ? await scope.service.state(proposalId) : { status: "not-found" };
-  }
+    async state(proposalId: string): Promise<CodexRedemptionCurrentView> {
+      const scope = await this.scopeForProposal(proposalId);
+      if (!scope) return { status: "not-found" };
+      const state = await scope.service.state(proposalId);
+      if (state.status === "prepared") return this.proposalViews.get(proposalId) ?? state;
+      await this.reconcileTerminal(scope, state);
+      return state;
+    }
 
   async currentState(profileId?: string): Promise<CodexRedemptionCurrentView> {
     if (!profileId) return await this.legacy.service.currentState();
-    await this.registry.get(profileId);
-    return await this.profileScope(profileId).service.currentState();
+      await this.registry.get(profileId);
+      const scope = this.profileScope(profileId);
+      const state = await scope.service.currentState();
+      if (state.status === "prepared") return this.proposalViews.get(state.proposalId) ?? state;
+      await this.reconcileTerminal(scope, state);
+      return state;
   }
 
   async deletionDisposition(profileId: string): Promise<CodexRedemptionDeletionDisposition> {
@@ -185,12 +219,20 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
   }
 
   async consume(proposalId: string, codexBin?: string): Promise<CodexRedemptionCurrentView> {
-    const scope = await this.scopeForProposal(proposalId);
-    if (!scope) throw new CodexRedemptionServiceError("redemption-proposal-not-found");
-    const result = await this.withProfileFence(scope.profileId, "consume", async () =>
-      await scope.service.consume(proposalId, codexBin));
-    if (result.status === "terminal") this.proposalScopes.delete(proposalId);
-    return result;
+      const scope = await this.scopeForProposal(proposalId);
+      if (!scope) throw new CodexRedemptionServiceError("redemption-proposal-not-found");
+      const result = await this.withProfileFence(scope.profileId, "consume", async () => {
+        if (scope.profileId) {
+          const profile = await this.registry.get(scope.profileId);
+          if (profile.status !== "confirmed" || !profile.enabled || await this.lifecycleStore?.getCleanupRequired(scope.profileId)) {
+            throw new CodexRedemptionServiceError("codex_session_changed");
+          }
+        }
+        return await scope.service.consume(proposalId, codexBin);
+      });
+      await this.reconcileTerminal(scope, result);
+      if (result.status === "terminal") this.proposalScopes.delete(proposalId);
+      return result;
   }
 
   async cancel(proposalId: string): Promise<{ status: "cancelled"; proposalId: string }> {
@@ -198,8 +240,10 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
     if (!scope) throw new CodexRedemptionServiceError("redemption-proposal-not-found");
     const result = await this.withProfileFence(scope.profileId, "delete", async () =>
       await scope.service.cancel(proposalId));
-    this.proposalScopes.delete(proposalId);
-    return result;
+      this.proposalScopes.delete(proposalId);
+      this.proposalViews.delete(proposalId);
+      this.reconciledProposals.delete(proposalId);
+      return result;
   }
 
   async close(): Promise<void> {
@@ -228,7 +272,7 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
     return scope;
   }
 
-  private async scopeForProposal(proposalId: string): Promise<ProfileScope | null> {
+    private async scopeForProposal(proposalId: string): Promise<ProfileScope | null> {
     const mapped = this.proposalScopes.get(proposalId);
     if (mapped) return mapped;
     for (const scope of [this.legacy, ...this.profiles.values()]) {
@@ -238,8 +282,19 @@ export class CodexProfileRedemptionService implements CodexRedemptionController 
         return scope;
       }
     }
-    return null;
-  }
+      return null;
+    }
+
+    private async reconcileTerminal(scope: ProfileScope, state: CodexRedemptionCurrentView): Promise<void> {
+      if (!scope.profileId || state.status !== "terminal" || this.reconciledProposals.has(state.proposalId)) return;
+      try {
+        await this.reconcileProfileObservation(scope.profileId, state.accountUsage);
+        this.reconciledProposals.add(state.proposalId);
+        this.proposalViews.delete(state.proposalId);
+      } catch {
+        // Terminal redemption remains authoritative; later state reads retry read-only reconciliation.
+      }
+    }
 
   private async withProfileFence<T>(
     profileId: string | undefined,

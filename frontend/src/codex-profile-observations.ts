@@ -104,14 +104,16 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
   badge.textContent = statusLabel(profile.status);
   statusCell.append(badge);
 
-  const actionsCell = document.createElement("td");
-  actionsCell.dataset.label = "Actions";
-  actionsCell.className = "codex-profile-observation-actions";
-    const actions: Array<[RowAction, string, boolean]> = profile.status === "cleanup-required"
+    const actionsCell = document.createElement("td");
+    actionsCell.dataset.label = "Actions";
+    actionsCell.className = "codex-profile-observation-actions";
+      const redemptionStatus = profile.activeRedemption?.status;
+      const redemptionAllowsPrepare = !redemptionStatus || redemptionStatus === "not-found" || redemptionStatus === "terminal";
+      const actions: Array<[RowAction, string, boolean]> = profile.status === "cleanup-required"
       ? [["delete", `Retry cleanup for ${profile.label}`, false]]
       : [
         ["save", `Save label for ${profile.label}`, false],
-        ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled],
+          ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled || !redemptionAllowsPrepare],
         ...(profile.status === "identity-changed" || profile.status === "re-login-required"
           ? [["relogin", `Log in again for ${profile.label}`, false] as [RowAction, string, boolean]] : []),
         ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" ||
@@ -120,7 +122,7 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
         ["down", `Move ${profile.label} down`, profile.order === count - 1],
         ["delete", `Delete ${profile.label}`, false],
       ];
-  for (const [action, accessibleName, disabled] of actions) {
+    for (const [action, accessibleName, disabled] of actions) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.action = action;
@@ -133,15 +135,51 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
             : action === "down" ? "↓"
               : action === "relogin" ? "Log in again"
                 : "Delete";
-    actionsCell.append(button);
-  }
-  row.append(profileCell, accountCell, evidenceCell, resetsCell, statusCell, actionsCell);
+      actionsCell.append(button);
+      }
+      const availableResets = profile.observation?.resetCredits.availableCount ?? 0;
+      const canPrepareReset = profile.enabled && availableResets > 0 && redemptionAllowsPrepare && [
+      "fresh",
+      "latest-known",
+      "refresh-needed",
+      "stale",
+    ].includes(profile.status);
+    if (canPrepareReset) {
+      const form = document.createElement("form");
+      form.className = "codex-profile-redemption-form";
+      form.dataset.codexRedemptionForm = "";
+      form.dataset.profileId = profile.profileId;
+      const attestation = document.createElement("label");
+      attestation.className = "codex-profile-redemption-attestation";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.codexWorkspaceAttestation = "";
+      const copy = document.createElement("span");
+      copy.textContent = `${profile.label} uses one ChatGPT workspace for Codex, and this is the workspace whose earned reset I intend to use.`;
+      attestation.append(checkbox, copy);
+      const review = document.createElement("button");
+      review.type = "submit";
+      review.className = "primary";
+      review.dataset.codexRedemptionPrepare = "";
+      review.disabled = true;
+      review.setAttribute("aria-label", `Review reset for ${profile.label}`);
+      review.textContent = "Review reset";
+        form.append(attestation, review);
+        actionsCell.prepend(form);
+      } else if (redemptionStatus && redemptionStatus !== "not-found" && redemptionStatus !== "terminal") {
+        const recovery = document.createElement("small");
+        recovery.className = "codex-profile-redemption-state";
+        recovery.textContent = `Reset redemption: ${redemptionStatus}.`;
+        actionsCell.prepend(recovery);
+      }
+    row.append(profileCell, accountCell, evidenceCell, resetsCell, statusCell, actionsCell);
   return row;
 }
 
 export function setupCodexProfileObservations(options: {
-  onReLogin?: (profileId: string) => void | Promise<void>;
-} = {}) {
+    onReLogin?: (profileId: string) => void | Promise<void>;
+    onRedemptionState?: (state: NonNullable<CodexProfileObservationRowView["activeRedemption"]>) => void;
+  } = {}) {
   const summary = byId("codex-profile-observation-summary");
   const status = byId("codex-profile-observation-status");
   const error = byId("codex-profile-observation-error");
@@ -192,10 +230,12 @@ export function setupCodexProfileObservations(options: {
     status.textContent = `Refresh all cancelled · ${run.completed} of ${run.total}`;
   };
 
-  const loadProfiles = async () => {
-    current = await readCodexLoginProfiles();
-    render();
-  };
+    const loadProfiles = async () => {
+      current = await readCodexLoginProfiles();
+      render();
+      const active = current.profiles.find((profile) => profile.activeRedemption && profile.activeRedemption.status !== "not-found")?.activeRedemption;
+      if (active) options.onRedemptionState?.(active);
+    };
 
   const monitorRefreshAll = async (initial: CodexProfileRefreshRunView) => {
     let run = initial;
@@ -218,10 +258,12 @@ export function setupCodexProfileObservations(options: {
         readCodexLoginProfiles(),
         readCodexLoginProfileRefreshAll(),
       ]);
-      current = profiles;
-      error.hidden = true;
-      render();
-      renderRefreshAll(refreshAll);
+        current = profiles;
+        error.hidden = true;
+        render();
+        const active = profiles.profiles.find((profile) => profile.activeRedemption && profile.activeRedemption.status !== "not-found")?.activeRedemption;
+        if (active) options.onRedemptionState?.(active);
+        renderRefreshAll(refreshAll);
       if (refreshAll.outcome === "running") void monitorRefreshAll(refreshAll).catch(showError);
     } catch (caught) {
       showError(caught);

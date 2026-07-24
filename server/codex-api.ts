@@ -237,7 +237,7 @@ function parsePrepareBody(value: unknown): PrepareCodexRedemptionInput {
   }
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
-  if (keys.some((key) => key !== "profileId" && key !== "creditId" && key !== "singleWorkspaceAttested")) {
+  if (keys.some((key) => key !== "profileId" && key !== "singleWorkspaceAttested")) {
     throw new CodexRedemptionRequestError();
   }
   if (record.singleWorkspaceAttested !== true) {
@@ -246,17 +246,7 @@ function parsePrepareBody(value: unknown): PrepareCodexRedemptionInput {
   if (typeof record.profileId !== "string" || !isRegistryProfileId(record.profileId)) {
     throw new CodexRedemptionRequestError();
   }
-  if (record.creditId === undefined) {
-    return { profileId: record.profileId, singleWorkspaceAttested: true };
-  }
-  if (
-    typeof record.creditId !== "string" ||
-    record.creditId.length === 0 ||
-    Buffer.byteLength(record.creditId, "utf8") > 512
-  ) {
-    throw new CodexRedemptionRequestError();
-  }
-  return { profileId: record.profileId, creditId: record.creditId, singleWorkspaceAttested: true };
+  return { profileId: record.profileId, singleWorkspaceAttested: true };
 }
 
 function respondRedemptionError(res: ServerResponse, error: unknown, jsonResponse: JsonResponse, fallback = "Couldn’t prepare reset redemption."): void {

@@ -2,62 +2,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import type { CodexRateLimitsRead } from "../codex-account-gateway.js";
-import type { CodexLoginProfileRecord } from "../codex-login-profile-registry.js";
 import { CodexProfileRedemptionService } from "../codex-profile-redemption-service.js";
 import {
   PrivateRedemptionStateStore,
   type PrivateRedemptionStateStoreDependencies,
 } from "../codex-redemption-private-state.js";
-import type { CodexRuntimeContext } from "../codex-runtime-context.js";
-import type { CodexRuntimeIdentity } from "../codex-runtime-qualifier.js";
 import { makeTempRoot } from "./helpers.js";
 import { privateStatePlatformDependencies } from "./private-state-platform.js";
-
-const PROFILE_A = `profile_${"a".repeat(32)}`;
-const PROFILE_B = `profile_${"b".repeat(32)}`;
-
-function profile(id: string, runtimeContext: CodexRuntimeContext): CodexLoginProfileRecord {
-  return {
-    id,
-    status: "confirmed",
-    label: id === PROFILE_A ? "Primary" : "Secondary",
-    enabled: true,
-    order: id === PROFILE_A ? 0 : 1,
-    runtimeContext,
-  };
-}
-
-function runtimeIdentity(runtimeContext: CodexRuntimeContext): CodexRuntimeIdentity {
-  return {
-    canonicalPath: "/opt/codex/bin/codex",
-    ...runtimeContext,
-    version: "codex-cli 0.144.4",
-    fileIdentity: "1:2:3:4:5",
-    schemaHash: "a".repeat(64),
-  };
-}
-
-const rateLimits: CodexRateLimitsRead = {
-  rateLimits: {
-    limitId: null,
-    limitName: null,
-    primary: { usedPercent: 90, windowMinutes: 300, resetsAt: 1_800_000_000 },
-    secondary: null,
-    plan: "pro",
-  },
-  rateLimitsByLimitId: null,
-  resetCredits: {
-    availableCount: 1,
-    credits: [{
-      id: "credit-1",
-      availability: "available",
-      title: "Early reset",
-      description: null,
-      expiresAt: null,
-    }],
-  },
-};
+import { PROFILE_A, PROFILE_B, profile, rateLimits, runtimeIdentity } from "./codex-profile-redemption-fixture.js";
 
 async function harness(options: { failRecoveryFor?: string; failLegacyRecovery?: boolean } = {}) {
   const parent = await makeTempRoot();
@@ -70,7 +22,8 @@ async function harness(options: { failRecoveryFor?: string; failLegacyRecovery?:
     codexStateRoot: path.join(parent, "profiles", "b"),
     codexSqliteRoot: path.join(parent, "profiles", "b"),
   });
-  const profiles = new Map([[profileA.id, profileA], [profileB.id, profileB]]);
+    const profiles = new Map([[profileA.id, profileA], [profileB.id, profileB]]);
+    const cleanupRequired = new Set<string>();
   const registry = {
     get: vi.fn(async (profileId: string) => {
       const result = profiles.get(profileId);
@@ -109,7 +62,7 @@ async function harness(options: { failRecoveryFor?: string; failLegacyRecovery?:
   };
   const session = { close: vi.fn(async () => {}) };
   const startSession = vi.fn(async () => session);
-  const gateway = {
+    const gateway = {
     readAccount: vi.fn(async () => ({
       account: { type: "chatgpt" as const, email: "operator@example.com", plan: "pro" as const },
       providerRequiresOpenAiAuth: true,
@@ -125,7 +78,16 @@ async function harness(options: { failRecoveryFor?: string; failLegacyRecovery?:
       await input.afterWrite?.();
       return { outcome: "alreadyRedeemed" as const };
     }),
-  };
+    };
+    const readProfileObservation = vi.fn(async () => ({
+      account: { email: "operator@example.com", plan: "pro" },
+      observedAt: "2026-07-19T11:45:00.000Z",
+      usage: { primary: null, secondary: null },
+      resetCredits: { availableCount: 1 },
+      runtimeVersion: "codex-cli 0.144.4",
+      freshness: "fresh" as const,
+    }));
+    const reconcileProfileObservation = vi.fn(async () => {});
   let proposalSequence = 0;
   const legacyStore = new PrivateRedemptionStateStore(storeDependencies);
   if (options.failLegacyRecovery) {
@@ -135,9 +97,12 @@ async function harness(options: { failRecoveryFor?: string; failLegacyRecovery?:
   }
   const service = new CodexProfileRedemptionService({
     qualifier,
-    registry,
-    createProfileStore,
-    legacyStore,
+      registry,
+      createProfileStore,
+      legacyStore,
+      lifecycleStore: { getCleanupRequired: vi.fn(async (profileId) => cleanupRequired.has(profileId) ? {} as never : null) },
+      readProfileObservation,
+      reconcileProfileObservation,
     startSession,
     gatewayForSession: () => gateway,
     newProposalId: () => String.fromCharCode("p".charCodeAt(0) + proposalSequence++).repeat(43),
@@ -158,21 +123,28 @@ async function harness(options: { failRecoveryFor?: string; failLegacyRecovery?:
     storeDependencies,
     legacyStore,
     rootPathForTests,
-    profileA,
-  };
+      profileA,
+      cleanupRequired,
+      reconcileProfileObservation,
+    };
 }
 
 describe("profile-scoped Codex reset redemption", () => {
   it("resolves one opaque profile server-side and prepares only under its retained runtime context", async () => {
     const test = await harness();
 
-    const proposal = await test.service.prepare("codex", {
-      profileId: PROFILE_A,
-      creditId: "credit-1",
-      singleWorkspaceAttested: true,
-    });
+        const proposal = await test.service.prepare("codex", {
+          profileId: PROFILE_A,
+          singleWorkspaceAttested: true,
+          creditId: "client-selected-credit",
+        } as never);
 
-    expect(proposal).toMatchObject({ status: "prepared", proposalId: "p".repeat(43) });
+      expect(proposal).toMatchObject({
+        status: "prepared",
+        proposalId: "p".repeat(43),
+        profile: { profileId: PROFILE_A, label: "Primary" },
+        selection: { mode: "specific", title: "Early reset" },
+      });
     expect(test.registry.get).toHaveBeenCalledWith(PROFILE_A);
     expect(test.qualifier.qualify).toHaveBeenCalledWith("codex", test.profileA.runtimeContext);
     expect(test.startSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -193,7 +165,7 @@ describe("profile-scoped Codex reset redemption", () => {
     await test.service.close();
   });
 
-  it("rejects new proposals for a disabled profile without touching its retained recovery state", async () => {
+    it("rejects new proposals for a disabled profile without touching its retained recovery state", async () => {
     const test = await harness();
     test.profiles.set(PROFILE_A, { ...test.profileA, enabled: false });
 
@@ -204,8 +176,23 @@ describe("profile-scoped Codex reset redemption", () => {
     })).rejects.toMatchObject({ code: "codex_runtime_incompatible" });
 
     expect(test.startSession).not.toHaveBeenCalled();
-    await expect(test.service.currentState(PROFILE_A)).resolves.toEqual({ status: "not-found" });
-  });
+      await expect(test.service.currentState(PROFILE_A)).resolves.toEqual({ status: "not-found" });
+    });
+
+    it("cancels fresh preparation when selected profile identity changed", async () => {
+      const test = await harness();
+      test.gateway.readAccount.mockResolvedValue({
+        account: { type: "chatgpt", email: "other@example.com", plan: "pro" },
+        providerRequiresOpenAiAuth: true,
+      });
+
+      await expect(test.service.prepare("codex", {
+        profileId: PROFILE_A,
+        singleWorkspaceAttested: true,
+      })).rejects.toMatchObject({ code: "codex_account_changed" });
+      expect(test.gateway.consumeResetCredit).not.toHaveBeenCalled();
+      await expect(test.service.currentState(PROFILE_A)).resolves.toEqual({ status: "not-found" });
+    });
 
   it("reports deletion safety from the exact profile journal rather than terminal tombstone visibility", async () => {
     const test = await harness();
@@ -222,20 +209,19 @@ describe("profile-scoped Codex reset redemption", () => {
     await expect(test.service.deletionDisposition(PROFILE_A)).resolves.toBe("safe");
   });
 
-  it("fails closed before provider mutation when the retained profile root changes", async () => {
-    const test = await harness();
+    it.each(["root", "disabled", "cleanup"] as const)("fails closed before provider mutation when profile %s changes", async (change) => {
+      const test = await harness();
     const proposal = await test.service.prepare("codex", {
       profileId: PROFILE_A,
       creditId: "credit-1",
       singleWorkspaceAttested: true,
     });
-    test.profiles.set(PROFILE_A, {
-      ...test.profileA,
-      runtimeContext: {
+      if (change === "root") test.profiles.set(PROFILE_A, { ...test.profileA, runtimeContext: {
         codexStateRoot: `${test.profileA.runtimeContext.codexStateRoot}-replacement`,
         codexSqliteRoot: `${test.profileA.runtimeContext.codexSqliteRoot}-replacement`,
-      },
-    });
+      } });
+      else if (change === "disabled") test.profiles.set(PROFILE_A, { ...test.profileA, enabled: false });
+      else test.cleanupRequired.add(PROFILE_A);
 
     await expect(test.service.consume(proposal.proposalId, "codex")).rejects.toMatchObject({
       code: "codex_session_changed",
@@ -247,26 +233,31 @@ describe("profile-scoped Codex reset redemption", () => {
 
   it("consumes and reconciles through the same profile session with the retained attempt", async () => {
     const test = await harness();
-    const proposal = await test.service.prepare("codex", {
-      profileId: PROFILE_A,
-      creditId: "credit-1",
-      singleWorkspaceAttested: true,
-    });
+      const proposal = await test.service.prepare("codex", {
+        profileId: PROFILE_A,
+        singleWorkspaceAttested: true,
+      });
 
-    await expect(test.service.consume(proposal.proposalId, "codex")).resolves.toMatchObject({
-      status: "terminal",
-      outcome: "alreadyRedeemed",
-      reconciliation: "reconciled",
-    });
+      const result = await test.service.consume(proposal.proposalId, "codex");
+      expect(result).toMatchObject({
+        status: "terminal",
+        outcome: "alreadyRedeemed",
+        reconciliation: "reconciled",
+      });
+      expect(JSON.stringify(result)).not.toContain("credit-1");
     expect(test.startSession).toHaveBeenCalledTimes(1);
-    expect(test.gateway.consumeResetCredit).toHaveBeenCalledWith(expect.objectContaining({
-      idempotencyKey: "11111111-2222-4333-8444-555555555555",
-      creditId: "credit-1",
-    }));
-    expect(test.gateway.readRateLimits).toHaveBeenCalledTimes(3);
+      expect(test.gateway.consumeResetCredit).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: "11111111-2222-4333-8444-555555555555",
+        creditId: "credit-1",
+      }));
+      expect(test.gateway.readRateLimits).toHaveBeenCalledTimes(3);
+      expect(test.reconcileProfileObservation).toHaveBeenCalledWith(
+        PROFILE_A,
+        expect.objectContaining({ resetCredits: expect.objectContaining({ availableCount: 1 }) }),
+      );
   });
 
-  it("cancels only the retained profile attempt while another profile stays prepared", async () => {
+    it("cancels only the retained profile attempt while another profile stays prepared", async () => {
     const test = await harness();
     const proposalA = await test.service.prepare("codex", {
       profileId: PROFILE_A,
@@ -293,8 +284,25 @@ describe("profile-scoped Codex reset redemption", () => {
       proposalId: proposalB.proposalId,
     });
 
-    await test.service.close();
-  });
+      await test.service.close();
+    });
+
+    it("cannot consume or reconcile another profile through the selected proposal", async () => {
+      const test = await harness();
+      const proposalA = await test.service.prepare("codex", {
+        profileId: PROFILE_A, creditId: "credit-1", singleWorkspaceAttested: true,
+      });
+      const proposalB = await test.service.prepare("codex", {
+        profileId: PROFILE_B, creditId: "credit-1", singleWorkspaceAttested: true,
+      });
+
+      await expect(test.service.consume(proposalA.proposalId, "codex")).resolves.toMatchObject({ status: "terminal" });
+      await expect(test.service.currentState(PROFILE_B)).resolves.toMatchObject({
+        status: "prepared", proposalId: proposalB.proposalId, profile: { profileId: PROFILE_B },
+      });
+      expect(test.reconcileProfileObservation).toHaveBeenCalledTimes(1);
+      expect(test.reconcileProfileObservation).toHaveBeenCalledWith(PROFILE_A, expect.any(Object));
+    });
 
   it("blocks new redemption only for the profile whose recovery requires repair", async () => {
     const test = await harness({ failRecoveryFor: PROFILE_A });

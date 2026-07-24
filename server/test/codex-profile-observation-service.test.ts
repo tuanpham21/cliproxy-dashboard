@@ -42,14 +42,22 @@ describe("Codex Profile Observation Service", () => {
     await registry.confirm(second.id);
     await registry.updateMetadata(first.id, { label: "Primary" });
     await registry.updateMetadata(second.id, { label: "Paused", enabled: false });
-    await new CodexProfileObservationStore({ managerRoot }).replace(first.id, null, retainedSnapshot);
-    const service = new CodexProfileObservationService({
+      await new CodexProfileObservationStore({ managerRoot }).replace(first.id, null, retainedSnapshot);
+      const redemptionService = { currentState: vi.fn(async (profileId: string) => profileId === first.id ? {
+        status: "ambiguous" as const,
+        proposalId: "p".repeat(43),
+        allowedAction: "retry-same" as const,
+        selectionMode: "specific" as const,
+        dispatchAt: "2026-07-19T04:10:00.000Z",
+      } : { status: "not-found" as const }) };
+      const service = new CodexProfileObservationService({
       registry: new CodexLoginProfileRegistry({ managerRoot }),
       observationStore: new CodexProfileObservationStore({ managerRoot }),
       codexBin: "/trusted/bin/codex",
       qualifier: unusedQualifier(),
-      startReadGateway: vi.fn(async () => { throw new Error("unused"); }),
-      now: () => new Date("2026-07-19T04:15:00.000Z"),
+        startReadGateway: vi.fn(async () => { throw new Error("unused"); }),
+        now: () => new Date("2026-07-19T04:15:00.000Z"),
+        redemptionService,
     });
 
     const view = await service.list();
@@ -60,8 +68,9 @@ describe("Codex Profile Observation Service", () => {
         label: "Primary",
         enabled: true,
         order: 0,
-        status: "latest-known",
-        observation: { account: { email: "operator@example.com", plan: "pro" }, freshness: "latest-known" },
+          status: "latest-known",
+          observation: { account: { email: "operator@example.com", plan: "pro" }, freshness: "latest-known" },
+          activeRedemption: { status: "ambiguous", proposalId: "p".repeat(43) },
       },
       {
         profileId: second.id,
@@ -86,10 +95,40 @@ describe("Codex Profile Observation Service", () => {
       neverObserved: 0,
       profilesWithResets: 1,
     });
-    expect(view.summary).not.toHaveProperty("totalCredits");
+      expect(view.summary).not.toHaveProperty("totalCredits");
+      expect(redemptionService.currentState).toHaveBeenCalledWith(first.id);
   });
 
-  it("derives fresh, refresh-needed, and stale states from schedule age and reset times", async () => {
+    it("reloads selected snapshot after terminal recovery reconciliation", async () => {
+      const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+      const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => firstProfileId });
+      const profile = await registry.create();
+      await registry.confirm(profile.id);
+      const store = new CodexProfileObservationStore({ managerRoot });
+      await store.replace(profile.id, null, retainedSnapshot);
+      const redemptionService = { currentState: vi.fn(async () => {
+        await store.replace(profile.id, 1, {
+          ...retainedSnapshot,
+          observedAt: "2026-07-19T05:00:00.000Z",
+          usage: { ...retainedSnapshot.usage, primary: { ...retainedSnapshot.usage.primary!, usedPercent: 0 } },
+        });
+        return {
+          status: "terminal" as const, proposalId: "t".repeat(43), allowedAction: "none" as const,
+          selectionMode: "specific" as const, outcome: "reset" as const, reconciliation: "reconciled" as const,
+          message: "Usage limits reset.", auditEventId: "a".repeat(43),
+          createdAt: "2026-07-19T05:00:00.000Z", expiresAt: "2026-07-19T05:10:00.000Z",
+        };
+      }) };
+      const service = new CodexProfileObservationService({
+        registry, observationStore: store, codexBin: "/trusted/bin/codex", qualifier: unusedQualifier(), redemptionService,
+      });
+
+      await expect(service.list()).resolves.toMatchObject({
+        profiles: [{ observation: { usage: { primary: { usedPercent: 0 } } }, activeRedemption: { status: "terminal" } }],
+      });
+    });
+
+    it("derives fresh, refresh-needed, and stale states from schedule age and reset times", async () => {
     const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
     const ids = [firstProfileId, secondProfileId, "profile_U4nM7cX2vL9sP5rK8dB6tQ3w"];
     const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => ids.shift() ?? "" });
@@ -176,7 +215,31 @@ describe("Codex Profile Observation Service", () => {
     });
   });
 
-  it("refreshes only the selected profile through its private read-only runtime", async () => {
+    it("does not open a profile read session while redemption blocks lifecycle access", async () => {
+      const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+      const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => firstProfileId });
+      const profile = await registry.create();
+      await registry.confirm(profile.id);
+      const store = new CodexProfileObservationStore({ managerRoot });
+      await store.replace(profile.id, null, retainedSnapshot);
+      const startReadGateway = vi.fn(async () => { throw new Error("must not start"); });
+      const service = new CodexProfileObservationService({
+        registry,
+        observationStore: store,
+        codexBin: "/trusted/bin/codex",
+        qualifier: unusedQualifier(),
+        startReadGateway,
+        redemptionService: {
+          currentState: vi.fn(async () => ({ status: "not-found" as const })),
+          deletionDisposition: vi.fn(async () => "blocked" as const),
+        },
+      });
+
+      await expect(service.refresh(profile.id)).rejects.toMatchObject({ code: "profile-not-refreshable" });
+      expect(startReadGateway).not.toHaveBeenCalled();
+    });
+
+    it("refreshes only the selected profile through its private read-only runtime", async () => {
     const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
     const ids = [
       "profile_H3nM6cX9vL8sP4rK7dB5tQ2w",
@@ -254,13 +317,76 @@ describe("Codex Profile Observation Service", () => {
       generation: 2,
       snapshot: { usage: { primary: { usedPercent: 40 } } },
     });
-    await expect(new CodexProfileObservationStore({ managerRoot }).get(unrelated.id)).resolves.toMatchObject({
-      generation: 1,
-      snapshot: { account: { email: "other@example.com" }, usage: { primary: { usedPercent: 70 } } },
+      await expect(new CodexProfileObservationStore({ managerRoot }).get(unrelated.id)).resolves.toMatchObject({
+        generation: 1,
+        snapshot: { account: { email: "other@example.com" }, usage: { primary: { usedPercent: 70 } } },
+      });
     });
-  });
 
-  it("quarantines an identity change without replacing retained usage evidence", async () => {
+    it("reconciles same-session redemption evidence into only the selected profile", async () => {
+      const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
+      const ids = [firstProfileId, secondProfileId];
+      const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => ids.shift() ?? "" });
+      const selected = await registry.create();
+      const unrelated = await registry.create();
+      await registry.confirm(selected.id);
+      await registry.confirm(unrelated.id);
+      const store = new CodexProfileObservationStore({ managerRoot });
+      await store.replace(selected.id, null, retainedSnapshot);
+      await store.replace(unrelated.id, null, { ...retainedSnapshot, account: { email: "other@example.com", plan: "plus" } });
+      const identity = {
+        canonicalPath: "/canonical/bin/codex",
+        ...selected.runtimeContext,
+        version: "codex-cli 0.145.0",
+        fileIdentity: "1:2:3:reconcile",
+        schemaHash: "schema-hash-reconcile",
+      };
+      const qualify = vi.fn(async () => ({ status: "qualified" as const, version: identity.version, identity }));
+      const qualifier: CodexRuntimeQualifierLike = {
+        qualify,
+        matchesIdentity: vi.fn(async () => true),
+        close: vi.fn(async () => {}),
+      };
+      const startReadGateway = vi.fn(async () => { throw new Error("must not open a second session"); });
+      const service = new CodexProfileObservationService({
+        registry,
+        observationStore: store,
+        codexBin: "/trusted/bin/codex",
+        qualifier,
+        startReadGateway,
+      });
+      const evidence = {
+        account: retainedSnapshot.account,
+        runtimeVersion: identity.version,
+        observedAt: "2026-07-19T06:30:00.000Z",
+        usage: { ...retainedSnapshot.usage, primary: { ...retainedSnapshot.usage.primary!, usedPercent: 0 } },
+        resetCredits: { availableCount: 1, selectionMode: "detailed" as const, credits: [] },
+      };
+
+      await expect(service.reconcileRedemption(selected.id, evidence)).resolves.toMatchObject({
+        profileId: selected.id,
+        observation: { usage: { primary: { usedPercent: 0 } }, resetCredits: { availableCount: 1 } },
+      });
+      expect(startReadGateway).not.toHaveBeenCalled();
+      await expect(store.get(unrelated.id)).resolves.toMatchObject({
+        generation: 1,
+        snapshot: { account: { email: "other@example.com" }, usage: { primary: { usedPercent: 25 } } },
+      });
+
+      await expect(service.reconcileRedemption(selected.id, {
+        ...evidence,
+        account: { email: "intruder@example.com", plan: "pro" },
+      })).rejects.toMatchObject({ code: "profile-not-refreshable" });
+      qualify.mockResolvedValue({
+        status: "qualified",
+        version: "codex-cli 0.146.0",
+        identity: { ...identity, version: "codex-cli 0.146.0" },
+      });
+      await expect(service.reconcileRedemption(selected.id, evidence)).rejects.toMatchObject({ code: "read-failed" });
+      await expect(store.get(selected.id)).resolves.toMatchObject({ generation: 2 });
+    });
+
+    it("quarantines an identity change without replacing retained usage evidence", async () => {
     const managerRoot = path.join(await makeTempRoot(), "dashboard-state", "codex-login-profiles");
     const profileId = "profile_K5nM8cX3vL2sP6rK9dB7tQ4w";
     const registry = new CodexLoginProfileRegistry({ managerRoot, generateId: () => profileId });

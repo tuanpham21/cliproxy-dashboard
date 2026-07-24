@@ -1,9 +1,8 @@
 import type { CodexAccountUsageView, DashboardState, RateLimitState } from "../../shared/types";
 import type {
-  CodexRedemptionCurrentView,
-  CodexRedemptionProposalView,
-  CodexRedemptionStateView,
-  LegacyPrepareCodexRedemptionInput,
+    CodexRedemptionCurrentView,
+    CodexRedemptionProposalView,
+    PrepareCodexRedemptionInput,
 } from "../../shared/codex-account-types";
 import type {
   CodexProfileCandidateView,
@@ -243,13 +242,13 @@ export async function cancelCodexLoginProfileRefreshAll(): Promise<CodexProfileR
 }
 
 export async function prepareCodexRedemption(
-  input: LegacyPrepareCodexRedemptionInput,
-): Promise<CodexRedemptionProposalView> {
+    input: PrepareCodexRedemptionInput,
+  ): Promise<CodexRedemptionProposalView> {
   return await postJson<CodexRedemptionProposalView>("/api/codex/reset-redemptions/proposals", input);
 }
 
-export async function readCodexRedemptionState(proposalId: string): Promise<CodexRedemptionStateView> {
-  return await requestJson<CodexRedemptionStateView>(
+export async function readCodexRedemptionState(proposalId: string): Promise<CodexRedemptionCurrentView> {
+  return await requestJson<CodexRedemptionCurrentView>(
     `/api/codex/reset-redemptions/${encodeURIComponent(proposalId)}`,
     {},
     true,

@@ -43,6 +43,7 @@ import {
   consumePrepared,
   CodexRedemptionConsumeError,
 } from "./codex-redemption-consume.js";
+import { selectCodexResetCredit } from "./codex-redemption-credit-selection.js";
 import type {
   RedemptionJournalPhase,
   TerminalRedemptionTombstone,
@@ -167,7 +168,7 @@ export type CodexRedemptionServiceDependencies = {
 
 export interface CodexRedemptionController {
   prepare(codexBin: string, input: PrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView>;
-  state(proposalId: string): Promise<CodexRedemptionStateView>;
+  state(proposalId: string): Promise<CodexRedemptionCurrentView>;
   currentState(): Promise<CodexRedemptionCurrentView>;
   initializeRecovery(codexBin: string): Promise<void>;
   consume(proposalId: string, codexBin?: string): Promise<CodexRedemptionCurrentView>;
@@ -283,7 +284,11 @@ export class CodexRedemptionService implements CodexRedemptionController {
     await this.recovery?.initialize(codexBin);
   }
 
-  async prepare(codexBin: string, input: LegacyPrepareCodexRedemptionInput): Promise<CodexRedemptionProposalView> {
+    async prepare(
+      codexBin: string,
+      input: LegacyPrepareCodexRedemptionInput,
+      options: { allowAutomaticSelection?: boolean } = {},
+    ): Promise<CodexRedemptionProposalView> {
     if (input.singleWorkspaceAttested !== true) {
       throw new CodexRedemptionServiceError("redemption-attestation-required");
     }
@@ -334,17 +339,12 @@ export class CodexRedemptionService implements CodexRedemptionController {
       if (!resetCredits || resetCredits.availableCount <= 0) {
         throw new CodexRedemptionServiceError("redemption-no-resets");
       }
-      const usableCredits = (resetCredits.credits ?? []).filter(
-        (credit): credit is CodexResetCredit & { id: string } => credit.availability === "available" && Boolean(credit.id),
+      const selectedCredit = selectCodexResetCredit(
+        resetCredits.credits ?? [],
+        input.creditId,
+        options.allowAutomaticSelection,
       );
-      let selectedCredit: (CodexResetCredit & { id: string }) | null = null;
-      if (usableCredits.length > 0) {
-        const matches = usableCredits.filter((credit) => credit.id === input.creditId);
-        if (matches.length !== 1) throw new CodexRedemptionServiceError("redemption-selection-invalid");
-        selectedCredit = matches[0];
-      } else if (input.creditId !== undefined) {
-        throw new CodexRedemptionServiceError("redemption-selection-invalid");
-      }
+      if (selectedCredit === undefined) throw new CodexRedemptionServiceError("redemption-selection-invalid");
       if (invalidated) throw new CodexRedemptionServiceError("redemption-proposal-invalidated");
 
       const createdAt = this.now();

@@ -24,7 +24,7 @@ function account(overrides: Partial<RotationAccountSnapshot> = {}): RotationAcco
     weekly: {
       usedPercent: 10,
       observedAt: "2026-07-15T00:00:00.000Z",
-      resetAt: "2026-07-22T00:00:00.000Z",
+      resetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       durationMinutes: 10080,
       windowKind: "weekly",
       evidenceId: "e-a",
@@ -43,7 +43,7 @@ function decisionInput(overrides: Partial<RotationDecisionInput> = {}): Rotation
   const active = account({ fileName: "codex-active.json", proxyAccountKey: "pak-active", weekly: {
     usedPercent: 20,
     observedAt: "2026-07-15T00:00:00.000Z",
-    resetAt: "2026-07-22T00:00:00.000Z",
+      resetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     durationMinutes: 10080,
     windowKind: "weekly",
     evidenceId: "e-active",

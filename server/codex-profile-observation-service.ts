@@ -6,6 +6,7 @@ import type {
   CodexProfileRowStatus,
   UpdateCodexProfileMetadataInput,
 } from "../shared/codex-profile-observation-types.js";
+import type { CodexRedemptionUsageSnapshot } from "../shared/codex-account-types.js";
 import { summarizeCodexProfileObservations } from "../shared/codex-profile-observation-types.js";
 import { normalizeCodexAvailableCount, normalizeCodexUsageWindow } from "./codex-account-normalization.js";
 import { CodexAccountGatewayError } from "./codex-account-gateway.js";
@@ -65,10 +66,14 @@ type CodexProfileObservationServiceDependencies = {
   qualifier: CodexRuntimeQualifierLike;
   startReadGateway?: StartReadGateway;
   now?: () => Date;
-  lifecycleStore?: CodexProfileLifecycleStoreLike;
-  lifecycleService?: CodexProfileLifecycleServiceLike;
-  lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
-};
+    lifecycleStore?: CodexProfileLifecycleStoreLike;
+    lifecycleService?: CodexProfileLifecycleServiceLike;
+    lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
+    redemptionService?: {
+      currentState(profileId: string): Promise<import("../shared/codex-account-types.js").CodexRedemptionCurrentView>;
+      deletionDisposition?(profileId: string): Promise<"safe" | "blocked" | "recovery-required" | "unavailable">;
+    };
+  };
 
 export class CodexProfileObservationServiceError extends Error {
   constructor(readonly code: "profile-not-refreshable" | "identity-changed" | "authentication-required" | "cancelled" | "read-failed" | "unavailable") {
@@ -84,9 +89,10 @@ export class CodexProfileObservationService {
   private readonly qualifier: CodexRuntimeQualifierLike;
   private readonly startReadGateway: StartReadGateway;
   private readonly now: () => Date;
-  private readonly lifecycleStore: CodexProfileLifecycleStoreLike;
-  private readonly lifecycleService?: CodexProfileLifecycleServiceLike;
-  private readonly lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
+    private readonly lifecycleStore: CodexProfileLifecycleStoreLike;
+    private readonly lifecycleService?: CodexProfileLifecycleServiceLike;
+    private readonly lifecycleFence?: Pick<CodexProfileLifecycleFence, "acquire">;
+    private readonly redemptionService?: CodexProfileObservationServiceDependencies["redemptionService"];
   private readonly refreshes = new Map<string, Promise<CodexProfileObservationRowView>>();
   private readonly profileOperations = new Map<string, Promise<void>>();
   private readonly activeReadGateways = new Map<string, ActiveReadGateway>();
@@ -104,8 +110,9 @@ export class CodexProfileObservationService {
       getCleanupRequired: async () => null,
       listCleanupRequired: async () => [],
     };
-    this.lifecycleService = dependencies.lifecycleService;
-    this.lifecycleFence = dependencies.lifecycleFence;
+      this.lifecycleService = dependencies.lifecycleService;
+      this.lifecycleFence = dependencies.lifecycleFence;
+      this.redemptionService = dependencies.redemptionService;
   }
 
   async list(): Promise<CodexProfileObservationListView> {
@@ -136,8 +143,9 @@ export class CodexProfileObservationService {
           for (const cleanup of cleanupRequired) {
             if (!repairedProfiles.some((profile) => profile.id === cleanup.profileId)) rows.push(this.cleanupRow(cleanup));
           }
-          rows.sort((left, right) => left.order - right.order || left.profileId.localeCompare(right.profileId));
-        return { profiles: rows, summary: summarizeCodexProfileObservations(rows) };
+            const decoratedRows = await Promise.all(rows.map(async (row) => await this.withRedemptionState(row)));
+            decoratedRows.sort((left, right) => left.order - right.order || left.profileId.localeCompare(right.profileId));
+          return { profiles: decoratedRows, summary: summarizeCodexProfileObservations(decoratedRows) };
     } catch (error) {
       if (error instanceof CodexProfileObservationServiceError) throw error;
       throw new CodexProfileObservationServiceError("unavailable");
@@ -180,7 +188,7 @@ export class CodexProfileObservationService {
     }
   }
 
-  refresh(profileId: string): Promise<CodexProfileObservationRowView> {
+    refresh(profileId: string): Promise<CodexProfileObservationRowView> {
     const existing = this.refreshes.get(profileId);
     if (existing) return existing;
       const task = this.withProfileOperation(profileId, async () =>
@@ -190,8 +198,39 @@ export class CodexProfileObservationService {
       this.cancellationRequests.delete(profileId);
     });
     this.refreshes.set(profileId, task);
-    return task;
-  }
+      return task;
+    }
+
+    async reconcileRedemption(
+      profileId: string,
+      snapshot: CodexRedemptionUsageSnapshot | undefined,
+    ): Promise<CodexProfileObservationRowView> {
+      if (!snapshot) return await this.refresh(profileId);
+      return await this.withProfileOperation(profileId, async () => await this.withLifecycleFence(profileId, "refresh", async () => {
+        const profile = await this.registry.get(profileId);
+        const current = await this.observationStore.get(profileId);
+        if (profile.status !== "confirmed" || !profile.enabled || !current ||
+          await this.lifecycleStore.getCleanupRequired(profileId) ||
+          current.snapshot.account.email !== snapshot.account.email ||
+          current.snapshot.account.plan !== snapshot.account.plan) {
+          throw new CodexProfileObservationServiceError("profile-not-refreshable");
+        }
+        const qualification = await this.qualifier.qualify(this.codexBin, profile.runtimeContext);
+        if (qualification.status !== "qualified" || qualification.identity.version !== snapshot.runtimeVersion ||
+          !(await this.qualifier.matchesIdentity(qualification.identity))) {
+          throw new CodexProfileObservationServiceError("read-failed");
+        }
+        const stored = await this.observationStore.replace(profileId, current.generation, {
+          account: snapshot.account,
+          observedAt: snapshot.observedAt,
+          usage: snapshot.usage,
+          resetCredits: { availableCount: snapshot.resetCredits.availableCount },
+          runtimeVersion: snapshot.runtimeVersion,
+          freshness: "fresh",
+        });
+        return this.rowFor(profile, { profileId, ...stored }, false);
+      }));
+    }
 
   async cancelRefresh(profileId: string): Promise<void> {
     this.cancellationRequests.add(profileId);
@@ -215,6 +254,10 @@ export class CodexProfileObservationService {
     let closeError: unknown;
     try {
         profile = await this.registry.get(profileId);
+        if (this.redemptionService?.deletionDisposition &&
+          await this.redemptionService.deletionDisposition(profileId) !== "safe") {
+          throw new CodexProfileObservationServiceError("profile-not-refreshable");
+        }
         if (await this.lifecycleStore.getCleanupRequired(profileId)) {
           throw new CodexProfileObservationServiceError("profile-not-refreshable");
         }
@@ -350,17 +393,43 @@ export class CodexProfileObservationService {
     ): CodexProfileObservationRowView {
     const retained = profile.status === "confirmed" ? stored?.snapshot ?? null : null;
     const observation = retained ? { ...retained, freshness: this.freshnessFor(retained) } : null;
-    return {
-      profileId: profile.id,
-      label: profile.label,
-      enabled: profile.enabled,
-      order: profile.order,
-        status: this.statusFor(profile, observation, reLoginRequired),
-      observation,
-    };
-  }
+      return {
+        profileId: profile.id,
+        label: profile.label,
+        enabled: profile.enabled,
+        order: profile.order,
+          status: this.statusFor(profile, observation, reLoginRequired),
+        observation,
+      };
+    }
 
-    private statusFor(
+    private async withRedemptionState(row: CodexProfileObservationRowView): Promise<CodexProfileObservationRowView> {
+      if (!this.redemptionService || row.status === "cleanup-required") return row;
+      try {
+        const activeRedemption = await this.redemptionService.currentState(row.profileId);
+        if (activeRedemption.status !== "terminal") return { ...row, activeRedemption };
+        const [profile, stored, reLoginRequired] = await Promise.all([
+          this.registry.get(row.profileId),
+          this.observationStore.get(row.profileId),
+          this.observationStore.isReLoginRequired(row.profileId),
+        ]);
+        return {
+          ...this.rowFor(profile, stored ? { profileId: row.profileId, ...stored } : undefined, reLoginRequired),
+          activeRedemption,
+        };
+      } catch {
+        return {
+          ...row,
+          activeRedemption: {
+            status: "unavailable",
+            code: "redemption-private-state-unavailable",
+            message: "Private reset redemption state is unavailable on this host.",
+          },
+        };
+      }
+    }
+
+      private statusFor(
       profile: CodexLoginProfileRecord,
       observation: CodexProfileObservationSnapshot | null,
       reLoginRequired: boolean,

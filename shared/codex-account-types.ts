@@ -1,6 +1,8 @@
 import type { CodexAccountResetCredit, CodexAccountUsageWindow } from "./types.js";
 
 export type CodexRedemptionUsageSnapshot = {
+  account: { email: string; plan: string };
+  runtimeVersion: string;
   observedAt: string;
   usage: { primary: CodexAccountUsageWindow | null; secondary: CodexAccountUsageWindow | null };
   resetCredits: {
@@ -23,6 +25,7 @@ export type CodexRedemptionProposalView = {
   status: "prepared";
   proposalId: string;
   allowedAction: "cancel";
+  profile?: { profileId: string; label: string };
   createdAt: string;
   expiresAt: string;
   account: { email: string; plan: string };
@@ -83,9 +86,11 @@ export type CodexRedemptionStateView =
 export type CodexRedemptionCurrentView = CodexRedemptionProposalView | CodexRedemptionStateView;
 
 type CodexRedemptionPrepareFields = {
-  creditId?: string;
   singleWorkspaceAttested: true;
 };
 
 export type PrepareCodexRedemptionInput = CodexRedemptionPrepareFields & { profileId: string };
-export type LegacyPrepareCodexRedemptionInput = CodexRedemptionPrepareFields & { profileId?: string };
+export type LegacyPrepareCodexRedemptionInput = CodexRedemptionPrepareFields & {
+  profileId?: string;
+  creditId?: string;
+};

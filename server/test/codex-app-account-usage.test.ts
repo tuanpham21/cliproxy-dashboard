@@ -89,7 +89,8 @@ describe("Codex app account usage service", () => {
       },
     });
 
-    await expect(service.read("codex")).resolves.toMatchObject({
+      const result = await service.read("codex");
+      expect(result).toMatchObject({
       state: "usage-ready-resets-available",
       errorCode: null,
       runtime: { status: "qualified", version: "codex-cli 0.144.4" },
@@ -102,18 +103,18 @@ describe("Codex app account usage service", () => {
       resetCredits: {
         availableCount: 2,
         selectionMode: "detailed",
-        credits: [
-          {
-            id: "credit-1",
-            availability: "available",
+          credits: [
+            {
+              availability: "available",
             grantedAt: "2023-11-14T22:13:20.000Z",
             expiresAt: "2030-03-17T17:46:40.000Z",
             title: "<Reset & continue>",
           },
         ],
       },
-    });
-    expect(startSession).toHaveBeenCalledWith({
+        });
+        expect(JSON.stringify(result)).not.toContain("credit-1");
+      expect(startSession).toHaveBeenCalledWith({
       codexBin: "/opt/codex/bin/codex",
       runtimeContext: {
         codexStateRoot: "/home/operator/.codex",
@@ -210,8 +211,12 @@ describe("Codex app account usage service", () => {
       },
     });
 
-    const result = await service.read("codex");
-      expect(result.resetCredits?.credits.map((credit) => credit.id)).toEqual(["early", "late", "no-expiry"]);
+      const result = await service.read("codex");
+        expect(result.resetCredits?.credits.map((credit) => credit.expiresAt)).toEqual([
+          "2027-01-15T08:00:00.000Z",
+          "2030-03-17T17:46:40.000Z",
+          null,
+        ]);
     });
 
     it("prioritizes usable reset details before applying the public detail cap", async () => {
@@ -232,10 +237,11 @@ describe("Codex app account usage service", () => {
         },
       });
 
-      const result = await service.read("codex");
-      expect(result.resetCredits?.selectionMode).toBe("detailed");
-      expect(result.resetCredits?.credits).toHaveLength(128);
-      expect(result.resetCredits?.credits[0]).toMatchObject({ id: "usable", availability: "available" });
+        const result = await service.read("codex");
+        expect(result.resetCredits?.selectionMode).toBe("detailed");
+        expect(result.resetCredits?.credits).toHaveLength(128);
+        expect(result.resetCredits?.credits[0]).toMatchObject({ availability: "available" });
+        expect(JSON.stringify(result)).not.toContain("usable");
     });
 
   it.each([

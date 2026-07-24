@@ -43,8 +43,9 @@ export async function retryAmbiguousRedemption(dependencies: {
   qualifier: CodexRuntimeQualifierLike;
   runtimeIdentity: CodexRuntimeIdentity;
   now: () => Date;
-  auditSink: CodexRedemptionAuditSink;
-  codexVersion: string;
+    auditSink: CodexRedemptionAuditSink;
+    codexVersion: string;
+    account: { email: string; plan: string };
 }): Promise<CodexRedemptionCurrentView> {
     const { active, gateway } = dependencies;
     if (active.journal.phase !== "ambiguous" || !gateway.consumeResetCredit) {
@@ -88,9 +89,10 @@ export async function retryAmbiguousRedemption(dependencies: {
     gateway,
     store: dependencies.store,
     now: dependencies.now,
-    auditSink: dependencies.auditSink,
-    codexVersion: dependencies.codexVersion,
-    outcome: result.outcome,
+      auditSink: dependencies.auditSink,
+      codexVersion: dependencies.codexVersion,
+      account: dependencies.account,
+      outcome: result.outcome,
     expectedPhase: "ambiguous",
   });
 }

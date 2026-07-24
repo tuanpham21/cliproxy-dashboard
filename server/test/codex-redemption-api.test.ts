@@ -10,6 +10,7 @@ const proposal: CodexRedemptionProposalView = {
   status: "prepared",
   proposalId: "p".repeat(43),
   allowedAction: "cancel",
+  profile: { profileId: `profile_${"a".repeat(32)}`, label: "Primary" },
   createdAt: "2026-07-16T12:00:00.000Z",
   expiresAt: "2026-07-16T12:02:00.000Z",
   account: { email: "operator@example.com", plan: "pro" },
@@ -103,10 +104,9 @@ describe("Codex reset-redemption API", () => {
     const response = makeMockRes();
 
     await handleApi(
-      request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
-        profileId: `profile_${"a".repeat(32)}`,
-        creditId: "credit-1",
-        singleWorkspaceAttested: true,
+        request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
+          profileId: `profile_${"a".repeat(32)}`,
+          singleWorkspaceAttested: true,
       })),
       response.res as ServerResponse,
       {
@@ -120,9 +120,8 @@ describe("Codex reset-redemption API", () => {
     expect(response.getStatus()).toBe(201);
     expect(response.getParsed()).toEqual(proposal);
     expect(service.prepare).toHaveBeenCalledWith("/opt/codex/bin/codex", {
-      profileId: `profile_${"a".repeat(32)}`,
-      creditId: "credit-1",
-      singleWorkspaceAttested: true,
+        profileId: `profile_${"a".repeat(32)}`,
+        singleWorkspaceAttested: true,
     });
   });
 
@@ -210,8 +209,10 @@ describe("Codex reset-redemption API", () => {
 
   it("rejects non-empty or non-loopback consume requests before service mutation", async () => {
     const service = redemptionService();
-    for (const req of [
-      request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`, "{}"),
+      for (const req of [
+        request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`, JSON.stringify({
+          profileId: `profile_${"b".repeat(32)}`,
+        })),
       request("POST", `/api/codex/reset-redemptions/proposals/${proposal.proposalId}/consume`, "", "10.0.0.4"),
     ]) {
       const response = makeMockRes();
@@ -227,11 +228,10 @@ describe("Codex reset-redemption API", () => {
 
   it("enforces listener, IPv4/IPv6 caller, Origin, Host, and operator-token boundaries", async () => {
     const service = redemptionService();
-    const validBody = JSON.stringify({
-      profileId: `profile_${"a".repeat(32)}`,
-      singleWorkspaceAttested: true,
-      creditId: "credit-1",
-    });
+      const validBody = JSON.stringify({
+        profileId: `profile_${"a".repeat(32)}`,
+        singleWorkspaceAttested: true,
+      });
     const invalidCases = [
       {
         req: request("POST", "/api/codex/reset-redemptions/proposals", validBody, "127.0.0.1", sameOriginHeaders(false)),
@@ -304,11 +304,16 @@ describe("Codex reset-redemption API", () => {
       request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
         singleWorkspaceAttested: true,
       })),
-      request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
-        profileId: "/private/codex/profile-root",
-        singleWorkspaceAttested: true,
-      })),
-      request("POST", "/api/codex/reset-redemptions/proposals", `{"singleWorkspaceAttested":true,"creditId":"${"x".repeat(2_100)}"}`),
+        request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
+          profileId: "/private/codex/profile-root",
+          singleWorkspaceAttested: true,
+        })),
+        request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
+          profileId: `profile_${"a".repeat(32)}`,
+          creditId: "credit-1",
+          singleWorkspaceAttested: true,
+        })),
+        request("POST", "/api/codex/reset-redemptions/proposals", `{"singleWorkspaceAttested":true,"creditId":"${"x".repeat(2_100)}"}`),
       request("POST", "/api/codex/reset-redemptions/proposals", JSON.stringify({
         singleWorkspaceAttested: true,
       }), "10.0.0.8"),

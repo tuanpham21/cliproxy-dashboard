@@ -59,17 +59,15 @@ describe("Codex app account panel", () => {
           availableCount: 2,
           selectionMode: "detailed",
           credits: [
-            {
-              id: "credit-1",
-              availability: "available",
+              {
+                availability: "available",
               title: "<script>alert(1)</script>",
               description: "Reset & continue",
               grantedAt: "2026-07-01T00:00:00.000Z",
               expiresAt: null,
             },
-            {
-              id: null,
-              availability: "malformed",
+              {
+                availability: "malformed",
               title: "Broken detail",
               description: null,
               grantedAt: null,
@@ -82,15 +80,15 @@ describe("Codex app account panel", () => {
 
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(html).toContain("Reset &amp; continue");
-    expect(html).toContain("Does not expire");
-    expect(html).toContain("Unavailable");
-    expect(html).toContain("<fieldset");
-    expect(html).toContain('type="radio"');
-    expect(html).toContain("disabled");
-  });
+      expect(html).toContain("Reset &amp; continue");
+      expect(html).toContain("Does not expire");
+      expect(html).toContain("Unavailable");
+      expect(html).toContain('aria-label="Usage limit reset details"');
+      expect(html).not.toContain('type="radio"');
+      expect(html).not.toContain('data-codex-redemption-prepare');
+    });
 
-  it("renders provider-selected generic reset context with proposal-only controls", () => {
+    it("renders provider-selected generic reset context without mutation controls", () => {
     const html = renderCodexAppAccount(
       view({
         state: "usage-ready-resets-available",
@@ -98,15 +96,15 @@ describe("Codex app account panel", () => {
       }),
     );
 
-    expect(html).toContain("Use a reset");
-    expect(html).toContain("OpenAI will select the reset");
-    expect(html).toContain('type="radio"');
-    expect(html).toContain('data-codex-redemption-prepare');
-    expect(html).toContain('type="checkbox"');
-    expect(html).not.toContain("/consume");
-  });
+      expect(html).toContain("Use a reset");
+      expect(html).toContain("OpenAI will select the reset");
+      expect(html).not.toContain('type="radio"');
+      expect(html).not.toContain('data-codex-redemption-prepare');
+      expect(html).not.toContain('type="checkbox"');
+      expect(html).not.toContain("/consume");
+    });
 
-  it("renders exact single-workspace attestation and warning", () => {
+    it("keeps global account identity warning read-only", () => {
     const html = renderCodexAppAccount(
       view({
         state: "usage-ready-resets-available",
@@ -114,12 +112,10 @@ describe("Codex app account panel", () => {
       }),
     );
 
-    expect(html).toContain(
-      "I confirm this Codex app account uses one ChatGPT workspace for Codex, and this is the workspace whose earned reset I intend to use.",
-    );
-    expect(html).toContain(
-      "If this email can switch between Personal, Business, Enterprise, or another workspace, do not continue. This dashboard cannot verify which workspace owns the reset.",
-    );
+      expect(html).toContain(
+        "Email and plan help identify the account but do not prove which ChatGPT workspace owns a reset.",
+      );
+      expect(html).not.toContain('type="checkbox"');
   });
 
   it("does not label malformed expiry data as non-expiring", () => {
@@ -131,8 +127,7 @@ describe("Codex app account panel", () => {
           selectionMode: "generic",
           credits: [
             {
-              id: null,
-              availability: "malformed",
+                availability: "malformed",
               title: "Invalid expiry detail",
               description: null,
               grantedAt: null,

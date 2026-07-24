@@ -38,16 +38,21 @@ export async function startServer(
   const codexLoginProfileRegistry = new CodexLoginProfileRegistry({
     managerRoot: codexProfilesManagerRoot,
   });
-  const codexProfileLifecycleFence = new CodexProfileLifecycleFence({ managerRoot: codexProfilesManagerRoot });
-  const codexProfileLifecycleStore = new CodexProfileLifecycleStore({ managerRoot: codexProfilesManagerRoot });
-  const codexRedemptionService = new CodexProfileRedemptionService({
+    const codexProfileLifecycleFence = new CodexProfileLifecycleFence({ managerRoot: codexProfilesManagerRoot });
+    const codexProfileLifecycleStore = new CodexProfileLifecycleStore({ managerRoot: codexProfilesManagerRoot });
+    const codexProfileObservationStore = new CodexProfileObservationStore({ managerRoot: codexProfilesManagerRoot });
+    let codexProfileObservationService: CodexProfileObservationService;
+    const codexRedemptionService = new CodexProfileRedemptionService({
     qualifier: codexRuntimeQualifier,
     registry: codexLoginProfileRegistry,
-    lifecycleFence: codexProfileLifecycleFence,
-    lifecycleStore: codexProfileLifecycleStore,
-  });
-  const codexProfileLoginRunner = new CodexProfileLoginRunner();
-  const codexProfileObservationStore = new CodexProfileObservationStore({ managerRoot: codexProfilesManagerRoot });
+      lifecycleFence: codexProfileLifecycleFence,
+      lifecycleStore: codexProfileLifecycleStore,
+      readProfileObservation: async (profileId) => (await codexProfileObservationStore.get(profileId))?.snapshot ?? null,
+      reconcileProfileObservation: async (profileId, snapshot) => {
+        await codexProfileObservationService.reconcileRedemption(profileId, snapshot);
+      },
+    });
+    const codexProfileLoginRunner = new CodexProfileLoginRunner();
   const codexProfileLifecycleService = new CodexProfileLifecycleService({
     registry: codexLoginProfileRegistry,
     observationStore: codexProfileObservationStore,
@@ -55,15 +60,16 @@ export async function startServer(
     lifecycleFence: codexProfileLifecycleFence,
     redemptionService: codexRedemptionService,
   });
-  const codexProfileObservationService = new CodexProfileObservationService({
+    codexProfileObservationService = new CodexProfileObservationService({
     registry: codexLoginProfileRegistry,
     observationStore: codexProfileObservationStore,
     codexBin: resolveCodexBin(options),
     qualifier: codexRuntimeQualifier,
-    lifecycleStore: codexProfileLifecycleStore,
-    lifecycleService: codexProfileLifecycleService,
-    lifecycleFence: codexProfileLifecycleFence,
-  });
+      lifecycleStore: codexProfileLifecycleStore,
+      lifecycleService: codexProfileLifecycleService,
+      lifecycleFence: codexProfileLifecycleFence,
+      redemptionService: codexRedemptionService,
+    });
   const codexProfileRefreshCoordinator = new CodexProfileRefreshCoordinator({
     observationService: codexProfileObservationService,
   });

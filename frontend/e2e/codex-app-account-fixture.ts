@@ -4,6 +4,8 @@ import type {
   CodexRedemptionProposalView,
 } from "../../shared/codex-account-types";
 
+export const TEST_CODEX_PROFILE_ID = `profile_${"t".repeat(32)}`;
+
 export type UsageView = {
   state: string;
   errorCode: string | null;
@@ -17,10 +19,9 @@ export type UsageView = {
   } | null;
   resetCredits: {
     availableCount: number;
-    selectionMode: "none" | "detailed" | "generic";
-    credits: Array<{
-      id: string | null;
-      availability: string;
+      selectionMode: "none" | "detailed" | "generic";
+      credits: Array<{
+        availability: string;
       title: string | null;
       description: string | null;
       grantedAt: string | null;
@@ -127,10 +128,43 @@ export async function mockApi(
       });
       return;
     }
-    if (pathname === "/api/codex/login-profiles" && route.request().method() === "GET") {
-      await route.fulfill({ json: { profiles: [], summary: { total: 0, pending: 0, fresh: 0, latestKnown: 0, refreshNeeded: 0, stale: 0, reLoginRequired: 0, disabled: 0, identityChanged: 0, cleanupRequired: 0, neverObserved: 0, profilesWithResets: 0 } } });
-      return;
-    }
+      if (pathname === "/api/codex/login-profiles" && route.request().method() === "GET") {
+        const observation = usage.account && usage.usage ? {
+          account: { email: usage.account.email ?? "operator@example.com", plan: usage.account.plan ?? "unknown" },
+          observedAt: usage.observedAt ?? "2026-07-16T12:00:00.000Z",
+          usage: usage.usage,
+          resetCredits: { availableCount: usage.resetCredits?.availableCount ?? null },
+          runtimeVersion: usage.runtime.version ?? "codex-cli 0.144.4",
+          freshness: "fresh" as const,
+        } : null;
+        const profilesWithResets = (observation?.resetCredits.availableCount ?? 0) > 0 ? 1 : 0;
+        await route.fulfill({ json: {
+          profiles: [{
+            profileId: TEST_CODEX_PROFILE_ID,
+            label: "Primary",
+            enabled: true,
+            order: 0,
+            status: observation ? "fresh" : "never-observed",
+            observation,
+            activeRedemption: activeProposal ?? activeRedemption ?? { status: "not-found" },
+          }],
+          summary: { total: 1, pending: 0, fresh: observation ? 1 : 0, latestKnown: 0, refreshNeeded: 0, stale: 0, reLoginRequired: 0, disabled: 0, identityChanged: 0, cleanupRequired: 0, neverObserved: observation ? 0 : 1, profilesWithResets },
+        } });
+        return;
+      }
+      if (pathname === "/api/codex/login-profiles/refresh-all" && route.request().method() === "GET") {
+        await route.fulfill({ json: {
+          source: null,
+          outcome: "idle",
+          startedAt: null,
+          finishedAt: null,
+          total: 0,
+          completed: 0,
+          currentProfileId: null,
+          profiles: [],
+        } });
+        return;
+      }
     if (pathname === "/api/codex/account-usage") {
         if (deferFirstCodex && codexCallCount++ === 0) {
           await new Promise<void>((resolve) => {
@@ -161,23 +195,30 @@ export async function mockApi(
       return;
     }
     if (pathname === "/api/codex/reset-redemptions/proposals" && route.request().method() === "POST") {
-      const body = route.request().postDataJSON() as { creditId?: string; singleWorkspaceAttested?: boolean };
-      prepareBodies.push(body);
-      const createdAt = new Date();
-      const expiresAt = new Date(createdAt.getTime() + (redemptionOptions.proposalTtlMs ?? 120_000));
-      const selected = usage.resetCredits?.credits.find((credit) => credit.id === body.creditId);
-      const selection = body.creditId
-        ? {
-            mode: "specific" as const,
+          const body = route.request().postDataJSON() as { profileId?: string; singleWorkspaceAttested?: boolean };
+        prepareBodies.push(body);
+        const createdAt = new Date();
+        const expiresAt = new Date(createdAt.getTime() + (redemptionOptions.proposalTtlMs ?? 120_000));
+          const selected = usage.resetCredits?.credits
+            .filter((credit) => credit.availability === "available")
+            .sort((left, right) => {
+              const leftExpiry = left.expiresAt ? Date.parse(left.expiresAt) : Number.POSITIVE_INFINITY;
+              const rightExpiry = right.expiresAt ? Date.parse(right.expiresAt) : Number.POSITIVE_INFINITY;
+              return leftExpiry - rightExpiry;
+            })[0];
+        const selection = selected
+          ? {
+              mode: "specific" as const,
             title: selected?.title ?? "Usage limit reset",
             description: selected?.description ?? null,
             expiresAt: selected?.expiresAt ?? null,
           }
         : { mode: "generic" as const };
       activeProposal = {
-        status: "prepared",
-        proposalId: "p".repeat(43),
-        allowedAction: "cancel",
+          status: "prepared",
+          proposalId: "p".repeat(43),
+          allowedAction: "cancel",
+          ...(body.profileId ? { profile: { profileId: body.profileId, label: "Primary" } } : {}),
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
         account: usage.account as { email: string; plan: string },

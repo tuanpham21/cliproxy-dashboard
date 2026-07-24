@@ -63,7 +63,6 @@ function boundedText(value: string | null, maxBytes: number): string | null {
 
 function resetCredit(credit: CodexResetCredit): CodexAccountResetCredit {
   return {
-    id: credit.id,
     availability: credit.availability,
     title: boundedText(credit.title, 256),
     description: boundedText(credit.description, 2048),
@@ -135,23 +134,26 @@ export class CodexAppAccountUsageService implements CodexAccountUsageReader {
           ? { email: accountRead.account.email, plan: accountRead.account.plan }
           : { email: null, plan: null };
       const observedAt = this.now().toISOString();
-      const credits = (rateLimits.resetCredits?.credits ?? []).map(resetCredit);
-      credits.sort((left, right) => {
-        const leftAvailable = left.availability === "available";
-        const rightAvailable = right.availability === "available";
+      const sourceCredits = [...(rateLimits.resetCredits?.credits ?? [])];
+      sourceCredits.sort((left, right) => {
+        const leftAvailable = left.availability === "available" && Boolean(left.id);
+        const rightAvailable = right.availability === "available" && Boolean(right.id);
         if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
         if (!leftAvailable) return 0;
-        if (left.expiresAt === null && right.expiresAt === null) return (left.id ?? "").localeCompare(right.id ?? "");
+        if (left.expiresAt === null && right.expiresAt === null) return 0;
         if (left.expiresAt === null) return 1;
         if (right.expiresAt === null) return -1;
-        return left.expiresAt.localeCompare(right.expiresAt) || (left.id ?? "").localeCompare(right.id ?? "");
+        return left.expiresAt - right.expiresAt;
       });
-      credits.splice(128);
+      const hasUsableDetails = sourceCredits.some(
+        (credit) => credit.availability === "available" && Boolean(credit.id),
+      );
+      const credits = sourceCredits.slice(0, 128).map(resetCredit);
         const availableCount = normalizeCodexAvailableCount(rateLimits.resetCredits?.availableCount) ?? 0;
       const selectionMode =
         availableCount <= 0
           ? "none"
-          : credits.some((credit) => credit.availability === "available" && Boolean(credit.id))
+          : hasUsableDetails
             ? "detailed"
             : "generic";
       const common = {

@@ -129,8 +129,9 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
   };
 
   const resetPanelAttestation = (keepOpenerFocusable: boolean) => {
-    const checkbox = options.panel.querySelector<HTMLInputElement>("[data-codex-workspace-attestation]");
-    const button = options.panel.querySelector<HTMLButtonElement>("[data-codex-redemption-prepare]");
+    const form = opener?.closest<HTMLElement>("[data-codex-redemption-form]");
+    const checkbox = form?.querySelector<HTMLInputElement>("[data-codex-workspace-attestation]");
+    const button = form?.querySelector<HTMLButtonElement>("[data-codex-redemption-prepare]");
     if (checkbox) checkbox.checked = false;
     if (button) {
       button.disabled = !keepOpenerFocusable;
@@ -200,8 +201,14 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
           await finish(message, true);
         }
         return;
-      }
+          }
         if (pendingProposalId !== proposalId) return;
+        if (state.status === "prepared" && "account" in state) {
+          pendingProposalId = null;
+          opener = options.focusFallback;
+          showProposal(state);
+          return;
+        }
         if (state.status === "prepared" || state.status === "processing") {
           options.applyRedemptionState?.(state);
           return;
@@ -213,12 +220,8 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
       } catch {
         // Session storage is optional; server state remains authoritative.
       }
-        if (state.status === "terminal") {
-          if (state.accountUsage) options.applyAccountUsage?.(state.accountUsage);
-          else if (state.reconciliation === "unreconciled" || state.reconciliation === "availability-changed-unreconciled") {
-            options.markAccountUsageStale?.(state.message);
-          } else options.applyRedemptionState?.(state);
-          setPageStatus(state.message);
+          if (state.status === "terminal") {
+            await handleTerminalResult(state);
         } else if (state.status === "ambiguous") {
           options.applyRedemptionState?.(state);
           setPageStatus("Couldn’t confirm whether redemption completed. Retry uses the same attempt and cannot repeat a completed redemption.", true);
@@ -271,8 +274,9 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
     }
     lastRemainingSeconds = null;
     description.replaceChildren();
-    for (const text of [
-      `${proposal.account.email} · ${proposal.account.plan} plan · ${proposal.availableCount} reset${proposal.availableCount === 1 ? "" : "s"} available.`,
+      for (const text of [
+        ...(proposal.profile ? [`Selected profile: ${proposal.profile.label}.`] : []),
+        `${proposal.account.email} · ${proposal.account.plan} plan · ${proposal.availableCount} reset${proposal.availableCount === 1 ? "" : "s"} available.`,
       usageText(proposal),
       confirmationText(proposal),
     ]) {
@@ -305,9 +309,9 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
   };
 
   const handleTerminalResult = async (result: Extract<CodexRedemptionCurrentView, { status: "terminal" }>) => {
-    if (result.accountUsage) {
-      options.applyAccountUsage?.(result.accountUsage);
-      await finish(result.message, false);
+      if (result.accountUsage) {
+        options.applyAccountUsage?.(result.accountUsage);
+        await finish(result.message, !options.applyAccountUsage);
     } else if (result.reconciliation === "unreconciled" || result.reconciliation === "availability-changed-unreconciled") {
       options.markAccountUsageStale?.(result.message);
       await finish(result.message, false);
@@ -438,13 +442,13 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
 
   options.panel.addEventListener("change", (event) => {
     if (!(event.target instanceof HTMLInputElement)) return;
-    const form = event.target.closest<HTMLElement>("[data-codex-redemption-form]");
-    if (!form) return;
-    const attested = form.querySelector<HTMLInputElement>("[data-codex-workspace-attestation]")?.checked === true;
-    const selected = Boolean(form.querySelector<HTMLInputElement>('input[name="codex-reset-selection"]:checked:not(:disabled)'));
-    const button = form.querySelector<HTMLButtonElement>("[data-codex-redemption-prepare]");
-    if (button) {
-      button.disabled = !(attested && selected);
+      const form = event.target.closest<HTMLElement>("[data-codex-redemption-form]");
+      if (!form) return;
+      const attested = form.querySelector<HTMLInputElement>("[data-codex-workspace-attestation]")?.checked === true;
+      const hasTarget = Boolean(form.dataset.profileId);
+      const button = form.querySelector<HTMLButtonElement>("[data-codex-redemption-prepare]");
+      if (button) {
+        button.disabled = !(attested && hasTarget);
       button.removeAttribute("aria-disabled");
     }
   });
@@ -462,10 +466,10 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
       : null;
     if (!form) return;
     event.preventDefault();
-    const button = form.querySelector<HTMLButtonElement>("[data-codex-redemption-prepare]");
-    const attestation = form.querySelector<HTMLInputElement>("[data-codex-workspace-attestation]");
-    const selected = form.querySelector<HTMLInputElement>('input[name="codex-reset-selection"]:checked:not(:disabled)');
-    if (!button || !attestation?.checked || !selected || active) {
+      const button = form.querySelector<HTMLButtonElement>("[data-codex-redemption-prepare]");
+      const attestation = form.querySelector<HTMLInputElement>("[data-codex-workspace-attestation]");
+      const profileId = form.dataset.profileId;
+      if (!button || !attestation?.checked || !profileId || active) {
       if (button?.getAttribute("aria-disabled") === "true") {
         setPageStatus("Confirm the single-workspace boundary before continuing.", true);
       }
@@ -475,14 +479,21 @@ export function setupCodexRedemption(options: CodexRedemptionControllerOptions):
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     setPageStatus("");
-    const input = selected.hasAttribute("data-codex-reset-generic")
-      ? { singleWorkspaceAttested: true as const }
-      : { creditId: selected.value, singleWorkspaceAttested: true as const };
-    void api.prepare(input).then(
-      showProposal,
+      const input = { profileId, singleWorkspaceAttested: true as const };
+      void api.prepare(input).then(
+        (proposal) => {
+          if (profileId && proposal.profile?.profileId !== profileId) {
+            void api.cancel(proposal.proposalId).catch(() => {});
+            button.removeAttribute("aria-busy");
+            button.disabled = false;
+            setPageStatus("Couldn’t verify the selected Codex Login Profile. Try again.", true);
+            return;
+          }
+          showProposal(proposal);
+        },
       () => {
         button.removeAttribute("aria-busy");
-        button.disabled = !(attestation.checked && Boolean(selected));
+          button.disabled = !attestation.checked;
         setPageStatus("Couldn’t prepare reset confirmation. Review account details and try again.", true);
       },
     );

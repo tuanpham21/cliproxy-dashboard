@@ -85,7 +85,7 @@ function quotaSnapshot(proxyAccountKey: string, usedPercent: number, observedAt:
     weekly: {
       usedPercent,
       rawUsedPercent: usedPercent,
-      resetAt: "2026-07-20T00:00:00.000Z",
+      resetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       observedAt,
       source: "response-headers",
       durationMinutes: 10_080,

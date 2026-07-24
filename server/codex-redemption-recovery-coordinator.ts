@@ -143,9 +143,10 @@ export class CodexRedemptionRecoveryCoordinator {
         qualifier: this.dependencies.qualifier,
         runtimeIdentity: qualification.identity,
         now: this.dependencies.now,
-        auditSink: this.dependencies.auditSink,
-        codexVersion: claim.journal.runtimeIdentity.version,
-      });
+          auditSink: this.dependencies.auditSink,
+          codexVersion: claim.journal.runtimeIdentity.version,
+          account: { email: account.email, plan: account.plan },
+        });
     } finally {
       await session?.close().catch(() => {});
       await this.dependencies.store.releaseRetryClaim(proposalId, claim.claimOwnerNonce);

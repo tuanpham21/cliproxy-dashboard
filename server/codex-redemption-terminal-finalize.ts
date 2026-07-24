@@ -39,8 +39,9 @@ export type TerminalFinalizeDependencies = {
   gateway: { readRateLimits(): Promise<CodexRateLimitsRead> };
   store: TerminalStore;
   now: () => Date;
-  auditSink: CodexRedemptionAuditSink;
-  codexVersion: string;
+    auditSink: CodexRedemptionAuditSink;
+    codexVersion: string;
+    account: { email: string; plan: string };
   outcome: CodexConsumeResetCreditOutcome;
   expectedPhase: "dispatched" | "ambiguous";
   initialRateLimits?: CodexRateLimitsRead;
@@ -52,14 +53,19 @@ function secondsToIso(value: number | null): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-function usageSnapshot(read: CodexRateLimitsRead, observedAt: string): CodexRedemptionUsageSnapshot {
+function usageSnapshot(
+  read: CodexRateLimitsRead,
+  observedAt: string,
+  account: { email: string; plan: string },
+  runtimeVersion: string,
+): CodexRedemptionUsageSnapshot {
   const window = (value: CodexRateLimitsRead["rateLimits"]["primary"]) => value ? {
     usedPercent: Number.isFinite(value.usedPercent) && value.usedPercent >= 0 && value.usedPercent <= 100 ? value.usedPercent : null,
     durationMinutes: value.windowMinutes !== null && value.windowMinutes >= 0 ? value.windowMinutes : null,
     resetsAt: secondsToIso(value.resetsAt),
   } : null;
-  const credits = (read.resetCredits?.credits ?? []).map((credit) => ({
-    id: credit.id,
+  const sourceCredits = read.resetCredits?.credits ?? [];
+  const credits = sourceCredits.map((credit) => ({
     availability: credit.availability,
     title: credit.title,
     description: credit.description,
@@ -67,14 +73,16 @@ function usageSnapshot(read: CodexRateLimitsRead, observedAt: string): CodexRede
     expiresAt: secondsToIso(credit.expiresAt),
   }));
   const availableCount = read.resetCredits?.availableCount ?? 0;
-  return {
-    observedAt,
+    return {
+      account,
+      runtimeVersion,
+      observedAt,
     usage: { primary: window(read.rateLimits.primary), secondary: window(read.rateLimits.secondary) },
     resetCredits: {
       availableCount,
       selectionMode: availableCount <= 0
         ? "none"
-        : credits.some((credit) => credit.availability === "available" && Boolean(credit.id))
+          : sourceCredits.some((credit) => credit.availability === "available" && Boolean(credit.id))
           ? "detailed"
           : "generic",
       credits,
@@ -170,5 +178,7 @@ export async function finalizeRedemptionOutcome(
   });
   await store.releaseTerminal(active.journal.proposalId, active.journal.ownerNonce, auditEventId);
   await active.session.close();
-  return publicTerminal(tombstone, reconciledRead ? usageSnapshot(reconciledRead, tombstone.createdAt) : undefined);
-}
+    return publicTerminal(tombstone, reconciledRead
+      ? usageSnapshot(reconciledRead, tombstone.createdAt, dependencies.account, dependencies.codexVersion)
+      : undefined);
+  }

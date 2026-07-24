@@ -62,7 +62,26 @@ async function observationsApi(
     refreshAllMode?: "completed" | "partial" | "running";
   } = {},
 ) {
-  await mockApi(page, view());
+  const redemption = await mockApi(page, view({
+    state: "usage-ready-resets-available",
+    message: "1 earned usage limit reset is available.",
+    account: { email: "fresh@example.com", plan: "pro" },
+    usage: {
+      primary: { usedPercent: 81, durationMinutes: 300, resetsAt: "2026-07-21T08:00:00.000Z" },
+      secondary: { usedPercent: 64, durationMinutes: 10_080, resetsAt: null },
+    },
+    resetCredits: {
+        availableCount: 1,
+        selectionMode: "detailed",
+        credits: [{
+          availability: "available",
+        title: "Fresh early reset",
+        description: "Fresh server-returned credit context.",
+        grantedAt: null,
+        expiresAt: "2026-07-22T08:00:00.000Z",
+      }],
+    },
+  }));
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const current = structuredClone(options.initial ?? profileView());
   let refreshAll: CodexProfileRefreshRunView = {
@@ -227,11 +246,11 @@ async function observationsApi(
     await route.fulfill({ status: 404, json: { error: "unexpected profile observation request" } });
   });
   await page.goto("/");
-  return requests;
+    return { requests, redemption };
 }
 
 test("compares latest-known profiles and refreshes only the selected row", async ({ page }) => {
-  const requests = await observationsApi(page);
+  const { requests } = await observationsApi(page);
   const region = page.getByRole("region", { name: "Codex Login Profiles" });
 
   await expect(region.getByText("2 profiles", { exact: false })).toBeVisible();
@@ -241,7 +260,7 @@ test("compares latest-known profiles and refreshes only the selected row", async
   await expect(region.getByText("0 identity-changed", { exact: false })).toBeVisible();
   await expect(region.getByText("0 never-observed", { exact: false })).toBeVisible();
   await expect(region).not.toContainText("2 credits");
-  await expect(region.getByRole("button", { name: /redeem|reset/i })).toHaveCount(0);
+  await expect(region.getByRole("button", { name: "Review reset for Primary" })).toBeVisible();
   const table = region.getByRole("table", { name: "Codex Login Profile evidence" });
   const primary = table.getByRole("row", { name: /Primary operator@example.com/i });
   await expect(primary).toContainText("Latest-known");
@@ -261,8 +280,53 @@ test("compares latest-known profiles and refreshes only the selected row", async
   });
 });
 
+test("prepares one selected profile and confirms only fresh server-returned context", async ({ page }) => {
+  const { redemption } = await observationsApi(page);
+  const row = page.getByRole("table", { name: "Codex Login Profile evidence" })
+    .getByRole("row", { name: /Primary operator@example.com/i });
+  const review = row.getByRole("button", { name: "Review reset for Primary" });
+
+  await expect(review).toBeDisabled();
+  await row.getByRole("checkbox", { name: /Primary uses one ChatGPT workspace/ }).check();
+  await review.click();
+
+  const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await expect(dialog).toContainText("Primary");
+  await expect(dialog).toContainText("fresh@example.com · pro plan · 1 reset available");
+  await expect(dialog).toContainText("Primary 81% used");
+  await expect(dialog).toContainText("Fresh early reset");
+  await expect(dialog).not.toContainText("25% used");
+  expect(redemption.prepareBodies).toEqual([{
+    profileId: primaryId,
+    singleWorkspaceAttested: true,
+  }]);
+});
+
+test("keeps other profile observations visible while selected profile recovery blocks fresh prepare", async ({ page }) => {
+  const initial = profileView();
+  initial.profiles[0] = {
+    ...initial.profiles[0]!,
+    activeRedemption: {
+      status: "ambiguous",
+      proposalId: "r".repeat(43),
+      allowedAction: "retry-same",
+      selectionMode: "specific",
+      dispatchAt: "2026-07-19T05:00:00.000Z",
+    },
+  };
+  const { redemption } = await observationsApi(page, { initial });
+  const table = page.getByRole("table", { name: "Codex Login Profile evidence" });
+  const primary = table.getByRole("row", { name: /Primary operator@example.com/i });
+
+  await expect(primary).toContainText("Reset redemption: ambiguous");
+  await expect(primary.getByRole("button", { name: "Review reset for Primary" })).toHaveCount(0);
+  await expect(table.getByRole("row", { name: /Paused/i })).toBeVisible();
+  expect(redemption.prepareBodies).toEqual([]);
+});
+
 test("saves labels, enables profiles, and persists registry order", async ({ page }) => {
-  const requests = await observationsApi(page);
+  const { requests } = await observationsApi(page);
   const table = page.getByRole("table", { name: "Codex Login Profile evidence" });
   const primary = table.getByRole("row", { name: /Primary operator@example.com/i });
 
@@ -343,7 +407,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
       status: "re-login-required",
       observation: { ...initial.profiles[0]!.observation!, freshness: "re-login-required" },
     };
-    const requests = await observationsApi(page, { initial });
+    const { requests } = await observationsApi(page, { initial });
     const row = page.getByRole("table", { name: "Codex Login Profile evidence" })
       .getByRole("row", { name: /Primary operator@example.com/i });
 
@@ -359,7 +423,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
   });
 
   test("requires explicit confirmation before deleting one profile", async ({ page }) => {
-    const requests = await observationsApi(page);
+    const { requests } = await observationsApi(page);
     page.once("dialog", async (dialog) => {
       expect(dialog.type()).toBe("confirm");
       expect(dialog.message()).toContain("Primary");
@@ -383,7 +447,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
   });
 
 test("announces refresh-all progress and an honest partial outcome", async ({ page }) => {
-  const requests = await observationsApi(page);
+  const { requests } = await observationsApi(page);
   const region = page.getByRole("region", { name: "Codex Login Profiles" });
 
   await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
@@ -397,7 +461,7 @@ test("announces refresh-all progress and an honest partial outcome", async ({ pa
 });
 
 test("cancels refresh-all accessibly", async ({ page }) => {
-  const requests = await observationsApi(page, { refreshAllMode: "running" });
+  const { requests } = await observationsApi(page, { refreshAllMode: "running" });
   const region = page.getByRole("region", { name: "Codex Login Profiles" });
 
   await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();

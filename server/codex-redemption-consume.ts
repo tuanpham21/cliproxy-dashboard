@@ -194,9 +194,10 @@ export async function consumePrepared(dependencies: ConsumeDependencies): Promis
     gateway,
     store,
     now,
-    auditSink: dependencies.auditSink,
-    codexVersion: dependencies.codexVersion,
-    outcome: result.outcome,
+      auditSink: dependencies.auditSink,
+      codexVersion: dependencies.codexVersion,
+      account: active.proposal.account,
+      outcome: result.outcome,
     expectedPhase: "dispatched",
     initialRateLimits: rateLimits,
   });

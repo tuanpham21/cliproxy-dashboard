@@ -3,7 +3,7 @@ import { codexLoadingView } from "./codex-app-account";
 import { setupCodexRedemption } from "./codex-redemption";
 import { setupCodexProfileOnboarding } from "./codex-profile-onboarding";
 import { setupCodexProfileObservations } from "./codex-profile-observations";
-import type { CodexRedemptionCurrentView, CodexRedemptionUsageSnapshot } from "../../shared/codex-account-types";
+import type { CodexRedemptionCurrentView } from "../../shared/codex-account-types";
 import { inferPlan } from "./format";
 import {
   type AppState,
@@ -69,9 +69,10 @@ const els: DashboardElements = {
   let codexRefreshPromise: Promise<void> | null = null;
   let codexRedemptionController: ReturnType<typeof setupCodexRedemption> | null = null;
   let codexProfileOnboarding: ReturnType<typeof setupCodexProfileOnboarding>;
-  const codexProfileObservations = setupCodexProfileObservations({
-    onReLogin: (profileId) => codexProfileOnboarding.startReLogin(profileId),
-  });
+    const codexProfileObservations = setupCodexProfileObservations({
+      onReLogin: (profileId) => codexProfileOnboarding.startReLogin(profileId),
+      onRedemptionState: (redemption) => codexRedemptionController?.resume(redemption),
+    });
   codexProfileOnboarding = setupCodexProfileOnboarding(codexProfileObservations.refresh);
 
 function activeElementBlocksRefresh(): boolean {
@@ -167,34 +168,6 @@ function applyCodexRedemptionState(activeRedemption: CodexRedemptionCurrentView)
         }
       : {}),
     activeRedemption,
-  };
-  renderCodexAccountPanel(state, els);
-}
-
-function applyCodexRedemptionUsage(snapshot: CodexRedemptionUsageSnapshot): void {
-  const availableCount = snapshot.resetCredits.availableCount;
-  state.codexAccount = {
-    ...state.codexAccount,
-    state: availableCount > 0 ? "usage-ready-resets-available" : "usage-ready-no-resets",
-    errorCode: null,
-    message: availableCount > 0
-      ? `${availableCount} earned usage limit reset${availableCount === 1 ? " is" : "s are"} available.`
-      : "No earned usage limit resets available.",
-    observedAt: snapshot.observedAt,
-    usage: snapshot.usage,
-    resetCredits: snapshot.resetCredits,
-    activeRedemption: undefined,
-    usageStale: false,
-  };
-  renderCodexAccountPanel(state, els);
-}
-
-function markCodexRedemptionUsageStale(message: string): void {
-  state.codexAccount = {
-    ...state.codexAccount,
-    message,
-    activeRedemption: undefined,
-    usageStale: true,
   };
   renderCodexAccountPanel(state, els);
 }
@@ -472,16 +445,14 @@ const refreshCodexAccountButton = byId<HTMLButtonElement>("refresh-codex-account
     refreshCodexAccountButton.removeAttribute("aria-busy");
     }
   });
-  codexRedemptionController = setupCodexRedemption({
-    panel: els.codexAccount,
+    codexRedemptionController = setupCodexRedemption({
+      panel: document.body,
     dialog: byId<HTMLDialogElement>("codex-redemption-dialog"),
     pageStatus: byId("codex-redemption-page-status"),
     focusFallback: refreshCodexAccountButton,
-    refreshAccount: async () => await refreshCodexAccount(false),
-    applyAccountUsage: applyCodexRedemptionUsage,
-    applyRedemptionState: applyCodexRedemptionState,
-    markAccountUsageStale: markCodexRedemptionUsageStale,
-  });
+      refreshAccount: codexProfileObservations.refresh,
+      applyRedemptionState: applyCodexRedemptionState,
+    });
 
   const themeToggle = byId<HTMLButtonElement>("theme-toggle");
 

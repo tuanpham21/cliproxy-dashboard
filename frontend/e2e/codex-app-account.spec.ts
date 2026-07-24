@@ -1,5 +1,18 @@
-import { expect, test } from "@playwright/test";
-import { load, mockApi, view } from "./codex-app-account-fixture";
+import { expect, test, type Page } from "@playwright/test";
+import { load, mockApi, TEST_CODEX_PROFILE_ID, view } from "./codex-app-account-fixture";
+
+function redemptionRow(page: Page) {
+  return page.getByRole("table", { name: "Codex Login Profile evidence" })
+    .getByRole("row", { name: /Primary operator@example.com/i });
+}
+
+function redemptionAttestation(page: Page) {
+  return redemptionRow(page).getByRole("checkbox", { name: /Primary uses one ChatGPT workspace/ });
+}
+
+function reviewReset(page: Page) {
+  return redemptionRow(page).getByRole("button", { name: "Review reset for Primary" });
+}
 
 test("keeps permanent Codex panel separate from Proxy Accounts", async ({ page }) => {
   await load(page);
@@ -67,7 +80,7 @@ test("shows unavailable Windows private state and removes reset controls", async
   await expect(panel.getByRole("button", { name: "Review reset" })).toHaveCount(0);
 });
 
-test("keeps credit context visible and offers generic proposal selection without consume", async ({ page }) => {
+  test("keeps global credit context read-only and offers selected-profile review without consume", async ({ page }) => {
   await load(
     page,
     view({
@@ -78,8 +91,7 @@ test("keeps credit context visible and offers generic proposal selection without
         selectionMode: "generic",
         credits: [
           {
-            id: null,
-            availability: "malformed",
+              availability: "malformed",
             title: "<img src=x onerror=alert(1)>",
             description: "Reset & continue",
             grantedAt: null,
@@ -95,10 +107,10 @@ test("keeps credit context visible and offers generic proposal selection without
   await expect(panel).toContainText("Reset & continue");
   await expect(panel.locator("img")).toHaveCount(0);
   await expect(panel).toContainText("OpenAI will select the reset");
-  await expect(panel.getByRole("group", { name: "Choose a usage limit reset" })).toBeVisible();
-  await expect(panel.getByRole("radio", { name: /Use a reset/ })).toBeChecked();
-  await expect(panel.getByRole("button", { name: "Review reset" })).toBeDisabled();
-  await expect(panel.getByText("I confirm this Codex app account uses one ChatGPT workspace", { exact: false })).toBeVisible();
+    await expect(panel.getByRole("radio")).toHaveCount(0);
+    await expect(panel.getByRole("button")).toHaveCount(0);
+    await expect(reviewReset(page)).toBeDisabled();
+    await expect(redemptionAttestation(page)).toBeVisible();
 });
 
 test("opens accessible confirmation, cancels explicitly, and restores opener focus", async ({ page }) => {
@@ -109,10 +121,9 @@ test("opens accessible confirmation, cancels explicitly, and restores opener foc
         message: "1 earned usage limit reset is available.",
         resetCredits: {
           availableCount: 1,
-          selectionMode: "detailed",
-          credits: [{
-            id: "credit-1",
-            availability: "available",
+            selectionMode: "detailed",
+            credits: [{
+              availability: "available",
             title: "Early reset",
             description: "Provider chooses eligible windows.",
             grantedAt: "2026-07-01T00:00:00.000Z",
@@ -121,10 +132,8 @@ test("opens accessible confirmation, cancels explicitly, and restores opener foc
         },
       }),
     );
-    const panel = page.locator("#codex-app-account-content");
-    const review = panel.getByRole("button", { name: "Review reset" });
-    const attestation = panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ });
-    await expect(panel.getByRole("radio", { name: /Early reset/ })).toBeChecked();
+      const review = reviewReset(page);
+      const attestation = redemptionAttestation(page);
     await attestation.check();
     await expect(review).toBeEnabled();
 
@@ -136,7 +145,7 @@ test("opens accessible confirmation, cancels explicitly, and restores opener foc
     await expect(dialog).toContainText("OpenAI decides which eligible usage limits reset.");
     await expect(dialog).toContainText("Confirmation expires in 2:00");
     await expect(dialog.getByRole("button", { name: "Redeem reset" })).toBeEnabled();
-    expect(api.prepareBodies).toEqual([{ creditId: "credit-1", singleWorkspaceAttested: true }]);
+      expect(api.prepareBodies).toEqual([{ profileId: TEST_CODEX_PROFILE_ID, singleWorkspaceAttested: true }]);
 
     await cancel.click();
     await expect(dialog).toBeHidden();
@@ -154,9 +163,8 @@ test("keeps stable dialog through panel refresh and awaits DELETE before Escape 
     });
     const api = await mockApi(page, initial, 200, false, { deferCancel: true });
     await page.goto("/");
-    const panel = page.locator("#codex-app-account-content");
-    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-    await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
     const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
     await expect(dialog).toBeVisible();
 
@@ -169,7 +177,7 @@ test("keeps stable dialog through panel refresh and awaits DELETE before Escape 
     await expect(dialog).toBeVisible();
     api.releaseCancel();
     await expect(dialog).toBeHidden();
-    await expect(page.getByRole("button", { name: "Refresh Codex usage" })).toBeFocused();
+      await expect(reviewReset(page)).toBeFocused();
   });
 
 test("redeems from confirmation without DELETE and announces terminal reconciliation", async ({ page }) => {
@@ -181,9 +189,8 @@ test("redeems from confirmation without DELETE and announces terminal reconcilia
       resetCredits: { availableCount: 1, selectionMode: "generic", credits: [] },
     }),
   );
-  const panel = page.locator("#codex-app-account-content");
-  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
 
   await dialog.getByRole("button", { name: "Redeem reset" }).click();
@@ -209,9 +216,8 @@ for (const [code, message] of [
       consumeError: { status: 409, code, error: message },
     });
     await page.goto("/");
-    const panel = page.locator("#codex-app-account-content");
-    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-    await panel.getByRole("button", { name: "Review reset" }).click();
+    await redemptionAttestation(page).check();
+    await reviewReset(page).click();
     const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
     await dialog.getByRole("button", { name: "Redeem reset" }).click();
 
@@ -230,9 +236,8 @@ test("allows local close after the 20-second consume wait without sending DELETE
   });
   const api = await mockApi(page, initial, 200, false, { deferConsume: true });
   await page.goto("/");
-  const panel = page.locator("#codex-app-account-content");
-  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
   await dialog.getByRole("button", { name: "Redeem reset" }).click();
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
@@ -265,9 +270,8 @@ test("keeps Close-only behavior after an early consume connection loss", async (
     },
   });
   await page.goto("/");
-  const panel = page.locator("#codex-app-account-content");
-  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
   await dialog.getByRole("button", { name: "Redeem reset" }).click();
 
@@ -330,9 +334,8 @@ test("resumes polling from browser-safe proposal state after reload without pers
     });
     const api = await mockApi(page, initial);
     await page.goto("/");
-    const panel = page.locator("#codex-app-account-content");
-    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-    await panel.getByRole("button", { name: "Review reset" }).click();
+    await redemptionAttestation(page).check();
+    await reviewReset(page).click();
     await expect(page.getByRole("dialog", { name: "Redeem usage limit reset?" })).toBeVisible();
 
     await page.evaluate(() => sessionStorage.clear());
@@ -340,9 +343,7 @@ test("resumes polling from browser-safe proposal state after reload without pers
     const restoredDialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
     await expect(restoredDialog).toBeVisible();
     await expect(restoredDialog.getByRole("button", { name: "Cancel" })).toBeFocused();
-    await expect(page.locator("#codex-app-account-content").getByRole("checkbox", {
-      name: /I confirm this Codex app account uses one ChatGPT workspace/,
-    })).toHaveCount(0);
+      await expect(redemptionRow(page).getByRole("checkbox")).toHaveCount(0);
     await expect.poll(() => api.requests.filter((path) => path === `/api/codex/reset-redemptions/${"p".repeat(43)}`).length).toBeGreaterThan(0);
     await restoredDialog.getByRole("button", { name: "Cancel" }).click();
     await expect(restoredDialog).toBeHidden();
@@ -356,16 +357,15 @@ test("re-enables cancel for a second prepared proposal", async ({ page }) => {
   });
   const api = await mockApi(page, initial);
   await page.goto("/");
-  const panel = page.locator("#codex-app-account-content");
-  const attestation = panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ });
+  const attestation = redemptionAttestation(page);
   await attestation.check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await reviewReset(page).click();
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
 
   await attestation.check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await reviewReset(page).click();
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   expect(api.prepareBodies).toHaveLength(2);
@@ -379,9 +379,8 @@ test("uses authoritative server context instead of session storage display field
   });
   await mockApi(page, initial);
   await page.goto("/");
-  const panel = page.locator("#codex-app-account-content");
-  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
   await page.evaluate(() => {
     sessionStorage.setItem("cliproxy-dashboard/codex-reset-redemption/proposal", JSON.stringify({
       proposalId: "p".repeat(43),
@@ -427,7 +426,7 @@ test("polls a minimal active proposal without exposing unchecked confirmation co
     "Another reset confirmation is active. Return to its original dashboard tab or wait for expiry.",
   );
   await expect(page.getByRole("dialog", { name: "Redeem usage limit reset?" })).toBeHidden();
-  await expect(page.locator("#codex-app-account-content").getByRole("button", { name: "Review reset" })).toHaveCount(0);
+    await expect(redemptionRow(page).getByRole("button", { name: "Review reset for Primary" })).toHaveCount(0);
   await expect.poll(() => api.requests.filter((path) => path === `/api/codex/reset-redemptions/${proposalId}`).length)
     .toBeGreaterThan(0);
 });
@@ -473,9 +472,8 @@ test("stops polling on authorization failure without cancelling server state", a
   });
   const api = await mockApi(page, initial, 200, false, { pollStatus: 403, proposalTtlMs: 5_000 });
   await page.goto("/");
-  const panel = page.locator("#codex-app-account-content");
-  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
   await expect(dialog.getByRole("alert")).toHaveText(
     "Dashboard authorization expired. Reload this local dashboard to continue.",
@@ -497,9 +495,8 @@ test("does not announce already-missed countdown thresholds", async ({ page }) =
   });
   await mockApi(page, initial, 200, false, { proposalTtlMs: 20_000 });
   await page.goto("/");
-  const panel = page.locator("#codex-app-account-content");
-  await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-  await panel.getByRole("button", { name: "Review reset" }).click();
+  await redemptionAttestation(page).check();
+  await reviewReset(page).click();
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
   await expect(dialog.locator("#codex-redemption-threshold-status")).toBeEmpty();
   await page.waitForTimeout(500);
@@ -515,9 +512,8 @@ test("uses server expiry state to close, refresh, clear attestation, and announc
     });
     const api = await mockApi(page, initial, 200, false, { proposalTtlMs: 800 });
     await page.goto("/");
-    const panel = page.locator("#codex-app-account-content");
-    await panel.getByRole("checkbox", { name: /I confirm this Codex app account uses one ChatGPT workspace/ }).check();
-    await panel.getByRole("button", { name: "Review reset" }).click();
+    await redemptionAttestation(page).check();
+    await reviewReset(page).click();
     const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
     await expect(dialog).toBeVisible();
 
@@ -525,9 +521,7 @@ test("uses server expiry state to close, refresh, clear attestation, and announc
     await expect(page.locator("#codex-redemption-page-status")).toHaveText(
       "Confirmation expired. Account details and reset availability were refreshed. Review them and try again.",
     );
-    await expect(page.locator("#codex-app-account-content").getByRole("checkbox", {
-      name: /I confirm this Codex app account uses one ChatGPT workspace/,
-    })).not.toBeChecked();
+      await expect(redemptionAttestation(page)).not.toBeChecked();
     expect(api.requests.some((path) => path === `/api/codex/reset-redemptions/proposals/${"p".repeat(43)}`)).toBe(false);
     expect(api.requests).toContain(`/api/codex/reset-redemptions/${"p".repeat(43)}`);
   });
