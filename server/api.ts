@@ -22,6 +22,7 @@ import { readLatestCodexSelection } from "./logs.js";
 import { resolveAccountPath, resolveDashboardPaths } from "./paths.js";
 import type { RotationCoordinator } from "./rotation-coordinator.js";
 import { coordinateManualRoutingAction, handleRotationApi } from "./rotation-api.js";
+import { readShadowObservationFeed, SHADOW_OBSERVATION_FEED_PATH } from "./shadow-observation-feed.js";
 import type { CodexSelectionLogLine, DashboardOptions, DashboardPaths, TestRequestOptions } from "./types.js";
 import { asHeaderValue, asString, isRecord } from "./util.js";
 
@@ -155,7 +156,10 @@ export function requiresOperatorToken(method: string, pathname: string): boolean
   if (!pathname.startsWith("/api/")) {
     return false;
   }
-  return !(method === "GET" && (pathname === "/api/state" || pathname === "/api/bootstrap"));
+  return !(
+    method === "GET" &&
+    (pathname === "/api/state" || pathname === "/api/bootstrap" || pathname === SHADOW_OBSERVATION_FEED_PATH)
+  );
 }
 
 export function hasValidOperatorToken(req: IncomingMessage, options: DashboardOptions): boolean {
@@ -206,6 +210,11 @@ export async function handleApi(
   if (await handleCodexProfileApi(req, res, method, url.pathname, segments, options, options.codexProfileOnboardingService, jsonResponse, readJsonBody)) return true;
 
   if (await handleRotationApi(req, res, method, url.pathname, segments, options.rotationCoordinator)) return true;
+
+  if (method === "GET" && url.pathname === SHADOW_OBSERVATION_FEED_PATH) {
+    jsonResponse(res, 200, await readShadowObservationFeed(options));
+    return true;
+  }
 
   if (method === "GET" && url.pathname === "/api/state") {
     jsonResponse(res, 200, { ...(await readDashboardState(options)), rotation: options.rotationCoordinator?.publicState() });

@@ -2,22 +2,22 @@ import { expect, test, type Page } from "@playwright/test";
 import { load, mockApi, TEST_CODEX_PROFILE_ID, view } from "./codex-app-account-fixture";
 
 function redemptionRow(page: Page) {
-  return page.getByRole("table", { name: "Codex Login Profile evidence" })
+  return page.getByRole("table", { name: "Reset Checker Profile evidence" })
     .getByRole("row", { name: /Primary operator@example.com/i });
 }
 
 function redemptionAttestation(page: Page) {
-  return redemptionRow(page).getByRole("checkbox", { name: /Primary uses one ChatGPT workspace/ });
+  return page.getByRole("checkbox", { name: /Primary uses one ChatGPT workspace/ });
 }
 
 function reviewReset(page: Page) {
-  return redemptionRow(page).getByRole("button", { name: "Review reset for Primary" });
+  return page.getByRole("button", { name: "Review reset for Primary" });
 }
 
 test("keeps permanent Codex panel separate from Proxy Accounts", async ({ page }) => {
   await load(page);
 
-  await expect(page.getByRole("heading", { name: "Codex app account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Current Local Codex App Login" })).toBeVisible();
   await expect(page.locator("#codex-app-account-section")).toContainText(
     "do not affect or select Proxy Accounts",
   );

@@ -1,0 +1,3 @@
+# Bind reset redemption to the local Codex app account
+
+Usage Limit Reset Redemption applies only to the Codex App Account authenticated in one dedicated local Codex app-server session; it never targets a selected Proxy Account or calls undocumented provider endpoints directly. Redemption is enabled only for loopback listeners and loopback callers, requires a visible Codex App Account Check plus operator Single-Workspace Redemption Attestation, and keeps the same app-server process from final account check through consume and reconciliation. Codex 0.144.4 exposes email and plan but no supported stable workspace identifier, so this trades remote and multi-workspace flexibility for an honest, bounded local feature with explicit residual workspace risk.

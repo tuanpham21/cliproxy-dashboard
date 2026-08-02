@@ -1,4 +1,6 @@
+import { isCodexCredentialFileName } from "./paths.js";
 import type { RotationPriorityWriter } from "./rotation-types.js";
+
 
 const MAX_MANAGEMENT_PRIORITY = 2_147_483_647;
 
@@ -151,15 +153,18 @@ export function createCliProxyManagementWriter(options: CliProxyManagementWriter
 
   const listAccounts = async () => {
     const entries = authFilesFromPayload(await request("/v0/management/auth-files"));
-    return await Promise.all(entries.map(async (entry) => {
+    const filtered = entries.filter((entry) => {
+      const name = authFileName(entry);
+      return name && isCodexCredentialFileName(name);
+    });
+    return await Promise.all(filtered.map(async (entry) => {
       const fileName = authFileName(entry);
-      if (!fileName) throw new Error("CLIProxy auth entry missing file name");
-        const fingerprint = (await options.fingerprintResolver(fileName)).trim();
-        if (!fingerprint) throw new Error(`CLIProxy credential fingerprint unavailable: ${fileName}`);
-        const proxyAccountKey = (await options.proxyAccountKeyResolver?.(fileName) ?? fileName).trim();
-        if (!proxyAccountKey) throw new Error(`CLIProxy Proxy Account Key unavailable: ${fileName}`);
-        return {
-          proxyAccountKey,
+      const fingerprint = (await options.fingerprintResolver(fileName)).trim();
+      if (!fingerprint) throw new Error(`CLIProxy credential fingerprint unavailable: ${fileName}`);
+      const proxyAccountKey = (await options.proxyAccountKeyResolver?.(fileName) ?? fileName).trim();
+      if (!proxyAccountKey) throw new Error(`CLIProxy Proxy Account Key unavailable: ${fileName}`);
+      return {
+        proxyAccountKey,
         fileName,
         ...authFilePriorityState(entry, fileName),
         revision: authFileRevision(entry, fileName),

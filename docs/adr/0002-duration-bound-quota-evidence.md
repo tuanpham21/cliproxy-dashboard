@@ -1,0 +1,3 @@
+# Use duration-bound, identity-bound quota evidence
+
+Quota-Balanced Rotation classifies provider quota windows by explicit duration metadata rather than primary or secondary position; a 10,080-minute window is weekly, a 300-minute window is five-hour, and missing, malformed, zero, or unknown durations cannot drive rotation. Legacy positional snapshots remain visibility-only until replaced by fresh duration-bound evidence. Rotation evidence is also bound to a non-linkable HMAC credential identity claim rather than filename alone, and credential replacement or broken Observation Continuity invalidates its authority. This prevents provider rollout changes, reused filenames, and missed response logs from silently routing on the wrong quota.

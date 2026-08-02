@@ -101,7 +101,14 @@ function readyMarkup(view: CodexAccountUsageView): string {
     "</div>",
     view.observedAt ? `<div class="muted small codex-observed">Observed ${escapeHtml(formatToGmt7(view.observedAt))}</div>` : "",
     view.usageStale ? '<p class="codex-redemption-recovery" role="alert">Last read before redemption — no longer current</p>' : "",
-    '<p class="codex-workspace-warning">Email and plan help identify the account but do not prove which ChatGPT workspace owns a reset.</p>',
+    resetCredits && resetCredits.availableCount > 0
+      ? [
+          '<div class="codex-unmonitored-warning" role="alert">',
+          '<strong>⚠️ Unmonitored Reset Credits Detected</strong>',
+          `<span>Account <strong>${escapeHtml(account?.email ?? "unknown")}</strong> has <strong>${resetCredits.availableCount}</strong> reset credit${resetCredits.availableCount === 1 ? "" : "s"} available, but it is signed in only on your local machine’s Codex CLI (~/.codex). Email and plan help identify the account but do not prove which ChatGPT workspace owns a reset. This account is <strong>not</strong> attached to any confirmed Reset Checker Profile. Use “Add Profile” or “Continue setup” above to monitor this account.</span>`,
+          '</div>',
+        ].join("")
+      : '<p class="codex-workspace-warning">Email and plan help identify the account but do not prove which ChatGPT workspace owns a reset. Actions here do not affect or select Proxy Accounts.</p>',
     resetCredits
       ? `<div class="codex-reset-summary"><strong>${resetCredits.availableCount}</strong> earned usage limit reset${resetCredits.availableCount === 1 ? "" : "s"}</div>`
       : "",

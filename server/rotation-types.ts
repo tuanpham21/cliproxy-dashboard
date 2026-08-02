@@ -1,5 +1,7 @@
 export const ROTATION_MODES = ["off", "shadow", "active"] as const;
 export type RotationMode = (typeof ROTATION_MODES)[number];
+export const ROTATION_POOL_MODES = ["manual"] as const;
+export type RotationPoolMode = (typeof ROTATION_POOL_MODES)[number];
 export const MAX_EVIDENCE_WATERMARK_OBSERVATION_IDS = 256;
 
 export const ROTATION_LIFECYCLES = [
@@ -174,6 +176,7 @@ export type ProvisionalResetAttempt = {
 export type RotationState = {
   schemaVersion: 1;
   mode: RotationMode;
+  poolMode: RotationPoolMode;
   lifecycle: RotationLifecycle;
   pool: RotationPoolMember[];
   routingTargetKey?: string;

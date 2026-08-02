@@ -27,6 +27,7 @@ function account(proxyAccountKey: string): PublicAccountView {
 function rotation(overrides: Partial<PublicRotationState> = {}): PublicRotationState {
   return {
     mode: "shadow",
+    poolMode: "manual",
     lifecycle: "shadow",
     pool: [{ proxyAccountKey: "pak-a", fileName: "codex-pak-a.json", exclusivityAttested: true, addedAt: "2026-07-16T00:00:00.000Z" }],
     routingTargetKey: "pak-a",
@@ -59,6 +60,16 @@ describe("rotation panel", () => {
     expect(html).toMatch(/data-rotation-mode="active"[\s\S]*disabled/);
     expect(html).toContain('data-rotation-mode="shadow"');
     expect(html).toContain('aria-pressed="true"');
+  });
+
+  it("renders manual pool mode controls", () => {
+    const html = renderRotationPanel({
+      accounts: [account("pak-a"), account("pak-b")],
+      rotation: rotation({ poolMode: "manual" }),
+    });
+    expect(html).toContain('data-rotation-pool-mode="manual"');
+    expect(html).toContain("Add to pool");
+    expect(html).toContain("Remove");
   });
 
   it("renders pause and recovery details without exposing raw HTML", () => {

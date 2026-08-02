@@ -251,7 +251,7 @@ async function observationsApi(
 
 test("compares latest-known profiles and refreshes only the selected row", async ({ page }) => {
   const { requests } = await observationsApi(page);
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
 
   await expect(region.getByText("2 profiles", { exact: false })).toBeVisible();
   await expect(region.getByText("1 with resets", { exact: false })).toBeVisible();
@@ -261,7 +261,7 @@ test("compares latest-known profiles and refreshes only the selected row", async
   await expect(region.getByText("0 never-observed", { exact: false })).toBeVisible();
   await expect(region).not.toContainText("2 credits");
   await expect(region.getByRole("button", { name: "Review reset for Primary" })).toBeVisible();
-  const table = region.getByRole("table", { name: "Codex Login Profile evidence" });
+  const table = region.getByRole("table", { name: "Reset Checker Profile evidence" });
   const primary = table.getByRole("row", { name: /Primary operator@example.com/i });
   await expect(primary).toContainText("Latest-known");
   await expect(primary).toContainText("25% used");
@@ -282,12 +282,11 @@ test("compares latest-known profiles and refreshes only the selected row", async
 
 test("prepares one selected profile and confirms only fresh server-returned context", async ({ page }) => {
   const { redemption } = await observationsApi(page);
-  const row = page.getByRole("table", { name: "Codex Login Profile evidence" })
-    .getByRole("row", { name: /Primary operator@example.com/i });
-  const review = row.getByRole("button", { name: "Review reset for Primary" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
+  const review = region.getByRole("button", { name: "Review reset for Primary" });
 
   await expect(review).toBeDisabled();
-  await row.getByRole("checkbox", { name: /Primary uses one ChatGPT workspace/ }).check();
+  await region.getByRole("checkbox", { name: /Primary uses one ChatGPT workspace/ }).check();
   await review.click();
 
   const dialog = page.getByRole("dialog", { name: "Redeem usage limit reset?" });
@@ -316,18 +315,18 @@ test("keeps other profile observations visible while selected profile recovery b
     },
   };
   const { redemption } = await observationsApi(page, { initial });
-  const table = page.getByRole("table", { name: "Codex Login Profile evidence" });
+  const table = page.getByRole("table", { name: "Reset Checker Profile evidence" });
   const primary = table.getByRole("row", { name: /Primary operator@example.com/i });
 
   await expect(primary).toContainText("Reset redemption: ambiguous");
-  await expect(primary.getByRole("button", { name: "Review reset for Primary" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Reset Checker Profiles" }).getByRole("button", { name: "Review reset for Primary" })).toHaveCount(0);
   await expect(table.getByRole("row", { name: /Paused/i })).toBeVisible();
   expect(redemption.prepareBodies).toEqual([]);
 });
 
 test("saves labels, enables profiles, and persists registry order", async ({ page }) => {
   const { requests } = await observationsApi(page);
-  const table = page.getByRole("table", { name: "Codex Login Profile evidence" });
+  const table = page.getByRole("table", { name: "Reset Checker Profile evidence" });
   const primary = table.getByRole("row", { name: /Primary operator@example.com/i });
 
   await primary.getByRole("textbox", { name: "Label for Primary" }).fill("Work");
@@ -368,15 +367,15 @@ test("guides the operator when no profiles exist", async ({ page }) => {
       },
     },
   });
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
 
   await expect(region.getByText("0 profiles", { exact: false })).toBeVisible();
-  await expect(region.getByText("No Codex Login Profiles yet. Add one to retain read-only usage evidence.")).toBeVisible();
+  await expect(region.getByText("No Reset Checker Profiles yet. Add one to retain read-only usage evidence.")).toBeVisible();
 });
 
 test("keeps latest-known evidence when selected refresh fails", async ({ page }) => {
   await observationsApi(page, { failRefresh: "read" });
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
   const primary = region.getByRole("row", { name: /Primary operator@example.com/i });
 
   await primary.getByRole("button", { name: "Refresh Primary" }).click();
@@ -389,7 +388,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
 
   test("shows identity quarantine after a mismatched refresh without counting retained resets", async ({ page }) => {
   await observationsApi(page, { failRefresh: "identity" });
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
   const primary = region.getByRole("row", { name: /Primary operator@example.com/i });
 
   await primary.getByRole("button", { name: "Refresh Primary" }).click();
@@ -408,7 +407,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
       observation: { ...initial.profiles[0]!.observation!, freshness: "re-login-required" },
     };
     const { requests } = await observationsApi(page, { initial });
-    const row = page.getByRole("table", { name: "Codex Login Profile evidence" })
+    const row = page.getByRole("table", { name: "Reset Checker Profile evidence" })
       .getByRole("row", { name: /Primary operator@example.com/i });
 
     await row.getByRole("button", { name: "Log in again for Primary" }).click();
@@ -429,7 +428,7 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
       expect(dialog.message()).toContain("Primary");
       await dialog.accept();
     });
-    const table = page.getByRole("table", { name: "Codex Login Profile evidence" });
+    const table = page.getByRole("table", { name: "Reset Checker Profile evidence" });
     await table.getByRole("row", { name: /Primary operator@example.com/i })
       .getByRole("button", { name: "Delete Primary" }).click();
 
@@ -448,9 +447,9 @@ test("keeps latest-known evidence when selected refresh fails", async ({ page })
 
 test("announces refresh-all progress and an honest partial outcome", async ({ page }) => {
   const { requests } = await observationsApi(page);
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
 
-  await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
+  await region.getByRole("button", { name: "Refresh all Reset Checker Profiles" }).click();
 
   const status = region.getByRole("status", { name: "Codex profile refresh status" });
   await expect(status).toContainText("Refreshing 0 of 2 · Primary");
@@ -462,9 +461,9 @@ test("announces refresh-all progress and an honest partial outcome", async ({ pa
 
 test("cancels refresh-all accessibly", async ({ page }) => {
   const { requests } = await observationsApi(page, { refreshAllMode: "running" });
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
 
-  await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
+  await region.getByRole("button", { name: "Refresh all Reset Checker Profiles" }).click();
   const cancel = region.getByRole("button", { name: "Cancel refresh all" });
   await expect(cancel).toBeEnabled();
   await cancel.click();
@@ -476,9 +475,9 @@ test("cancels refresh-all accessibly", async ({ page }) => {
 
 test("announces a completed refresh-all outcome", async ({ page }) => {
   await observationsApi(page, { refreshAllMode: "completed" });
-  const region = page.getByRole("region", { name: "Codex Login Profiles" });
+  const region = page.getByRole("region", { name: "Reset Checker Profiles" });
 
-  await region.getByRole("button", { name: "Refresh all Codex Login Profiles" }).click();
+  await region.getByRole("button", { name: "Refresh all Reset Checker Profiles" }).click();
 
   await expect(region.getByRole("status", { name: "Codex profile refresh status" }))
     .toContainText("Refresh all completed · 2 of 2");

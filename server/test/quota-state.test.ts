@@ -5,9 +5,12 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 
-import { setAccountPatch } from "../accounts.js";
+import { readAccounts, setAccountPatch } from "../accounts.js";
 import { handleApi } from "../api.js";
 import { readDashboardState } from "../dashboard-state.js";
+import { readMergedQuotaSnapshots } from "../quota-log-updates.js";
+import { resolveDashboardPaths } from "../paths.js";
+import type { DashboardOptions } from "../types.js";
 import { spawnCalls } from "./mock-child-process.js";
 import {
   TEST_OPERATOR_TOKEN,
@@ -22,6 +25,16 @@ import {
   writeQuotaResponseLog,
 } from "./helpers.js";
 
+async function persistDashboardState(options: DashboardOptions) {
+  const paths = await resolveDashboardPaths(options);
+  const accountsResult = await readAccounts(paths.authDir);
+  const merged = await readMergedQuotaSnapshots(paths, accountsResult.accounts, options.beforeQuotaSnapshotStateWrite, [], false);
+  const state = await readDashboardState(options);
+  return {
+    ...state,
+    errors: [...state.errors, ...merged.errors],
+  };
+}
 
 describe("cliproxy dashboard quota state", () => {
   it("uses the default quota snapshot state path and trusted override with owner-only modes", async () => {
@@ -31,13 +44,13 @@ describe("cliproxy dashboard quota state", () => {
     const configPath = await writeConfig(root, authDir);
     stubModelList();
 
-    const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
+    const state = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     const expectedDefaultPath = path.join(authDir, "cliproxy-dashboard", "quota-snapshots.json");
     expect(state.paths.quotaSnapshotStatePath).toBe(expectedDefaultPath);
     expect((await stat(expectedDefaultPath)).isFile()).toBe(true);
 
     const overridePath = path.join(authDir, "cliproxy-dashboard", "override-quota-snapshots.json");
-    const overrideState = await readDashboardState({
+    const overrideState = await persistDashboardState({
       configPath,
       proxyUrl: "http://proxy.local",
       inboundKey: "key",
@@ -60,8 +73,9 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date().toISOString(),
       primaryUsedPercent: 17,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    await readDashboardState({
+    await persistDashboardState({
       configPath,
       proxyUrl: "http://proxy.local",
       inboundKey: "key",
@@ -90,11 +104,13 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(Date.now() - 1000).toISOString(),
       primaryUsedPercent: 35,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
       weeklyUsedPercent: 12,
       weeklyResetAfterSeconds: 86400,
+      secondaryDurationMinutes: 10080,
     });
 
-    const first = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const first = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(first.accounts[0].quota.primary5h).toMatchObject({ usedPercent: 35, status: "current" });
     expect(first.accounts[0].quota.weekly).toMatchObject({ usedPercent: 12, status: "current" });
 
@@ -126,10 +142,12 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(now - 10_000).toISOString(),
       primaryUsedPercent: 30,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
       weeklyUsedPercent: 10,
       weeklyResetAfterSeconds: 86400,
+      secondaryDurationMinutes: 10080,
     });
-    const first = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const first = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(first.accounts[0].quota.primary5h.usedPercent).toBe(30);
     expect(first.accounts[0].quota.weekly.usedPercent).toBe(10);
 
@@ -137,10 +155,12 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(now - 20_000).toISOString(),
       primaryUsedPercent: 90,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
       weeklyUsedPercent: 90,
       weeklyResetAfterSeconds: 86400,
+      secondaryDurationMinutes: 10080,
     });
-    const olderIgnored = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const olderIgnored = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(olderIgnored.accounts[0].quota.primary5h.usedPercent).toBe(30);
     expect(olderIgnored.accounts[0].quota.weekly.usedPercent).toBe(10);
 
@@ -148,8 +168,9 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(now).toISOString(),
       primaryUsedPercent: 55,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    const partial = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const partial = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(partial.accounts[0].quota.primary5h.usedPercent).toBe(55);
     expect(partial.accounts[0].quota.weekly.usedPercent).toBe(10);
 
@@ -157,8 +178,9 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(now + 10_000).toISOString(),
       weeklyUsedPercent: 22,
       weeklyResetAfterSeconds: 86400,
+      secondaryDurationMinutes: 10080,
     });
-    const inversePartial = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const inversePartial = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(inversePartial.accounts[0].quota.primary5h.usedPercent).toBe(55);
     expect(inversePartial.accounts[0].quota.weekly.usedPercent).toBe(22);
   });
@@ -178,15 +200,17 @@ describe("cliproxy dashboard quota state", () => {
       timestamp,
       primaryUsedPercent: 44,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
 
     await writeQuotaResponseLog(logsDir, "v1-responses-z.log", fileName, {
       timestamp,
       primaryUsedPercent: 91,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const state = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(state.accounts[0].quota.primary5h.usedPercent).toBe(44);
   });
 
@@ -205,27 +229,28 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date().toISOString(),
       primaryUsedPercent: 41,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     await rm(logsDir, { recursive: true, force: true });
     await mkdir(logsDir, { recursive: true });
 
     await setAccountPatch(authDir, backupRoot, fileName, { disabled: true });
-    const disabled = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const disabled = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(disabled.accounts[0].fileName).toBe(`${fileName}.disabled`);
     expect(disabled.accounts[0].quota.primary5h.usedPercent).toBe(41);
     const keyAfterDisable = JSON.parse(await readFile(statePath, "utf8")).snapshots[0].proxyAccountKey;
     expect(keyAfterDisable).toMatch(/^pak_v1_/);
 
     await setAccountPatch(authDir, backupRoot, `${fileName}.disabled`, { disabled: false });
-    const enabled = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const enabled = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(enabled.accounts[0].fileName).toBe(fileName);
     expect(enabled.accounts[0].quota.primary5h.usedPercent).toBe(41);
     const keyAfterEnable = JSON.parse(await readFile(statePath, "utf8")).snapshots[0].proxyAccountKey;
     expect(keyAfterEnable).toBe(keyAfterDisable);
 
     await rm(path.join(authDir, fileName));
-    const deleted = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const deleted = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(deleted.accounts).toHaveLength(0);
   });
 
@@ -242,11 +267,93 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
       primaryUsedPercent: 64,
       primaryResetAfterSeconds: 60,
+      primaryDurationMinutes: 300,
     });
 
-    const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
+    const state = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     expect(state.accounts[0].quota.primary5h.usedPercent).toBe(64);
     expect(state.accounts[0].quota.primary5h.status).toBe("refresh-needed");
+  });
+
+  it("keeps GET /api/state a pure projection when quota snapshot state is missing or corrupt", async () => {
+    const root = await makeTempRoot();
+    const authDir = path.join(root, "auth");
+    const logsDir = path.join(authDir, "logs");
+    const fileName = "codex-pure-get@example.com-plus.json";
+    const configPath = await writeConfig(root, authDir);
+    const statePath = path.join(authDir, "cliproxy-dashboard", "pure-get.json");
+    await writeAccountFile(authDir, fileName, { validity_status: "valid" });
+    await writeQuotaResponseLog(logsDir, "v1-responses-pure-get.log", fileName, {
+      timestamp: new Date().toISOString(),
+      primaryUsedPercent: 25,
+      primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
+    });
+    stubModelList();
+
+    const missingReq = {
+      method: "GET",
+      url: "/api/state",
+      headers: sameOriginHeaders(),
+    } as unknown as IncomingMessage;
+    const missingRes = makeMockRes();
+    await handleApi(missingReq, missingRes.res as unknown as ServerResponse, {
+      configPath,
+      proxyUrl: "http://proxy.local",
+      inboundKey: "key",
+      quotaSnapshotStatePath: statePath,
+    });
+    expect(missingRes.getStatus()).toBe(200);
+    expect(missingRes.getParsed().accounts[0].proxyAccountKey).toBeUndefined();
+    expect(missingRes.getParsed().accounts[0].quota.primary5h.status).toBe("unknown");
+    await expect(stat(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeFile(statePath, "{not-json");
+    const corruptReq = {
+      method: "GET",
+      url: "/api/state",
+      headers: sameOriginHeaders(),
+    } as unknown as IncomingMessage;
+    const corruptRes = makeMockRes();
+    await handleApi(corruptReq, corruptRes.res as unknown as ServerResponse, {
+      configPath,
+      proxyUrl: "http://proxy.local",
+      inboundKey: "key",
+      quotaSnapshotStatePath: statePath,
+    });
+    expect(corruptRes.getStatus()).toBe(200);
+    expect(corruptRes.getParsed().accounts[0].proxyAccountKey).toBeUndefined();
+    expect(corruptRes.getParsed().accounts[0].quota.primary5h.status).toBe("unknown");
+    expect(await readFile(statePath, "utf8")).toBe("{not-json");
+  });
+
+  it("renders unsupported provider windows as unsupported instead of current", async () => {
+    const root = await makeTempRoot();
+    const authDir = path.join(root, "auth");
+    const logsDir = path.join(authDir, "logs");
+    const fileName = "codex-unsupported-window@example.com-plus.json";
+    const configPath = await writeConfig(root, authDir);
+    const statePath = path.join(authDir, "cliproxy-dashboard", "unsupported-window.json");
+    await writeAccountFile(authDir, fileName);
+    stubModelList();
+
+    await writeQuotaResponseLog(logsDir, "v1-responses-unsupported-window.log", fileName, {
+      timestamp: new Date().toISOString(),
+      weeklyUsedPercent: 44,
+      weeklyResetAfterSeconds: 86400,
+    });
+    const state = await persistDashboardState({
+      configPath,
+      proxyUrl: "http://proxy.local",
+      inboundKey: "key",
+      quotaSnapshotStatePath: statePath,
+    });
+    expect(state.accounts[0].quota.weekly).toMatchObject({
+      usedPercent: 44,
+      status: "unsupported-provider-window",
+      migrationOnly: true,
+    });
   });
 
   it("recomputes public status and treats missing or invalid reset times as refresh-needed", async () => {
@@ -263,8 +370,9 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date().toISOString(),
       primaryUsedPercent: 71,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
 
     const persisted = JSON.parse(await readFile(statePath, "utf8"));
     persisted.snapshots[0].primary5h.resetAt = "not-a-date";
@@ -295,8 +403,10 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date().toISOString(),
       primaryUsedPercent: 21,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
       weeklyUsedPercent: 8,
       weeklyResetAfterSeconds: 86400,
+      secondaryDurationMinutes: 10080,
     });
     const logPath = path.join(logsDir, "v1-responses-schema.log");
     await writeFile(
@@ -304,16 +414,38 @@ describe("cliproxy dashboard quota state", () => {
       `${await readFile(logPath, "utf8")}\nREQUEST BODY: raw-request-body-secret\nRESPONSE BODY: raw-response-body-secret\n`,
     );
 
-    const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const state = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(state.accounts[0].quota.primary5h.usedPercent).toBe(21);
-    expect(state.errors.join("\n")).toContain("Quota snapshot state file could not be read");
+    expect(state.errors.join("\n")).toContain("Quota snapshot state file");
 
     const text = await readFile(statePath, "utf8");
     const persisted = JSON.parse(text);
     expect(Object.keys(persisted).sort()).toEqual(["credentialBaselines", "keyDerivation", "schemaVersion", "snapshots"]);
     expect(Object.keys(persisted.keyDerivation).sort()).toEqual(["algorithm", "keyPrefix", "secret"]);
-    expect(Object.keys(persisted.snapshots[0]).sort()).toEqual(["primary5h", "proxyAccountKey", "weekly"]);
-    expect(Object.keys(persisted.snapshots[0].primary5h).sort()).toEqual(["observedAt", "resetAt", "source", "usedPercent"]);
+    expect(Object.keys(persisted.snapshots[0]).sort()).toEqual([
+      "continuityStartedAt",
+      "credentialFingerprint",
+      "lastObservationAt",
+      "lastObservationId",
+      "observationContinuity",
+      "primary5h",
+      "proxyAccountKey",
+      "weekly",
+    ]);
+    expect(Object.keys(persisted.snapshots[0].primary5h).sort()).toEqual([
+      "continuity",
+      "credentialFingerprint",
+      "durationMinutes",
+      "evidenceId",
+      "observedAt",
+      "providerSlot",
+      "rawUsedPercent",
+      "resetAt",
+      "schemaVersion",
+      "source",
+      "usedPercent",
+      "windowKind",
+    ]);
     expect(Object.keys(persisted.credentialBaselines[0]).sort()).toEqual(["credentialFingerprint", "establishedAt", "proxyAccountKey", "seenEvidenceIds"]);
     const keys = new Set<string>();
     const collectKeys = (value: unknown) => {
@@ -357,8 +489,9 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date().toISOString(),
       primaryUsedPercent: 33,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
 
     const legacy = JSON.parse(await readFile(statePath, "utf8"));
     legacy.raw = { request: "raw-request-body-secret" };
@@ -371,13 +504,33 @@ describe("cliproxy dashboard quota state", () => {
     await rm(logsDir, { recursive: true, force: true });
     await mkdir(logsDir, { recursive: true });
 
-    const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const state = await persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     expect(state.accounts[0].quota.primary5h.usedPercent).toBe(33);
     const cleanedText = await readFile(statePath, "utf8");
     const cleaned = JSON.parse(cleanedText);
     expect(Object.keys(cleaned).sort()).toEqual(["credentialBaselines", "keyDerivation", "schemaVersion", "snapshots"]);
-    expect(Object.keys(cleaned.snapshots[0]).sort()).toEqual(["primary5h", "proxyAccountKey"]);
-    expect(Object.keys(cleaned.snapshots[0].primary5h).sort()).toEqual(["observedAt", "source", "usedPercent"]);
+    expect(Object.keys(cleaned.snapshots[0]).sort()).toEqual([
+      "continuityStartedAt",
+      "credentialFingerprint",
+      "lastObservationAt",
+      "lastObservationId",
+      "observationContinuity",
+      "primary5h",
+      "proxyAccountKey",
+    ]);
+    expect(Object.keys(cleaned.snapshots[0].primary5h).sort()).toEqual([
+      "continuity",
+      "credentialFingerprint",
+      "durationMinutes",
+      "evidenceId",
+      "observedAt",
+      "providerSlot",
+      "rawUsedPercent",
+      "schemaVersion",
+      "source",
+      "usedPercent",
+      "windowKind",
+    ]);
     expect(cleanedText).not.toContain(fileName);
     expect(cleanedText).not.toContain("legacy@example.com");
     expect(cleanedText).not.toContain("not-a-date");
@@ -399,6 +552,7 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date(Date.now() - 10_000).toISOString(),
       primaryUsedPercent: 15,
       primaryResetAfterSeconds: 3600,
+      primaryDurationMinutes: 300,
     });
 
     let releaseFirstWrite!: () => void;
@@ -410,7 +564,7 @@ describe("cliproxy dashboard quota state", () => {
       firstWriteIsPaused = resolve;
     });
     let hookCalls = 0;
-    const firstRead = readDashboardState({
+    const firstRead = persistDashboardState({
       configPath,
       proxyUrl: "http://proxy.local",
       inboundKey: "key",
@@ -429,9 +583,10 @@ describe("cliproxy dashboard quota state", () => {
       timestamp: new Date().toISOString(),
       weeklyUsedPercent: 66,
       weeklyResetAfterSeconds: 86400,
+      secondaryDurationMinutes: 10080,
     });
 
-    const secondRead = readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
+    const secondRead = persistDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key", quotaSnapshotStatePath: statePath });
     releaseFirstWrite();
     await Promise.all([firstRead, secondRead]);
 

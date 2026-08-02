@@ -72,6 +72,7 @@ cliproxy-dashboard/
 * **Go CLI Proxy**: Install `cli-proxy-api.exe` and pass it with `--cli-proxy-bin`, or set `CLI_PROXY_API_BIN`.
 * **Codex app-server**: Pass the exact binary with `--codex-bin`, or set `CODEX_BIN`. Resolution order is CLI option, environment, `codex(.exe)` beside the running Node executable, then `PATH`.
 * **Quota rotation contract build**: Use `tuanpham21/CLIProxyAPI` commit `3bbf6da7ad92545c701cdc7bce09ba2ec4db2bcf`, reporting runtime version `7.2.75`. Upstream PR: [router-for-me/CLIProxyAPI#4351](https://github.com/router-for-me/CLIProxyAPI/pull/4351).
+* **Quota rotation management key**: Set the same local-only management key in CLIProxy `remote-management.secret-key` and dashboard `CLI_PROXY_MANAGEMENT_KEY`, or pass it with `--management-key`.
 
 Windows migration paths:
 
@@ -139,6 +140,7 @@ pnpm run start -- `
   --port 60948 `
   --cli-proxy-bin $CliProxyBin `
   --codex-bin $CodexBin `
+  --management-key $env:CLI_PROXY_MANAGEMENT_KEY `
   --config "$env:USERPROFILE\.config\cli-proxy-api\config.yaml" `
   --auth-dir "$env:USERPROFILE\.cli-proxy-api" `
   --backup-root "$env:USERPROFILE\.cli-proxy-api-backups\cliproxy-dashboard"
@@ -214,6 +216,8 @@ To ensure the dashboard runs continuously in the background, you can run it as a
     <string>/Users/phamtuan/.local/bin:/Users/phamtuan/Library/pnpm:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>CLI_PROXY_API_BIN</key>
     <string>/Users/phamtuan/.local/bin/cli-proxy-api</string>
+    <key>CLI_PROXY_MANAGEMENT_KEY</key>
+    <string>replace-with-local-management-key</string>
   </dict>
 
   <key>StandardOutPath</key>

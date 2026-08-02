@@ -5,6 +5,7 @@ import type {
   RotationDecision,
   RotationMode,
   RotationPoolMember,
+  RotationPoolMode,
   ProvisionalResetAttempt,
   RotationState,
 } from "./rotation-types.js";
@@ -118,6 +119,15 @@ export function setRotationModeState(state: RotationState, mode: Exclude<Rotatio
   state.pauseReason = undefined;
   state.pauseMessage = undefined;
   appendRotationAudit(state, { at: new Date(nowMs).toISOString(), kind: "resume", message: `Quota-Balanced Rotation mode set to ${mode}` });
+}
+
+export function setRotationPoolModeState(state: RotationState, poolMode: RotationPoolMode, nowMs: number): void {
+  state.poolMode = poolMode;
+  appendRotationAudit(state, {
+    at: new Date(nowMs).toISOString(),
+    kind: "observation",
+  message: "Rotation Pool mode set to manual",
+  });
 }
 
 export function replaceRotationPoolState(state: RotationState, pool: RotationPoolMember[], nowMs: number): void {

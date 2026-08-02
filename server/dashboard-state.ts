@@ -7,7 +7,7 @@ import { publicDashboardPaths, resolveDashboardPaths } from "./paths.js";
 import { readProxyModels } from "./proxy-models.js";
 import { readMergedQuotaSnapshots } from "./quota-log-updates.js";
 import type { DashboardOptions, DashboardState } from "./types.js";
-import { normalizeProxyAccountLocalIdentity, toPublicQuotaSnapshot } from "./util.js";
+import { computeAccountRotationDisplayStatus, normalizeProxyAccountLocalIdentity, toPublicQuotaSnapshot } from "./util.js";
 
 export async function readDashboardState(options: DashboardOptions = {}): Promise<DashboardState> {
   const paths = await resolveDashboardPaths(options);
@@ -61,14 +61,16 @@ export async function readDashboardState(options: DashboardOptions = {}): Promis
           normalizeProxyAccountLocalIdentity(account.fileName),
         );
         const canonicalLocalIdentity = normalizeProxyAccountLocalIdentity(account.fileName);
+        const rotationDisplayStatus = computeAccountRotationDisplayStatus(account, quotaSnapshot);
         return {
           ...publicAccount(
             account,
             toPublicQuotaSnapshot(quotaSnapshot),
             quotaSnapshots.proxyAccountKeysByCanonicalIdentity.get(canonicalLocalIdentity),
-        ),
-    };
-  });
+          ),
+          rotationDisplayStatus,
+        };
+    });
   const selectedAccountMapped = selectedAccount
       ? publicAccount(
           selectedAccount,

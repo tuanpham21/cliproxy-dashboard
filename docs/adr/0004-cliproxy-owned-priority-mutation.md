@@ -1,0 +1,3 @@
+# Mutate rotation priorities through CLIProxy ownership
+
+Production rotation changes Proxy Account priority through CLIProxy's authenticated loopback management API, not by rewriting credential JSON files directly. Each routine rotation journals intent, applies one Rotation Priority Overlay by promoting only the target above the current maximum priority, verifies the CLIProxy-owned mutation, and preserves exact operator base priority presence and value for disable or recovery. Direct dashboard file replacement is rejected because it can race CLIProxy token refresh and lose either credentials or priority; external priority edits, identity changes, mutation conflicts, or unverifiable restoration pause automation instead of being overwritten or guessed.

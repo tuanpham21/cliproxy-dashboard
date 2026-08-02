@@ -78,6 +78,39 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
     updateControls();
   };
 
+  const stepper = document.getElementById("codex-profile-onboarding-stepper");
+
+  const renderStepper = () => {
+    if (!stepper) return;
+    if (mode === "idle") {
+      stepper.hidden = true;
+      stepper.replaceChildren();
+      return;
+    }
+    stepper.hidden = false;
+    const steps = [
+      { num: 1, text: "Create Profile" },
+      { num: 2, text: "Browser Login" },
+      { num: 3, text: "Check Account" },
+      { num: 4, text: "Confirm Account" },
+      { num: 5, text: "Ready to Refresh" },
+    ];
+    let activeStep = 2;
+    if (mode === "candidate" || mode === "candidate-error") activeStep = 4;
+    else if (mode === "confirmed") activeStep = 5;
+
+    stepper.replaceChildren(
+      ...steps.map((step) => {
+        const item = document.createElement("div");
+        const isCompleted = step.num < activeStep;
+        const isActive = step.num === activeStep;
+        item.className = `codex-stepper-step ${isCompleted ? "completed" : ""} ${isActive ? "active" : ""}`;
+        item.innerHTML = `<span class="codex-stepper-num">${isCompleted ? "✓" : step.num}</span><span class="codex-stepper-text">${step.text}</span>`;
+        return item;
+      })
+    );
+  };
+
   const updateControls = () => {
     const busy = busyAction !== null;
     addButton.disabled = busy || activeProfileId !== null;
@@ -93,6 +126,7 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
     cancelButton.disabled = busy && busyAction !== "check";
     confirmButton.disabled = busy || !confirmation.checked;
     workspace.setAttribute("aria-busy", String(busy));
+    renderStepper();
   };
 
   const showLogin = (message: string) => {
@@ -173,6 +207,14 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
       return checkButton;
     });
 
+    const continuePendingProfileSetup = (profileId: string, label?: string) => {
+      if (activeProfileId && busyAction) return;
+      activeProfileId = profileId;
+      reLoginMode = false;
+      showLogin(`Resumed setup for ${label || "Pending profile"}. Complete official browser login, then check the logged-in account.`);
+      checkButton.focus();
+    };
+
   checkButton.addEventListener("click", () => void run("check", async (isCurrent) => {
     if (!activeProfileId) return null;
     const observed = await observeCodexLoginProfile(activeProfileId);
@@ -227,5 +269,5 @@ export function setupCodexProfileOnboarding(onProfileChanged: () => void | Promi
     return addButton;
   }));
 
-    return { updateControls, startReLogin };
+    return { updateControls, startReLogin, continuePendingProfileSetup };
   }

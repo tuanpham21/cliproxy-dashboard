@@ -89,10 +89,10 @@ async function onboardingApi(page: Page) {
   };
 }
 
-test("adds a private Codex Login Profile and confirms the first read-only account result", async ({ page }) => {
+test("adds a private Reset Checker Profile and confirms the first read-only account result", async ({ page }) => {
   const api = await onboardingApi(page);
 
-  await page.getByRole("button", { name: "Add Codex Login Profile" }).click();
+  await page.getByRole("button", { name: "Add Reset Checker Profile" }).click();
   await expect(page.getByRole("status", { name: "Codex profile onboarding status" })).toContainText(
     "Finish the official browser login",
   );
@@ -100,7 +100,7 @@ test("adds a private Codex Login Profile and confirms the first read-only accoun
   await expect(check).toBeFocused();
   await check.click();
 
-  const onboarding = page.getByRole("region", { name: "Codex Login Profiles" });
+  const onboarding = page.getByRole("region", { name: "Reset Checker Profiles" });
   await expect(onboarding.getByText("operator@example.com", { exact: true })).toBeVisible();
   await expect(onboarding.getByText("Pro", { exact: true })).toBeVisible();
   await expect(onboarding.getByText("2 available", { exact: true })).toBeVisible();
@@ -114,7 +114,7 @@ test("adds a private Codex Login Profile and confirms the first read-only accoun
   await expect(page.getByRole("status", { name: "Codex profile onboarding status" })).toContainText(
     "Codex Login Profile confirmed",
   );
-  await expect(page.getByRole("button", { name: "Add Codex Login Profile" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Add Reset Checker Profile" })).toBeFocused();
   const confirmationRequest = api.requests.find((entry) => entry.path.endsWith("/confirm"));
   expect(confirmationRequest?.body).toEqual({ confirmed: true, email: "operator@example.com", plan: "pro" });
   expect(JSON.stringify(api.requests)).not.toMatch(/codexStateRoot|codexSqliteRoot|\/private\//);
@@ -123,9 +123,9 @@ test("adds a private Codex Login Profile and confirms the first read-only accoun
 test("shows a wrong browser account and retries only that pending profile", async ({ page }) => {
   const api = await onboardingApi(page);
   api.setCandidate("wrong@example.com", "plus");
-  await page.getByRole("button", { name: "Add Codex Login Profile" }).click();
+  await page.getByRole("button", { name: "Add Reset Checker Profile" }).click();
   await page.getByRole("button", { name: "Check logged-in account" }).click();
-  const onboarding = page.getByRole("region", { name: "Codex Login Profiles" });
+  const onboarding = page.getByRole("region", { name: "Reset Checker Profiles" });
   await expect(onboarding.getByText("wrong@example.com", { exact: true })).toBeVisible();
 
   api.setCandidate("operator@example.com", "pro");
@@ -145,7 +145,7 @@ test("shows a wrong browser account and retries only that pending profile", asyn
 test("announces a fixed account-check failure and keeps retry and cancel available", async ({ page }) => {
   const api = await onboardingApi(page);
   api.failObservation();
-  await page.getByRole("button", { name: "Add Codex Login Profile" }).click();
+  await page.getByRole("button", { name: "Add Reset Checker Profile" }).click();
   await page.getByRole("button", { name: "Check logged-in account" }).click();
 
   await expect(page.getByRole("alert", { name: "Codex profile onboarding error" })).toHaveText(
@@ -158,7 +158,7 @@ test("announces a fixed account-check failure and keeps retry and cancel availab
 test("cancels onboarding and reports pending private-root cleanup", async ({ page }) => {
   const api = await onboardingApi(page);
   api.deferObservation();
-  await page.getByRole("button", { name: "Add Codex Login Profile" }).click();
+  await page.getByRole("button", { name: "Add Reset Checker Profile" }).click();
   await page.getByRole("button", { name: "Check logged-in account" }).click();
   const cancel = page.getByRole("button", { name: "Cancel Codex profile onboarding" });
   await expect(cancel).toBeEnabled();
@@ -167,7 +167,7 @@ test("cancels onboarding and reports pending private-root cleanup", async ({ pag
   await expect(page.getByRole("status", { name: "Codex profile onboarding status" })).toHaveText(
     "Onboarding cancelled. Pending Codex Login Profile data was cleaned up.",
   );
-  await expect(page.getByRole("button", { name: "Add Codex Login Profile" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Add Reset Checker Profile" })).toBeFocused();
   api.releaseObservation();
   expect(api.requests).toContainEqual({
     method: "DELETE",

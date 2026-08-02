@@ -42,7 +42,7 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--no-port-fallback] [--cli-proxy-bin <path>] [--codex-bin <path>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--open]\n",
+        "Usage: cliproxy-dashboard [--host 127.0.0.1] [--port 60948] [--no-port-fallback] [--cli-proxy-bin <path>] [--codex-bin <path>] [--management-key <key>] [--config <path>] [--auth-dir <path>] [--backup-root <path>] [--state-file <path>] [--open]\n",
       );
       process.exit(0);
     }
@@ -74,6 +74,12 @@ export function parseCliArgs(argv = process.argv.slice(2)): {
       const value = argv[++index];
       if (!value) throw new Error("--codex-bin requires a path");
       parsed.codexBin = value;
+      continue;
+    }
+    if (arg === "--management-key") {
+      const value = argv[++index];
+      if (!value) throw new Error("--management-key requires a value");
+      parsed.managementKey = value;
       continue;
     }
     if (arg === "--auth-dir") {

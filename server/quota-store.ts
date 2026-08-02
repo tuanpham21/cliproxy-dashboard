@@ -14,9 +14,9 @@ export function createEmptyQuotaSnapshotStore(): PersistedQuotaSnapshotStore {
       algorithm: "hmac-sha256",
       secret: randomBytes(32).toString("base64url"),
       keyPrefix: "pak_v1",
-      },
-      snapshots: [],
-      credentialBaselines: [],
+    },
+    snapshots: [],
+    credentialBaselines: [],
   };
 }
 
@@ -258,7 +258,7 @@ export function normalizePersistedQuotaSnapshotStore(
 
 export async function readQuotaSnapshotStoreFile(
   stateFilePath: string,
-): Promise<{ store: PersistedQuotaSnapshotStore; error?: string; dirty: boolean }> {
+): Promise<{ store: PersistedQuotaSnapshotStore; error?: string; dirty: boolean; initialized: boolean }> {
   try {
     const text = await readFile(stateFilePath, "utf8");
     const parsed = JSON.parse(text) as unknown;
@@ -268,17 +268,19 @@ export async function readQuotaSnapshotStoreFile(
         store: createEmptyQuotaSnapshotStore(),
         error: "Quota snapshot state file was invalid and was reinitialized",
         dirty: true,
+        initialized: true,
       };
     }
-    return { store: normalized.store, dirty: normalized.dirty };
+    return { store: normalized.store, dirty: normalized.dirty, initialized: false };
   } catch (error) {
     if (isEnoent(error)) {
-      return { store: createEmptyQuotaSnapshotStore(), dirty: true };
+      return { store: createEmptyQuotaSnapshotStore(), dirty: true, initialized: true };
     }
     return {
       store: createEmptyQuotaSnapshotStore(),
       error: "Quota snapshot state file could not be read and was reinitialized",
       dirty: true,
+      initialized: true,
     };
   }
 }

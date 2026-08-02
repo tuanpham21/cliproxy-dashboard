@@ -74,8 +74,8 @@ export function quotaStatusClass(status: string): "good" | "warn" | "bad" | "neu
   if (status === "current") {
     return "good";
   }
-  if (status === "blocked") {
-    return "bad";
+  if (status === "refresh-needed" || status === "stale" || status === "unsupported-provider-window" || status === "blocked") {
+    return "warn";
   }
   if (status === "unknown") {
     return "neutral";

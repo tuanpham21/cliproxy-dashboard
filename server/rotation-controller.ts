@@ -21,6 +21,7 @@ import {
   replaceRotationPoolState,
   resumeRotationState,
   setRotationModeState,
+  setRotationPoolModeState,
 } from "./rotation-state-transitions.js";
 import type {
     RotationControllerOptions,
@@ -34,6 +35,7 @@ import type {
   RotationPrioritySnapshots,
   RotationPriorityWriter,
   RotationPoolMember,
+  RotationPoolMode,
   RotationMode,
   RotationState,
 } from "./rotation-types.js";
@@ -57,6 +59,20 @@ function snapshot(proxyAccount: ManagedProxyAccount): RotationPrioritySnapshot {
 
 function snapshots(proxyAccounts: ManagedProxyAccount[]): RotationPrioritySnapshots {
   return Object.fromEntries(proxyAccounts.map((proxyAccount) => [proxyAccount.proxyAccountKey, snapshot(proxyAccount)]));
+}
+
+function rotationPoolEquals(left: RotationPoolMember[], right: RotationPoolMember[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((member, index) => {
+    const candidate = right[index];
+    return Boolean(
+      candidate
+      && member.proxyAccountKey === candidate.proxyAccountKey
+      && member.fileName === candidate.fileName
+      && member.exclusivityAttested === candidate.exclusivityAttested
+      && member.addedAt === candidate.addedAt,
+    );
+  });
 }
 
 function priorityMatches(proxyAccount: ManagedProxyAccount, expected: RotationPrioritySnapshot): boolean {
@@ -157,10 +173,22 @@ export class RotationController {
           const restored = await this.#restoreOverlay(false);
           if (restored.lifecycle === "paused" || restored.lifecycle === "recovery-required") return restored;
         }
-        replaceRotationPoolState(this.#state, update(structuredClone(this.#state.pool)), this.#now());
+        const nextPool = update(structuredClone(this.#state.pool));
+        if (rotationPoolEquals(this.#state.pool, nextPool)) return this.state();
+        replaceRotationPoolState(this.#state, nextPool, this.#now());
         await this.#persist();
         return this.state();
       });
+  }
+
+  async setPoolMode(poolMode: RotationPoolMode): Promise<RotationState> {
+    return await this.#withLock(async () => {
+      if (this.#state.pauseReason === "corrupt-state") return this.state();
+      if (this.#state.poolMode === poolMode) return this.state();
+      setRotationPoolModeState(this.#state, poolMode, this.#now());
+      await this.#persist();
+      return this.state();
+    });
   }
 
   async enterManualHold(message: string): Promise<RotationState> {

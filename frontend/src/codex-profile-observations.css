@@ -95,10 +95,58 @@
 .codex-profile-status-never-observed { color: var(--muted); }
 .codex-profile-status-identity-changed { color: var(--danger, #c2413b); }
 
+.codex-profile-row-help {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.codex-profile-row-help.danger {
+  color: var(--danger, #c2413b);
+  font-weight: 600;
+}
+
 .codex-profile-observation-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.codex-profile-redemption-panel {
+  margin-top: 1rem;
+}
+
+.codex-profile-redemption-card {
+  padding: 1rem 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--danger, #c2413b) 50%, var(--border));
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--panel) 94%, var(--danger, #c2413b) 6%);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.codex-profile-redemption-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--danger, #c2413b);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.codex-profile-redemption-warning-copy {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.danger-btn {
+  background: var(--danger, #c2413b);
+  color: white;
+  border: none;
 }
 
 .codex-profile-redemption-form {

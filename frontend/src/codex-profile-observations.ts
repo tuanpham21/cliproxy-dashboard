@@ -16,14 +16,13 @@ import {
   updateCodexLoginProfile,
 } from "./api";
 
-type RowAction = "refresh" | "toggle" | "save" | "up" | "down" | "relogin" | "delete";
+type RowAction = "refresh" | "toggle" | "save" | "up" | "down" | "relogin" | "delete" | "continue";
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing Codex Profile Observation element: ${id}`);
   return element as T;
 }
-
 function statusLabel(status: CodexProfileObservationRowView["status"]): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
@@ -75,7 +74,9 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
   accountCell.dataset.label = "Account";
   accountCell.textContent = profile.observation
     ? `${profile.observation.account.email} · ${planLabel(profile.observation.account.plan)}`
-    : "Not observed";
+    : profile.status === "pending"
+      ? "Browser login pending — finish setup"
+      : "Not observed";
 
   const evidenceCell = document.createElement("td");
   evidenceCell.dataset.label = "Evidence rail";
@@ -104,79 +105,80 @@ function rowElement(profile: CodexProfileObservationRowView, count: number): HTM
   badge.textContent = statusLabel(profile.status);
   statusCell.append(badge);
 
-    const actionsCell = document.createElement("td");
-    actionsCell.dataset.label = "Actions";
-    actionsCell.className = "codex-profile-observation-actions";
-      const redemptionStatus = profile.activeRedemption?.status;
-      const redemptionAllowsPrepare = !redemptionStatus || redemptionStatus === "not-found" || redemptionStatus === "terminal";
-      const actions: Array<[RowAction, string, boolean]> = profile.status === "cleanup-required"
-      ? [["delete", `Retry cleanup for ${profile.label}`, false]]
-      : [
-        ["save", `Save label for ${profile.label}`, false],
-          ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled || !redemptionAllowsPrepare],
-        ...(profile.status === "identity-changed" || profile.status === "re-login-required"
-          ? [["relogin", `Log in again for ${profile.label}`, false] as [RowAction, string, boolean]] : []),
-        ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" ||
-          profile.status === "identity-changed" || profile.status === "re-login-required"],
-        ["up", `Move ${profile.label} up`, profile.order === 0],
-        ["down", `Move ${profile.label} down`, profile.order === count - 1],
-        ["delete", `Delete ${profile.label}`, false],
-      ];
-    for (const [action, accessibleName, disabled] of actions) {
+  if (profile.status === "pending") {
+    const help = document.createElement("span");
+    help.className = "codex-profile-row-help";
+    help.textContent = "Setup incomplete — click “Continue setup”";
+    statusCell.append(help);
+  } else if (!profile.enabled) {
+    const help = document.createElement("span");
+    help.className = "codex-profile-row-help";
+    help.textContent = "Profile disabled — click “Enable” to refresh";
+    statusCell.append(help);
+  } else if (profile.status === "re-login-required" || profile.status === "identity-changed") {
+    const help = document.createElement("span");
+    help.className = "codex-profile-row-help danger";
+    help.textContent = "Auth required — click “Log in again”";
+    statusCell.append(help);
+  }
+
+  const actionsCell = document.createElement("td");
+  actionsCell.dataset.label = "Actions";
+  actionsCell.className = "codex-profile-observation-actions";
+  const redemptionStatus = profile.activeRedemption?.status;
+  const redemptionAllowsPrepare = !redemptionStatus || redemptionStatus === "not-found" || redemptionStatus === "terminal";
+  const actions: Array<[RowAction, string, boolean]> = profile.status === "cleanup-required"
+    ? [["delete", `Retry cleanup for ${profile.label}`, false]]
+    : [
+      ["save", `Save label for ${profile.label}`, false],
+      ...(profile.status === "pending"
+        ? [["continue", `Continue setup for ${profile.label}`, false] as [RowAction, string, boolean]]
+        : []),
+      ["refresh", `Refresh ${profile.label}`, profile.status === "pending" || !profile.enabled || !redemptionAllowsPrepare],
+      ...(profile.status === "identity-changed" || profile.status === "re-login-required"
+        ? [["relogin", `Log in again for ${profile.label}`, false] as [RowAction, string, boolean]] : []),
+      ["toggle", `${profile.enabled ? "Disable" : "Enable"} ${profile.label}`, profile.status === "pending" ||
+        profile.status === "identity-changed" || profile.status === "re-login-required"],
+      ["up", `Move ${profile.label} up`, profile.order === 0],
+      ["down", `Move ${profile.label} down`, profile.order === count - 1],
+      ["delete", `Delete ${profile.label}`, false],
+    ];
+  for (const [action, accessibleName, disabled] of actions) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.action = action;
     button.disabled = disabled;
     button.setAttribute("aria-label", accessibleName);
+    if (disabled) {
+      if (profile.status === "pending") {
+        button.title = "Setup incomplete: click 'Continue setup' to finish onboarding";
+      } else if (!profile.enabled) {
+        button.title = "Profile disabled: click 'Enable' to refresh";
+      }
+    }
     button.textContent = action === "toggle" ? (profile.enabled ? "Disable" : "Enable")
       : action === "save" ? "Save label"
-        : action === "refresh" ? "Refresh"
-          : action === "up" ? "↑"
-            : action === "down" ? "↓"
-              : action === "relogin" ? "Log in again"
-                : "Delete";
-      actionsCell.append(button);
-      }
-      const availableResets = profile.observation?.resetCredits.availableCount ?? 0;
-      const canPrepareReset = profile.enabled && availableResets > 0 && redemptionAllowsPrepare && [
-      "fresh",
-      "latest-known",
-      "refresh-needed",
-      "stale",
-    ].includes(profile.status);
-    if (canPrepareReset) {
-      const form = document.createElement("form");
-      form.className = "codex-profile-redemption-form";
-      form.dataset.codexRedemptionForm = "";
-      form.dataset.profileId = profile.profileId;
-      const attestation = document.createElement("label");
-      attestation.className = "codex-profile-redemption-attestation";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.dataset.codexWorkspaceAttestation = "";
-      const copy = document.createElement("span");
-      copy.textContent = `${profile.label} uses one ChatGPT workspace for Codex, and this is the workspace whose earned reset I intend to use.`;
-      attestation.append(checkbox, copy);
-      const review = document.createElement("button");
-      review.type = "submit";
-      review.className = "primary";
-      review.dataset.codexRedemptionPrepare = "";
-      review.disabled = true;
-      review.setAttribute("aria-label", `Review reset for ${profile.label}`);
-      review.textContent = "Review reset";
-        form.append(attestation, review);
-        actionsCell.prepend(form);
-      } else if (redemptionStatus && redemptionStatus !== "not-found" && redemptionStatus !== "terminal") {
-        const recovery = document.createElement("small");
-        recovery.className = "codex-profile-redemption-state";
-        recovery.textContent = `Reset redemption: ${redemptionStatus}.`;
-        actionsCell.prepend(recovery);
-      }
-    row.append(profileCell, accountCell, evidenceCell, resetsCell, statusCell, actionsCell);
+        : action === "continue" ? "Continue setup"
+          : action === "refresh" ? "Refresh"
+            : action === "up" ? "↑"
+              : action === "down" ? "↓"
+                : action === "relogin" ? "Log in again"
+                  : "Delete";
+    actionsCell.append(button);
+  }
+
+  if (redemptionStatus && redemptionStatus !== "not-found" && redemptionStatus !== "terminal") {
+    const recovery = document.createElement("small");
+    recovery.className = "codex-profile-redemption-state";
+    recovery.textContent = `Reset redemption: ${redemptionStatus}.`;
+    actionsCell.prepend(recovery);
+  }
+  row.append(profileCell, accountCell, evidenceCell, resetsCell, statusCell, actionsCell);
   return row;
 }
 
 export function setupCodexProfileObservations(options: {
+    onContinueSetup?: (profileId: string, label?: string) => void | Promise<void>;
     onReLogin?: (profileId: string) => void | Promise<void>;
     onRedemptionState?: (state: NonNullable<CodexProfileObservationRowView["activeRedemption"]>) => void;
   } = {}) {
@@ -186,26 +188,89 @@ export function setupCodexProfileObservations(options: {
   const rows = byId<HTMLTableSectionElement>("codex-profile-observation-rows");
   const refreshAllButton = byId<HTMLButtonElement>("refresh-all-codex-login-profiles");
   const cancelRefreshAllButton = byId<HTMLButtonElement>("cancel-refresh-all-codex-login-profiles");
+  const redemptionPanel = document.getElementById("codex-profile-redemption-panel");
   let current: CodexProfileObservationListView = { profiles: [], summary: summarizeCodexProfileObservations([]) };
   let busy = false;
 
+  const renderRedemptionPanel = () => {
+    if (!redemptionPanel) return;
+    redemptionPanel.replaceChildren();
+    let hasPanel = false;
+    for (const profile of current.profiles) {
+      const redemptionStatus = profile.activeRedemption?.status;
+      const redemptionAllowsPrepare = !redemptionStatus || redemptionStatus === "not-found" || redemptionStatus === "terminal";
+      const availableResets = profile.observation?.resetCredits.availableCount ?? 0;
+      const canPrepareReset = profile.enabled && availableResets > 0 && redemptionAllowsPrepare && [
+        "fresh",
+        "latest-known",
+        "refresh-needed",
+        "stale",
+      ].includes(profile.status);
+
+      if (canPrepareReset) {
+        hasPanel = true;
+        const card = document.createElement("div");
+        card.className = "codex-profile-redemption-card";
+
+        const title = document.createElement("h3");
+        title.className = "codex-profile-redemption-title";
+        title.textContent = `⚡ Redeem Usage Limit Reset Credit — ${profile.label}`;
+
+        const warning = document.createElement("p");
+        warning.className = "codex-profile-redemption-warning-copy";
+        warning.textContent = `Warning: Redeeming a reset credit permanently consumes an OpenAI entitlement. Availability checks above are safe and read-only. (${availableResets} available for ${profile.observation?.account.email ?? profile.label})`;
+
+        const form = document.createElement("form");
+        form.className = "codex-profile-redemption-form";
+        form.dataset.codexRedemptionForm = "";
+        form.dataset.profileId = profile.profileId;
+
+        const attestation = document.createElement("label");
+        attestation.className = "codex-profile-redemption-attestation";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.codexWorkspaceAttestation = "";
+
+        const copy = document.createElement("span");
+        copy.textContent = `${profile.label} uses one ChatGPT workspace for Codex, and this is the workspace whose earned reset I intend to use.`;
+
+        attestation.append(checkbox, copy);
+
+        const review = document.createElement("button");
+        review.type = "submit";
+        review.className = "primary danger-btn";
+        review.dataset.codexRedemptionPrepare = "";
+        review.disabled = true;
+        review.setAttribute("aria-label", `Review reset for ${profile.label}`);
+        review.textContent = "Review reset";
+
+        form.append(attestation, review);
+        card.append(title, warning, form);
+        redemptionPanel.append(card);
+      }
+    }
+    redemptionPanel.hidden = !hasPanel;
+  };
+
   const render = () => {
     const value = current.summary;
-      summary.textContent = `${value.total} profiles · ${value.profilesWithResets} with resets · ${value.fresh} fresh · ${value.refreshNeeded} refresh-needed · ${value.stale} stale · ${value.latestKnown} latest-known · ${value.pending} pending · ${value.reLoginRequired} re-login-required · ${value.identityChanged} identity-changed · ${value.cleanupRequired} cleanup-required · ${value.disabled} disabled · ${value.neverObserved} never-observed`;
+    summary.textContent = `${value.total} profiles · ${value.profilesWithResets} with resets · ${value.fresh} fresh · ${value.refreshNeeded} refresh-needed · ${value.stale} stale · ${value.latestKnown} latest-known · ${value.pending} pending · ${value.reLoginRequired} re-login-required · ${value.identityChanged} identity-changed · ${value.cleanupRequired} cleanup-required · ${value.disabled} disabled · ${value.neverObserved} never-observed`;
     rows.replaceChildren(...current.profiles.map((profile) => rowElement(profile, current.profiles.length)));
     if (current.profiles.length === 0) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
       cell.colSpan = 6;
       cell.className = "codex-profile-observation-empty";
-      cell.textContent = "No Codex Login Profiles yet. Add one to retain read-only usage evidence.";
+      cell.textContent = "No Reset Checker Profiles yet. Add one to retain read-only usage evidence.";
       row.append(cell);
       rows.append(row);
     }
+    renderRedemptionPanel();
   };
 
   const showError = (caught: unknown) => {
-    error.textContent = caught instanceof DashboardApiError ? caught.message : "Couldn’t load Codex Login Profiles.";
+    error.textContent = caught instanceof DashboardApiError ? caught.message : "Couldn’t load Reset Checker Profiles.";
     error.hidden = false;
   };
 
@@ -311,7 +376,10 @@ export function setupCodexProfileObservations(options: {
       error.hidden = true;
       rows.setAttribute("aria-busy", "true");
       try {
-        if (action === "refresh") {
+        if (action === "continue") {
+          await options.onContinueSetup?.(profileId, profile.label);
+          status.textContent = `Setup resumed for ${profile.label}.`;
+        } else if (action === "refresh") {
           status.textContent = `Refreshing ${profile.label}…`;
           replaceRow(await refreshCodexLoginProfile(profileId));
           status.textContent = `${profile.label} refreshed.`;

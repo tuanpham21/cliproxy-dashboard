@@ -12,7 +12,7 @@ import { resolveAccountPath } from "./paths.js";
 import { deriveCredentialFingerprint, decideRotation, isProvisionalResetCandidate, isRotationEligible } from "./rotation-policy.js";
 import { deriveProxyAccountKey, readQuotaSnapshotStoreFile } from "./quota-store.js";
 import { evaluateRotationObservationConsumption } from "./rotation-state-transitions.js";
-import type { ProvisionalResetAttempt, RotationAccountSnapshot, RotationDecision, RotationMode, RotationState, SemanticQuotaEvidence } from "./rotation-types.js";
+import type { ProvisionalResetAttempt, RotationAccountSnapshot, RotationDecision, RotationMode, RotationPoolMode, RotationState, SemanticQuotaEvidence } from "./rotation-types.js";
 import type { AccountView, DashboardOptions, PersistedQuotaSnapshot, PersistedQuotaWindowEvidence } from "./types.js";
 import { normalizeProxyAccountLocalIdentity } from "./util.js";
 
@@ -222,6 +222,7 @@ export class RotationCoordinator {
     const state = this.#controller.state();
     return {
       mode: state.mode,
+      poolMode: state.poolMode,
       lifecycle: state.lifecycle,
       pool: state.pool,
       ...(state.routingTargetKey ? { routingTargetKey: state.routingTargetKey } : {}),
@@ -485,6 +486,13 @@ export class RotationCoordinator {
       return await this.#controller.updatePool((pool) => pool.filter((member) => member.proxyAccountKey !== proxyAccountKey));
   }
 
+  async setPoolMode(poolMode: RotationPoolMode): Promise<RotationState> {
+    if (poolMode !== "manual") {
+      throw new Error("all-enabled-codex pool mode is no longer supported. Re-add accounts explicitly with exclusivity attestation.");
+    }
+    return await this.#controller.setPoolMode("manual");
+  }
+
   async enterManualHold(message: string): Promise<RotationState> {
     return await this.#controller.enterManualHold(message);
   }
@@ -523,7 +531,10 @@ export async function createRotationCoordinator(options: DashboardOptions): Prom
   const identityForFile = async (fileName: string) => {
     const raw = await readJsonObject(resolveAccountPath(paths.authDir, fileName));
     if (!raw) throw new Error(`Proxy Account credentials unavailable: ${fileName}`);
-    const { store } = await readQuotaSnapshotStoreFile(paths.quotaSnapshotStatePath);
+    const { store, initialized } = await readQuotaSnapshotStoreFile(paths.quotaSnapshotStatePath);
+    if (initialized) {
+      throw new Error("Proxy Account Key unavailable until quota snapshot state is initialized");
+    }
     const canonicalLocalIdentity = normalizeProxyAccountLocalIdentity(fileName);
     return {
       proxyAccountKey: deriveProxyAccountKey(store, canonicalLocalIdentity),

@@ -26,6 +26,10 @@ function metric(label: string, value: unknown, detail = ""): string {
   `;
 }
 
+function poolModeLabel(_poolMode: PublicRotationState["poolMode"]): string {
+  return "manual";
+}
+
 function renderPoolAccount(account: PublicAccountView, rotation: PublicRotationState): string {
   const proxyAccountKey = account.proxyAccountKey;
   const member = proxyAccountKey
@@ -88,11 +92,19 @@ export function renderRotationPanel(data: RotationPanelData): string {
         <button type="button" data-rotation-action="resume" class="primary">Resume</button>
         <button type="button" data-rotation-action="recover">Recover to Off</button>
       </div>
+      <div class="rotation-pool-mode-controls">
+        <button
+          type="button"
+          data-rotation-pool-mode="manual"
+          class="primary"
+          aria-pressed="true"
+        >manual pool</button>
+      </div>
     </div>
 
     <div class="rotation-statusline">
       <span class="badge ${lifecycleBadge(rotation.lifecycle)}">${escapeHtml(rotation.lifecycle)}</span>
-      <span class="muted small">Mode ${escapeHtml(rotation.mode)} · active writes ${rotation.canActivate ? "available" : "blocked"}</span>
+      <span class="muted small">Mode ${escapeHtml(rotation.mode)} · pool ${escapeHtml(poolModeLabel(rotation.poolMode))} · active writes ${rotation.canActivate ? "available" : "blocked"}</span>
     </div>
     ${pauseDetail ? `<div class="rotation-alert"><strong>Pause / recovery reason</strong><span>${escapeHtml(pauseDetail)}</span></div>` : ""}
 
@@ -101,6 +113,7 @@ export function renderRotationPanel(data: RotationPanelData): string {
       ${metric("Observed Routed Account", observed)}
       ${metric("Rotation-Eligible", rotation.eligibleCount)}
       ${metric("Provisional Reset", rotation.provisionalCount)}
+      ${metric("Pool Mode", poolModeLabel(rotation.poolMode))}
       ${metric("Quota Spread", rotation.quotaSpread === undefined ? "unknown" : `${rotation.quotaSpread} pp`)}
       ${metric("Journal", rotation.journal.phase, rotation.journal.intendedPriority === undefined ? journalTarget : `${journalTarget} · priority ${rotation.journal.intendedPriority}`)}
       ${metric("Restoration", rotation.restorationVerified ? "verified" : "not verified")}

@@ -3,6 +3,7 @@ import {
   ROTATION_JOURNAL_PHASES,
   ROTATION_LIFECYCLES,
   ROTATION_MODES,
+  ROTATION_POOL_MODES,
   ROTATION_PAUSE_REASONS,
   type RotationJournal,
   type RotationDecision,
@@ -164,6 +165,7 @@ function isDecision(value: unknown): value is RotationDecision {
 export function isRotationState(value: unknown): value is RotationState {
   if (!isRecord(value) || value.schemaVersion !== 1) return false;
   if (!(ROTATION_MODES as readonly unknown[]).includes(value.mode)) return false;
+  if (!(ROTATION_POOL_MODES as readonly unknown[]).includes(value.poolMode)) return false;
   if (!(ROTATION_LIFECYCLES as readonly unknown[]).includes(value.lifecycle)) return false;
   if (!Array.isArray(value.pool) || !value.pool.every(isPoolMember)) return false;
       if (!Array.isArray(value.audit) || !value.audit.every(isAuditEvent)) return false;

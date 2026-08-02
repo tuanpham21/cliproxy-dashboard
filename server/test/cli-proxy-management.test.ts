@@ -182,8 +182,25 @@ describe("CLIProxy management priority adapter", () => {
       managementKey: "synthetic-management-key",
       fetchImpl: async () => response({ error: "unauthorized" }, 401),
         fingerprintResolver: () => "fp-a",
-    });
+     });
     await expect(badAuth.readAccounts()).rejects.toThrow(/authentication/i);
+  });
+
+  it("filters out non-codex credential files returned by the management API", async () => {
+    const writer = createCliProxyManagementWriter({
+      baseUrl: "http://127.0.0.1:8317",
+      managementKey: "synthetic-management-key",
+      fetchImpl: async () => response({
+        files: [
+          { name: "codex-a.json", priority: 10, priority_present: true, revision: "revision-1", disabled: false, note: "keep" },
+          { name: "cliproxy-dashboard/quota-snapshots.json", priority: 0, priority_present: false, revision: "revision-1", disabled: false }
+        ]
+      }),
+      fingerprintResolver: () => "fp-a",
+    });
+    const accounts = await writer.readAccounts();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0].fileName).toBe("codex-a.json");
   });
 
   it("fails closed on revision conflict, routing incompatibility, target mismatch, and re-read mismatch", async () => {

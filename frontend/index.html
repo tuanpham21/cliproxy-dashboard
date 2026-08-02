@@ -10,6 +10,18 @@
     <header>
       <div class="header-title-area">
         <h1>Cliproxy Dashboard</h1>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="cliproxy-dashboard-token" content="__CLIPROXY_OPERATOR_TOKEN__" />
+    <title>Cliproxy Dashboard</title>
+  </head>
+  <body>
+    <header>
+      <div class="header-title-area">
+        <h1>Cliproxy Dashboard</h1>
         <div class="subtitle">Local Proxy Account priority, routing config, and recent selector logs.</div>
       </div>
       <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle theme" type="button"></button>
@@ -18,7 +30,10 @@
     <main>
       <section>
         <div class="section-title">
-          <h2>Accounts</h2>
+          <div>
+            <h2>Proxy Routing Accounts</h2>
+            <div class="subtitle">Accounts used by CLIProxy for API request routing and quota usage.</div>
+          </div>
           <div class="account-title-meta">
             <span class="badge neutral" id="account-count"></span>
             <span class="badge neutral" id="selected-account"></span>
@@ -47,14 +62,15 @@
           <section id="codex-login-profiles-section" aria-labelledby="codex-login-profiles-title">
             <div class="section-title">
               <div>
-                <h2 id="codex-login-profiles-title">Codex Login Profiles</h2>
-                <p class="muted small codex-profile-onboarding-copy">Add an isolated Codex app login. The dashboard uses the official browser login and never receives tokens or profile paths.</p>
+                <h2 id="codex-login-profiles-title">Reset Checker Profiles</h2>
+                <p class="muted small codex-profile-onboarding-copy">Isolated Codex browser logins used only to check reset-credit availability. Read-only checks never spend model quota or redeem reset credits.</p>
               </div>
-              <button type="button" id="add-codex-login-profile" class="small">Add Codex Login Profile</button>
+              <button type="button" id="add-codex-login-profile" class="small">Add Reset Checker Profile</button>
             </div>
-            <p id="codex-profile-onboarding-status" class="codex-profile-onboarding-status" role="status" aria-live="polite" aria-atomic="true" aria-label="Codex profile onboarding status">No Codex Login Profile onboarding is active.</p>
+            <p id="codex-profile-onboarding-status" class="codex-profile-onboarding-status" role="status" aria-live="polite" aria-atomic="true" aria-label="Codex profile onboarding status">No Reset Checker Profile onboarding is active.</p>
             <p id="codex-profile-onboarding-error" class="codex-profile-onboarding-error" role="alert" aria-label="Codex profile onboarding error" hidden></p>
             <div id="codex-profile-onboarding-workspace" class="codex-profile-onboarding-workspace" hidden>
+              <div id="codex-profile-onboarding-stepper" class="codex-profile-onboarding-stepper" aria-label="Onboarding progress"></div>
               <p id="codex-profile-onboarding-instructions"></p>
               <dl id="codex-profile-candidate-details" class="codex-profile-candidate-details" hidden>
                 <div><dt>Account email</dt><dd id="codex-profile-candidate-email"></dd></div>
@@ -75,16 +91,16 @@
               </div>
             </div>
               <div class="codex-profile-observation-header">
-                <p id="codex-profile-observation-summary" class="codex-profile-observation-summary">Loading Codex Login Profiles…</p>
+                <p id="codex-profile-observation-summary" class="codex-profile-observation-summary">Loading Reset Checker Profiles…</p>
                 <div class="codex-profile-refresh-all-actions">
-                  <button type="button" id="refresh-all-codex-login-profiles" class="small" aria-label="Refresh all Codex Login Profiles">Refresh all</button>
+                  <button type="button" id="refresh-all-codex-login-profiles" class="small" aria-label="Refresh all Reset Checker Profiles">Refresh all</button>
                   <button type="button" id="cancel-refresh-all-codex-login-profiles" class="small" aria-label="Cancel refresh all" disabled>Cancel refresh</button>
                 </div>
                 <p id="codex-profile-observation-status" class="muted small" role="status" aria-live="polite" aria-atomic="true" aria-label="Codex profile refresh status"></p>
             </div>
             <p id="codex-profile-observation-error" class="codex-profile-observation-error" role="alert" hidden></p>
             <div class="codex-profile-observation-table-wrap">
-              <table class="codex-profile-observation-table" aria-label="Codex Login Profile evidence">
+              <table class="codex-profile-observation-table" aria-label="Reset Checker Profile evidence">
                 <thead>
                   <tr>
                     <th>Profile</th>
@@ -98,13 +114,14 @@
                 <tbody id="codex-profile-observation-rows"></tbody>
               </table>
             </div>
+            <div id="codex-profile-redemption-panel" class="codex-profile-redemption-panel" hidden></div>
           </section>
 
           <section id="codex-app-account-section" aria-labelledby="codex-app-account-title">
           <div class="section-title">
             <div>
-              <h2 id="codex-app-account-title">Codex app account</h2>
-              <p class="muted small codex-panel-copy">Account signed into the local Codex app. Actions here do not affect or select Proxy Accounts.</p>
+              <h2 id="codex-app-account-title">Current Local Codex App Login</h2>
+              <p class="muted small codex-panel-copy">Account currently signed into your local Codex CLI app (~/.codex). Actions here do not affect or select Proxy Routing Accounts.</p>
             </div>
             <button type="button" id="refresh-codex-account-btn" class="small">Refresh Codex usage</button>
           </div>

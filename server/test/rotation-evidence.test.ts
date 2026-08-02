@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { parseQuotaResponseEvidence } from "../quota-log-updates.js";
+import { getResponseHeaderNumber, parseQuotaResponseEvidence } from "../quota-log-updates.js";
 
 describe("duration-bound quota evidence", () => {
   const observedAt = Date.parse("2026-07-15T00:00:00.000Z");
+
+  it("treats blank numeric headers as missing while preserving literal zero", () => {
+    expect(getResponseHeaderNumber(["X-Codex-Primary-Window-Minutes:   "], "X-Codex-Primary-Window-Minutes")).toBeUndefined();
+    expect(getResponseHeaderNumber(["X-Codex-Primary-Window-Minutes: 0"], "X-Codex-Primary-Window-Minutes")).toBe(0);
+  });
 
   it("recognizes weekly-only Primary and reversed slots by duration", () => {
     const primaryWeekly = parseQuotaResponseEvidence([
@@ -12,7 +17,7 @@ describe("duration-bound quota evidence", () => {
       "X-Codex-Primary-Reset-After-Seconds: 604800",
     ], observedAt, "response-1", "fp-a");
     expect(primaryWeekly.weekly).toMatchObject({ usedPercent: 18.25, durationMinutes: 10080, windowKind: "weekly", providerSlot: "primary", credentialFingerprint: "fp-a" });
-    expect(primaryWeekly.weekly?.migrationOnly).toBe(false);
+    expect(primaryWeekly.weekly?.migrationOnly).not.toBe(true);
 
     const secondaryFiveHour = parseQuotaResponseEvidence([
       "X-Codex-Secondary-Used-Percent: 4.5",

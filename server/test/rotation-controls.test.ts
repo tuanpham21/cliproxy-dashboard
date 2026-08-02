@@ -4,8 +4,11 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { readAccounts } from "../accounts.js";
 import { handleApi } from "../api.js";
 import { readDashboardState } from "../dashboard-state.js";
+import { readMergedQuotaSnapshots } from "../quota-log-updates.js";
+import { resolveDashboardPaths } from "../paths.js";
 import { openRotationController } from "../rotation-controller.js";
 import { createRotationCoordinator, RotationCoordinator } from "../rotation-coordinator.js";
 import { coordinateManualRoutingAction } from "../rotation-api.js";
@@ -17,6 +20,12 @@ function request(method: string, url: string, body?: Record<string, unknown>): I
   req.url = url;
   req.headers = sameOriginHeaders(true);
   return req;
+}
+
+async function initializeQuotaSnapshotStore(configPath: string, authDir: string): Promise<void> {
+  const paths = await resolveDashboardPaths({ configPath, authDir });
+  const accountsResult = await readAccounts(authDir);
+  await readMergedQuotaSnapshots(paths, accountsResult.accounts, undefined, [], false);
 }
 
 describe("rotation controls", () => {
@@ -76,6 +85,7 @@ describe("rotation controls", () => {
       const authDir = path.join(root, "auth");
       const configPath = await writeConfig(root, authDir);
       await writeAccountFile(authDir, "codex-fixture.json", { validity_status: "valid" });
+      await initializeQuotaSnapshotStore(configPath, authDir);
       const coordinator = await createRotationCoordinator({ configPath, authDir });
       const proxyAccountKey = (await readDashboardState({ configPath, authDir })).accounts[0]?.proxyAccountKey;
       if (!proxyAccountKey) throw new Error("synthetic Proxy Account Key unavailable");
@@ -101,7 +111,45 @@ describe("rotation controls", () => {
     expect(coordinator.publicState().audit.map((event) => event.kind)).toEqual(expect.arrayContaining(["observation", "resume", "hold", "decision"]));
     await expect(coordinator.setMode("active")).rejects.toThrow(/management key/i);
       await coordinator.removePoolMember(proxyAccountKey);
-    expect(coordinator.publicState().pool).toEqual([]);
+      expect(coordinator.publicState().pool).toEqual([]);
+    await coordinator.close();
+  });
+
+  it("rejects legacy all-enabled-codex pool mode", async () => {
+    const root = await makeTempRoot();
+    const authDir = path.join(root, "auth");
+    const configPath = await writeConfig(root, authDir);
+    await writeAccountFile(authDir, "codex-alpha-pro.json", { validity_status: "valid" });
+    const coordinator = await createRotationCoordinator({ configPath, authDir });
+
+    await expect(coordinator.setPoolMode("all-enabled-codex" as never)).rejects.toThrow(/all-enabled-codex pool mode is no longer supported/i);
+    expect(coordinator.publicState().poolMode).toBe("manual");
+    await coordinator.close();
+  });
+
+  it("rejects legacy all-enabled-codex pool mode through the HTTP API", async () => {
+    const root = await makeTempRoot();
+    const authDir = path.join(root, "auth");
+    const configPath = await writeConfig(root, authDir);
+    await writeAccountFile(authDir, "codex-alpha-pro.json", { validity_status: "valid" });
+    const coordinator = await createRotationCoordinator({ configPath, authDir });
+    const response = makeMockRes();
+
+    await handleApi(
+      request("POST", "/api/rotation/pool-mode", { poolMode: "all-enabled-codex", exclusivityAttested: true }),
+      response.res as unknown as ServerResponse,
+      {
+        configPath,
+        authDir,
+        operatorToken: TEST_OPERATOR_TOKEN,
+        host: "127.0.0.1",
+        rotationCoordinator: coordinator,
+      },
+    );
+
+    expect(response.getStatus()).toBe(400);
+    expect(response.getParsed().error).toMatch(/all-enabled-codex pool mode is no longer supported/i);
+    expect(coordinator.publicState()).toMatchObject({ poolMode: "manual", pool: [] });
     await coordinator.close();
   });
 
@@ -112,6 +160,7 @@ describe("rotation controls", () => {
     const fileName = "codex-controls@example.com.json";
     await writeAccountFile(authDir, fileName, { priority: 10 });
     const configPath = await writeConfig(root, authDir);
+      await initializeQuotaSnapshotStore(configPath, authDir);
       const coordinator = await createRotationCoordinator({ configPath, authDir });
       const proxyAccountKey = (await readDashboardState({ configPath, authDir })).accounts[0]?.proxyAccountKey;
       if (!proxyAccountKey) throw new Error("synthetic Proxy Account Key unavailable");

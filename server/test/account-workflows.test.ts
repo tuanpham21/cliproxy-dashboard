@@ -5,8 +5,11 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 
+import { readAccounts } from "../accounts.js";
 import { handleApi } from "../api.js";
 import { readDashboardState } from "../dashboard-state.js";
+import { readMergedQuotaSnapshots } from "../quota-log-updates.js";
+import { resolveDashboardPaths } from "../paths.js";
 import { spawnCalls } from "./mock-child-process.js";
 import {
   TEST_OPERATOR_TOKEN,
@@ -21,6 +24,11 @@ import {
   writeQuotaResponseLog,
 } from "./helpers.js";
 
+async function initializeQuotaSnapshotStore(configPath: string, authDir: string): Promise<void> {
+  const paths = await resolveDashboardPaths({ configPath, authDir });
+  const accountsResult = await readAccounts(authDir);
+  await readMergedQuotaSnapshots(paths, accountsResult.accounts, undefined, [], false);
+}
 
 describe("cliproxy dashboard account workflows and logs", () => {
   it("tracks the latest Codex selection from the service log", async () => {
@@ -505,8 +513,10 @@ describe("cliproxy dashboard account workflows and logs", () => {
         `Auth: provider=codex, auth_id=${fileName}, label=test, type=oauth`,
         "X-Codex-Primary-Used-Percent: 35",
         "X-Codex-Primary-Reset-After-Seconds: 3600",
+        "X-Codex-Primary-Window-Minutes: 300",
         "X-Codex-Secondary-Used-Percent: 12",
         "X-Codex-Secondary-Reset-After-Seconds: 86400",
+        "X-Codex-Secondary-Window-Minutes: 10080",
       ].join("\n")
     );
 
@@ -532,6 +542,7 @@ describe("cliproxy dashboard account workflows and logs", () => {
       })
     );
 
+    await initializeQuotaSnapshotStore(configPath, authDir);
     const state = await readDashboardState({
       configPath,
       proxyUrl: "http://proxy.local",

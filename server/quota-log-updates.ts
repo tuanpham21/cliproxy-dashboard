@@ -6,9 +6,23 @@ import { responseAuthPattern, responseLogFilePattern, responseTimestampPattern }
 import { validateQuotaSnapshotStatePath } from "./paths.js";
 import { classifyQuotaWindow, deriveCredentialFingerprint, hasVerifiedCredentialIdentity } from "./rotation-policy.js";
 import type { ObservedRoutedAccountRoute } from "./rotation-types.js";
-import { atomicWriteOwnerOnlyJson, createEmptyQuotaSnapshotStore, deriveProxyAccountKey, hasQuotaEvidence, mergeQuotaWindowEvidence, readQuotaSnapshotStoreFile, withQuotaSnapshotStateLock } from "./quota-store.js";
+import { atomicWriteOwnerOnlyJson, deriveProxyAccountKey, hasQuotaEvidence, mergeQuotaWindowEvidence, readQuotaSnapshotStoreFile, withQuotaSnapshotStateLock } from "./quota-store.js";
 import type { AccountView, DashboardPaths, PersistedQuotaSnapshot, PersistedQuotaSnapshotStore, PersistedQuotaWindowEvidence, QuotaSnapshotUpdate } from "./types.js";
 import { normalizeProxyAccountLocalIdentity, normalizeUsedPercent } from "./util.js";
+
+type MergedQuotaSnapshots = {
+  snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>;
+  proxyAccountKeysByCanonicalIdentity: Map<string, string>;
+  errors: string[];
+};
+
+function emptyMergedQuotaSnapshots(errors: string[] = []): MergedQuotaSnapshots {
+  return {
+    snapshotsByCanonicalIdentity: new Map(),
+    proxyAccountKeysByCanonicalIdentity: new Map(),
+    errors,
+  };
+}
 
 export function parseResponseTimestampMs(lines: string[], fallbackMs: number): number {
   const timestampLine = lines.find((line) => responseTimestampPattern.test(line.trim()));
@@ -23,12 +37,16 @@ export function getResponseHeaderNumber(lines: string[], name: string): number |
   if (!line) {
     return undefined;
   }
-  const value = Number(line.slice(line.indexOf(":") + 1).trim());
+  const raw = line.slice(line.indexOf(":") + 1).trim();
+  if (raw === "") {
+    return undefined;
+  }
+  const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
 }
 
 export function epochHeaderToIso(value: number | undefined): string | undefined {
-  if (value === undefined || value < 0) {
+  if (value === undefined || value <= 0) {
     return undefined;
   }
   const epochMs = value > 1_000_000_000_000 ? value : value * 1000;
@@ -70,21 +88,44 @@ function getHeaderNumberAny(lines: string[], names: string[]): number | undefine
   return undefined;
 }
 
-function durationMinutesFromHeaders(lines: string[], slot: "primary" | "secondary"): number | undefined {
+function durationMinutesFromHeaders(lines: string[], slot: "primary" | "secondary", observedMs: number): number | undefined {
   const prefix = slot === "primary" ? "X-Codex-Primary" : "X-Codex-Secondary";
   const direct = getHeaderNumberAny(lines, [
     `${prefix}-Window-Minutes`,
     `${prefix}-Window-Duration-Minutes`,
     `${prefix}-Limit-Window-Minutes`,
   ]);
-  if (direct !== undefined) {
+  if (direct !== undefined && direct > 0) {
     return direct;
   }
   const seconds = getHeaderNumberAny(lines, [
     `${prefix}-Window-Seconds`,
     `${prefix}-Window-Duration-Seconds`,
   ]);
-  return seconds === undefined ? undefined : seconds / 60;
+  if (seconds !== undefined && seconds > 0) {
+    return seconds / 60;
+  }
+  const resetAfterSeconds = getHeaderNumberAny(lines, [
+    `${prefix}-Reset-After-Seconds`,
+    `${prefix}-Reset-After`,
+  ]);
+  if (resetAfterSeconds !== undefined && resetAfterSeconds > 0) {
+    const minutes = resetAfterSeconds / 60;
+    if (Math.abs(minutes - 10080) <= 60) return 10080;
+    if (Math.abs(minutes - 300) <= 15) return 300;
+    return minutes;
+  }
+  const resetAtRaw = getResponseHeaderNumber(lines, `${prefix}-Reset-At`);
+  if (resetAtRaw !== undefined && resetAtRaw > 0 && observedMs !== undefined) {
+    const diffSeconds = resetAtRaw - Math.floor(observedMs / 1000);
+    if (diffSeconds > 0) {
+      const minutes = diffSeconds / 60;
+      if (Math.abs(minutes - 10080) <= 60) return 10080;
+      if (Math.abs(minutes - 300) <= 15) return 300;
+      return minutes;
+    }
+  }
+  return undefined;
 }
 
 function evidenceIdFor(lines: string[], responseId: string, slot: string): string {
@@ -128,7 +169,7 @@ function semanticEvidenceForSlot(
       const resetAfter = getResponseHeaderNumber(lines, `${prefix}-Reset-After-Seconds`);
       return resetAfter === undefined ? undefined : new Date(observedMs + resetAfter * 1000).toISOString();
     })();
-  const durationMinutes = durationMinutesFromHeaders(lines, slot);
+  const durationMinutes = durationMinutesFromHeaders(lines, slot, observedMs);
   const windowKind = classifyQuotaWindow(durationMinutes);
   return {
     usedPercent,
@@ -142,7 +183,7 @@ function semanticEvidenceForSlot(
     evidenceId: evidenceIdFor(lines, responseId, slot),
     credentialFingerprint,
     continuity: "continuous",
-    migrationOnly: windowKind === "unknown",
+    ...(windowKind === "unknown" ? { migrationOnly: true } : {}),
     schemaVersion: 2,
   };
 }
@@ -265,7 +306,6 @@ export function mergeQuotaSnapshotUpdates(
   const accountByCanonicalIdentity = new Map<string, AccountView>();
   const fingerprintByCanonicalIdentity = new Map<string, string>();
   const baselineByKey = new Map(store.credentialBaselines.map((baseline) => [baseline.proxyAccountKey, baseline]));
-  const baselineNow = new Date().toISOString();
   for (const account of accounts) {
     const canonicalIdentity = normalizeProxyAccountLocalIdentity(account.fileName);
     if (!keyByCanonicalIdentity.has(canonicalIdentity)) {
@@ -275,6 +315,13 @@ export function mergeQuotaSnapshotUpdates(
       if (hasVerifiedCredentialIdentity(account.raw)) {
         const credentialFingerprint = deriveCredentialFingerprint(store.keyDerivation.secret, account.fileName, account.raw);
         fingerprintByCanonicalIdentity.set(canonicalIdentity, credentialFingerprint);
+        const currentEvidenceMs = updates
+          .filter((update) => update.canonicalLocalIdentity === canonicalIdentity)
+          .flatMap((update) => [update.primary5h?.observedAt, update.weekly?.observedAt])
+          .filter((value): value is string => Boolean(value))
+          .map((observedAt) => Date.parse(observedAt))
+          .filter((ms) => Number.isFinite(ms));
+        const establishedMs = currentEvidenceMs.length > 0 ? Math.min(Date.now(), ...currentEvidenceMs) : Date.now();
         const currentEvidenceIds = updates
           .filter((update) => update.canonicalLocalIdentity === canonicalIdentity)
           .flatMap((update) => [update.primary5h?.evidenceId, update.weekly?.evidenceId])
@@ -284,8 +331,8 @@ export function mergeQuotaSnapshotUpdates(
           baselineByKey.set(proxyAccountKey, {
             proxyAccountKey,
             credentialFingerprint,
-            establishedAt: baselineNow,
-            seenEvidenceIds: [...new Set(currentEvidenceIds)].slice(-256),
+            establishedAt: new Date(establishedMs).toISOString(),
+            seenEvidenceIds: [],
           });
           const snapshot = snapshotsByKey.get(proxyAccountKey);
           if (snapshot?.credentialFingerprint && snapshot.credentialFingerprint !== credentialFingerprint) {
@@ -316,9 +363,17 @@ export function mergeQuotaSnapshotUpdates(
       if (evidence.migrationOnly) {
         return {
           ...(evidence.usedPercent === undefined ? {} : { usedPercent: evidence.usedPercent }),
+          ...(evidence.rawUsedPercent === undefined ? {} : { rawUsedPercent: evidence.rawUsedPercent }),
           ...(evidence.resetAt ? { resetAt: evidence.resetAt } : {}),
           observedAt: evidence.observedAt,
           source: evidence.source,
+          ...(evidence.debugStatus === undefined ? {} : { debugStatus: evidence.debugStatus }),
+          ...(evidence.durationMinutes === undefined ? {} : { durationMinutes: evidence.durationMinutes }),
+          ...(evidence.windowKind === undefined ? {} : { windowKind: evidence.windowKind }),
+          ...(evidence.providerSlot === undefined ? {} : { providerSlot: evidence.providerSlot }),
+          ...(evidence.continuity === undefined ? {} : { continuity: evidence.continuity }),
+          migrationOnly: true,
+          ...(evidence.schemaVersion === undefined ? {} : { schemaVersion: evidence.schemaVersion }),
         };
       }
       const evidenceObservedMs = Date.parse(evidence.observedAt);
@@ -336,10 +391,10 @@ export function mergeQuotaSnapshotUpdates(
         ? evidence
         : canBindCurrentCredential
           ? { ...evidence, credentialFingerprint }
-            : (() => {
-                const { credentialFingerprint: _ignored, ...unbound } = evidence;
-                return unbound;
-              })();
+          : (() => {
+              const { credentialFingerprint: _ignored, ...unbound } = evidence;
+              return unbound;
+            })();
     };
     let semanticEvidenceAccepted = false;
     let boundSemanticEvidenceAccepted = false;
@@ -360,19 +415,19 @@ export function mergeQuotaSnapshotUpdates(
       const mergedEvidence = mergeQuotaWindowEvidence(snapshot, windowName, evidence);
       changed = mergedEvidence || changed;
       const semanticMerged = Boolean(mergedEvidence && evidence?.windowKind && evidence.windowKind !== "unknown");
-        semanticEvidenceAccepted = semanticEvidenceAccepted || semanticMerged;
-        boundSemanticEvidenceAccepted = boundSemanticEvidenceAccepted || Boolean(semanticMerged && evidence?.credentialFingerprint);
+      semanticEvidenceAccepted = semanticEvidenceAccepted || semanticMerged;
+      boundSemanticEvidenceAccepted = boundSemanticEvidenceAccepted || Boolean(semanticMerged && evidence?.credentialFingerprint);
       unboundSemanticEvidenceAccepted = unboundSemanticEvidenceAccepted || Boolean(semanticMerged && !evidence?.credentialFingerprint);
       if (evidence?.evidenceId && baseline && !baseline.seenEvidenceIds.includes(evidence.evidenceId)) {
         baseline.seenEvidenceIds = [...baseline.seenEvidenceIds, evidence.evidenceId].slice(-256);
         changed = true;
       }
-      }
-      const continuityToRecord = unboundSemanticEvidenceAccepted
-        ? "broken"
-        : update.continuity === "uncertain" && snapshot.credentialFingerprint
-        ? "broken"
-        : update.continuity;
+    }
+    const continuityToRecord = unboundSemanticEvidenceAccepted
+      ? "broken"
+      : update.continuity === "uncertain" && snapshot.credentialFingerprint
+      ? "broken"
+      : update.continuity;
     const tracksRotationContinuity = semanticEvidenceAccepted || continuityToRecord === "broken";
     const updateObservedMs = update.observedAt ? Date.parse(update.observedAt) : 0;
     const currentObservedMs = snapshot.lastObservationAt ? Date.parse(snapshot.lastObservationAt) : 0;
@@ -390,17 +445,17 @@ export function mergeQuotaSnapshotUpdates(
         changed = true;
       }
     }
-      if (boundSemanticEvidenceAccepted && credentialFingerprint) {
-        const identityChanged = snapshot.credentialFingerprint !== credentialFingerprint || snapshot.identityMismatch;
-        if (identityChanged) {
-          snapshot.credentialFingerprint = credentialFingerprint;
-          delete snapshot.identityMismatch;
-          changed = true;
-        }
-        if ((identityChanged || !snapshot.continuityStartedAt) && update.observedAt) {
-          snapshot.continuityStartedAt = update.observedAt;
-          changed = true;
-        }
+    if (boundSemanticEvidenceAccepted && credentialFingerprint) {
+      const identityChanged = snapshot.credentialFingerprint !== credentialFingerprint || snapshot.identityMismatch;
+      if (identityChanged) {
+        snapshot.credentialFingerprint = credentialFingerprint;
+        delete snapshot.identityMismatch;
+        changed = true;
+      }
+      if ((identityChanged || !snapshot.continuityStartedAt) && update.observedAt) {
+        snapshot.continuityStartedAt = update.observedAt;
+        changed = true;
+      }
     }
   }
 
@@ -460,7 +515,7 @@ export function mergeQuotaSnapshotUpdates(
       snapshotsByCanonicalIdentity.set(canonicalIdentity, snapshot);
     }
   }
-    return { snapshotsByCanonicalIdentity, proxyAccountKeysByCanonicalIdentity: keyByCanonicalIdentity, changed };
+  return { snapshotsByCanonicalIdentity, proxyAccountKeysByCanonicalIdentity: keyByCanonicalIdentity, changed };
 }
 
 export async function readMergedQuotaSnapshots(
@@ -468,9 +523,10 @@ export async function readMergedQuotaSnapshots(
   accounts: AccountView[],
   beforeWrite?: () => Promise<void> | void,
   completedRoutes: ObservedRoutedAccountRoute[] = [],
-  ): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; proxyAccountKeysByCanonicalIdentity: Map<string, string>; errors: string[] }> {
+  readOnly = true,
+): Promise<MergedQuotaSnapshots> {
   const updates = await readResponseHeaderQuotaUpdates(paths.logsDir);
-  return await mergeObservedQuotaUpdates(paths, accounts, updates, completedRoutes, beforeWrite);
+  return await mergeObservedQuotaUpdates(paths, accounts, updates, completedRoutes, beforeWrite, readOnly);
 }
 
 export async function mergeObservedQuotaUpdates(
@@ -479,32 +535,31 @@ export async function mergeObservedQuotaUpdates(
   updates: QuotaSnapshotUpdate[],
   completedRoutes: ObservedRoutedAccountRoute[] = [],
   beforeWrite?: () => Promise<void> | void,
-  ): Promise<{ snapshotsByCanonicalIdentity: Map<string, PersistedQuotaSnapshot>; proxyAccountKeysByCanonicalIdentity: Map<string, string>; errors: string[] }> {
+  readOnly = false,
+): Promise<MergedQuotaSnapshots> {
   const stateFilePath = paths.quotaSnapshotStatePath;
 
   try {
-    return await withQuotaSnapshotStateLock(stateFilePath, async () => {
-      await validateQuotaSnapshotStatePath(stateFilePath, paths.authDir, paths.configPath);
-      const { store, error, dirty } = await readQuotaSnapshotStoreFile(stateFilePath);
-        const merged = mergeQuotaSnapshotUpdates(store, accounts, updates, completedRoutes);
-      if (dirty || merged.changed) {
+    await validateQuotaSnapshotStatePath(stateFilePath, paths.authDir, paths.configPath);
+    const runMerge = async () => {
+      const { store, error, dirty, initialized } = await readQuotaSnapshotStoreFile(stateFilePath);
+      if (readOnly && initialized) {
+        return emptyMergedQuotaSnapshots(error ? [error] : []);
+      }
+      const merged = mergeQuotaSnapshotUpdates(store, accounts, updates, completedRoutes);
+      if (!readOnly && (dirty || merged.changed)) {
         await beforeWrite?.();
         await atomicWriteOwnerOnlyJson(stateFilePath, store);
       }
-        return {
-          snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
-          proxyAccountKeysByCanonicalIdentity: merged.proxyAccountKeysByCanonicalIdentity,
-          errors: error ? [error] : [],
-      };
-    });
-  } catch (error) {
-    const store = createEmptyQuotaSnapshotStore();
-      const merged = mergeQuotaSnapshotUpdates(store, accounts, updates, completedRoutes);
-    const message = error instanceof Error ? error.message : String(error);
       return {
         snapshotsByCanonicalIdentity: merged.snapshotsByCanonicalIdentity,
         proxyAccountKeysByCanonicalIdentity: merged.proxyAccountKeysByCanonicalIdentity,
-        errors: [`Quota snapshot state store unavailable: ${message}`],
+        errors: error ? [error] : [],
+      };
     };
+    return readOnly ? await runMerge() : await withQuotaSnapshotStateLock(stateFilePath, runMerge);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return emptyMergedQuotaSnapshots([`Quota snapshot state store unavailable: ${message}`]);
   }
 }

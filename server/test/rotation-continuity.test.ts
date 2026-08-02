@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import { readDashboardState } from "../dashboard-state.js";
 import { readCompletedCodexRoutes } from "../logs.js";
+import { readAccounts } from "../accounts.js";
+import { readMergedQuotaSnapshots } from "../quota-log-updates.js";
 import {
   makeTempRoot,
   responseLogFixture,
@@ -12,6 +14,18 @@ import {
   writeConfig,
   writeQuotaResponseLog,
 } from "./helpers.js";
+
+async function persistDashboardState(configPath: string, authDir: string) {
+  const paths = {
+    configPath,
+    authDir,
+    logsDir: path.join(authDir, "logs"),
+    quotaSnapshotStatePath: path.join(authDir, "cliproxy-dashboard", "quota-snapshots.json"),
+    proxyUrl: "http://proxy.local",
+  };
+  const accountsResult = await readAccounts(authDir);
+  await readMergedQuotaSnapshots(paths, accountsResult.accounts, undefined, [], false);
+}
 
 describe("rotation evidence identity and Observation Continuity", () => {
   it("recognizes weekly-only Primary and keeps positional legacy display-only", async () => {
@@ -22,7 +36,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
     await writeAccountFile(authDir, fileName, { refresh_token: "fixture-refresh-weekly" });
     const configPath = await writeConfig(root, authDir);
     stubModelList();
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
+    await persistDashboardState(configPath, authDir);
 
     await writeQuotaResponseLog(logsDir, "v1-responses-weekly.log", fileName, {
       timestamp: new Date().toISOString(),
@@ -30,6 +44,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
     const semantic = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     expect(semantic.accounts[0].quota.weekly).toMatchObject({
       status: "current",
@@ -50,7 +65,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
     });
     const legacy = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     expect(legacy.accounts[0].quota.primary5h).toMatchObject({ usedPercent: 7, migrationOnly: true, identityBound: false });
-    expect(legacy.accounts[0].quota.weekly).toMatchObject({ usedPercent: 18.25, status: "blocked", continuity: "broken" });
+    expect(legacy.accounts[0].quota.weekly).toMatchObject({ usedPercent: 18.25, status: "stale", continuity: "broken" });
   });
 
   it("blocks retained rotation authority after credential replacement under same filename", async () => {
@@ -61,13 +76,14 @@ describe("rotation evidence identity and Observation Continuity", () => {
     await writeAccountFile(authDir, fileName, { refresh_token: "fixture-refresh-before" });
     const configPath = await writeConfig(root, authDir);
     stubModelList();
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
+    await persistDashboardState(configPath, authDir);
     await writeQuotaResponseLog(logsDir, "v1-responses-before.log", fileName, {
       timestamp: new Date().toISOString(),
       primaryUsedPercent: 22,
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
     const first = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     expect(first.accounts[0].quota.weekly.status).toBe("current");
 
@@ -84,7 +100,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       await writeFile(accountPath, `${JSON.stringify(replacement, null, 2)}\n`);
 
       const replaced = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
-    expect(replaced.accounts[0].quota.weekly).toMatchObject({ usedPercent: 22, status: "blocked", continuity: "broken", identityBound: false });
+    expect(replaced.accounts[0].quota.weekly).toMatchObject({ usedPercent: 22, status: "stale", continuity: "broken", identityBound: false });
 
     await writeQuotaResponseLog(logsDir, "v1-responses-after.log", fileName, {
       timestamp: new Date(Date.now() + 1000).toISOString(),
@@ -92,6 +108,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
     const rebound = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     expect(rebound.accounts[0].quota.weekly).toMatchObject({ usedPercent: 6, status: "current", continuity: "continuous", identityBound: true });
   });
@@ -110,6 +127,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
       const accountPath = path.join(authDir, fileName);
       const replacement = JSON.parse(await readFile(accountPath, "utf8"));
       replacement.refresh_token = "fixture-refresh-cold-after";
@@ -118,7 +136,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       await writeFile(accountPath, `${JSON.stringify(replacement, null, 2)}\n`);
 
     const cold = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
-    expect(cold.accounts[0].quota.weekly).toMatchObject({ usedPercent: 31, status: "blocked", continuity: "broken", identityBound: false });
+    expect(cold.accounts[0].quota.weekly).toMatchObject({ usedPercent: 31, status: "stale", continuity: "broken", identityBound: false });
   });
 
   it("breaks continuity when later routed evidence has no usable quota headers", async () => {
@@ -136,6 +154,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
     await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
 
     await mkdir(logsDir, { recursive: true });
@@ -144,7 +163,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       `${responseLogFixture(fileName, { timestamp: new Date(Date.now() + 2000).toISOString() })}\nHTTP/1.1 200 OK\n`,
     );
     const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
-    expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 12, status: "blocked", continuity: "broken" });
+    expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 12, status: "stale", continuity: "broken" });
   });
 
   it("keeps semantic evidence rotation-unbound when credential identity cannot be proven", async () => {
@@ -152,7 +171,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
     const authDir = path.join(root, "auth");
     const logsDir = path.join(authDir, "logs");
     const fileName = "codex-unverified@example.com-plus.json";
-    await writeAccountFile(authDir, fileName, { account_id: "", refresh_token: "", id_token: "" });
+    await writeAccountFile(authDir, fileName, { account_id: "", email: "", refresh_token: "", id_token: "" });
     const configPath = await writeConfig(root, authDir);
     stubModelList();
     await writeQuotaResponseLog(logsDir, "v1-responses-unverified.log", fileName, {
@@ -161,6 +180,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
     const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
     expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 11, identityBound: false });
   });
@@ -173,7 +193,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
     await writeAccountFile(authDir, fileName, { refresh_token: "fixture-refresh-dropped" });
     const configPath = await writeConfig(root, authDir);
     stubModelList();
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
+    await persistDashboardState(configPath, authDir);
     const base = Date.now();
     await writeQuotaResponseLog(logsDir, "v1-responses-before-drop.log", fileName, {
       timestamp: new Date(base + 1000).toISOString(),
@@ -181,6 +201,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryResetAfterSeconds: 604800,
       primaryDurationMinutes: 10080,
     });
+    await persistDashboardState(configPath, authDir);
     await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
 
     await rm(logsDir, { recursive: true, force: true });
@@ -191,7 +212,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       "",
     ].join("\n"));
     const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
-    expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 14, status: "blocked", continuity: "broken" });
+    expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 14, status: "stale", continuity: "broken" });
   });
 
   it("does not let a later valid response hide an earlier missing observation", async () => {
@@ -202,7 +223,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
     await writeAccountFile(authDir, fileName, { refresh_token: "fixture-refresh-sequence" });
     const configPath = await writeConfig(root, authDir);
     stubModelList();
-    await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
+    await persistDashboardState(configPath, authDir);
     const base = Date.now();
     await writeQuotaResponseLog(logsDir, "v1-responses-sequence-base.log", fileName, {
       timestamp: new Date(base + 1000).toISOString(),
@@ -211,6 +232,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       primaryDurationMinutes: 10080,
       traceId: "trace-base",
     });
+    await persistDashboardState(configPath, authDir);
     await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
 
     await rm(logsDir, { recursive: true, force: true });
@@ -230,7 +252,7 @@ describe("rotation evidence identity and Observation Continuity", () => {
       "",
     ].join("\n"));
     const state = await readDashboardState({ configPath, proxyUrl: "http://proxy.local", inboundKey: "key" });
-    expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 12, status: "blocked", continuity: "broken" });
+    expect(state.accounts[0].quota.weekly).toMatchObject({ usedPercent: 12, status: "stale", continuity: "broken" });
   });
 
   it("reconciles completed routes beyond UI's recent-log limit", async () => {

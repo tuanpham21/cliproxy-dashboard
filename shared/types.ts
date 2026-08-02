@@ -1,6 +1,11 @@
 export type QuotaWindowName = "primary5h" | "weekly";
 export type QuotaEvidenceSource = "response-header" | "identity-bound-read";
-export type PublicQuotaStatus = "unknown" | "current" | "stale" | "refresh-needed" | "blocked";
+export type PublicQuotaStatus = "unknown" | "current" | "stale" | "refresh-needed" | "unsupported-provider-window" | "blocked";
+
+export type RotationDisplayStatus = {
+  eligible: boolean;
+  reason?: string;
+};
 
 export type PublicQuotaWindow = {
   status: PublicQuotaStatus;
@@ -29,6 +34,12 @@ export type PublicDashboardPaths = {
   proxyUrl: string;
   proxyPort: number;
   inboundKeyConfigured: boolean;
+};
+
+export type ProxyModelView = {
+  id: string;
+  created: number;
+  ownedBy: string;
 };
 
 export type PublicProxyConfig = {
@@ -61,13 +72,8 @@ export type PublicAccountView = {
   subscriptionPlan?: string;
   subscriptionActiveUntil?: string;
   subscriptionLastChecked?: string;
+  rotationDisplayStatus?: RotationDisplayStatus;
   quota: PublicQuotaSnapshot;
-};
-
-export type ProxyModelView = {
-  id: string;
-  created: number;
-  ownedBy: string;
 };
 
 export type SelectorLogLine = {
@@ -113,8 +119,22 @@ export type LogSummary = {
   recentRequests: RequestLogLine[];
 };
 
+export type ShadowObservationRecord = {
+  clientWorkloadId: string;
+  requestKind: string;
+  normalizedModelId: string | null;
+  observedAtUnixMs: number;
+  candidateDecisionId: string;
+  selectedAccountIds: string[];
+  blockedAccountIds: string[];
+  reasonCategory: string;
+  latencyBucketMs: number | null;
+  errorClass: string | null;
+};
+
 export type PublicRotationState = {
   mode: "off" | "shadow" | "active";
+  poolMode: "manual";
   lifecycle: "off" | "recovering" | "shadow" | "active" | "pending" | "awaiting-confirmation" | "manual-hold" | "paused" | "recovery-required";
   pool: Array<{ proxyAccountKey: string; fileName: string; exclusivityAttested: boolean; addedAt: string }>;
   routingTargetKey?: string;

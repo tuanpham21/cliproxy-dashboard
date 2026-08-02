@@ -3,7 +3,10 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { readAccounts } from "../accounts.js";
 import { readDashboardState } from "../dashboard-state.js";
+import { readMergedQuotaSnapshots } from "../quota-log-updates.js";
+import { resolveDashboardPaths } from "../paths.js";
 import { openRotationController } from "../rotation-controller.js";
 import { createRotationCoordinator, RotationCoordinator } from "../rotation-coordinator.js";
 import { createRotationLogObserver, type RotationObservationBatch } from "../rotation-log-observer.js";
@@ -14,6 +17,12 @@ import type { PersistedQuotaSnapshot } from "../types.js";
 import { makeTempRoot, stubModelList, writeAccountFile, writeConfig, writeQuotaResponseLog } from "./helpers.js";
 
 type ManagedProxyAccount = Awaited<ReturnType<RotationPriorityWriter["readAccounts"]>>[number];
+
+async function initializeQuotaSnapshotStore(configPath: string, authDir: string): Promise<void> {
+  const paths = await resolveDashboardPaths({ configPath, authDir });
+  const accountsResult = await readAccounts(authDir);
+  await readMergedQuotaSnapshots(paths, accountsResult.accounts, undefined, [], false);
+}
 
 class NoWritePriorityWriter implements RotationPriorityWriter {
   setCalls = 0;
@@ -187,6 +196,7 @@ describe("shadow replay", () => {
     const dashboardOptions = { configPath, authDir, proxyUrl: "http://127.0.0.1:1", inboundKey: "synthetic-inbound-key" };
 
     stubModelList();
+    await initializeQuotaSnapshotStore(configPath, authDir);
     const dashboardState = await readDashboardState(dashboardOptions);
     vi.unstubAllGlobals();
     const accountAKey = dashboardState.accounts.find((account) => account.fileName === accountAFile)?.proxyAccountKey;

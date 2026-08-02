@@ -12,6 +12,7 @@ import type {
   QuotaEvidenceSource,
   QuotaWindowName,
   RequestLogLine,
+  ShadowObservationRecord,
   SelectorLogLine,
 } from "../shared/types.js";
 
@@ -30,6 +31,7 @@ export type {
   QuotaWindowName,
   RateLimitState,
   RequestLogLine,
+  ShadowObservationRecord,
   SelectorLogLine,
 } from "../shared/types.js";
 

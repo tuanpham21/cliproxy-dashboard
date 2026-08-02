@@ -70,6 +70,7 @@ const els: DashboardElements = {
   let codexRedemptionController: ReturnType<typeof setupCodexRedemption> | null = null;
   let codexProfileOnboarding: ReturnType<typeof setupCodexProfileOnboarding>;
     const codexProfileObservations = setupCodexProfileObservations({
+      onContinueSetup: (profileId, label) => codexProfileOnboarding.continuePendingProfileSetup(profileId, label),
       onReLogin: (profileId) => codexProfileOnboarding.startReLogin(profileId),
       onRedemptionState: (redemption) => codexRedemptionController?.resume(redemption),
     });
@@ -310,7 +311,8 @@ els.rotation.addEventListener("click", async (event) => {
   const mode = button.getAttribute("data-rotation-mode");
   const action = button.getAttribute("data-rotation-action");
   const poolAction = button.getAttribute("data-rotation-pool-action");
-  if (!mode && !action && !poolAction) return;
+  const poolMode = button.getAttribute("data-rotation-pool-mode");
+  if (!mode && !action && !poolAction && !poolMode) return;
 
   button.disabled = true;
   try {
@@ -325,6 +327,10 @@ els.rotation.addEventListener("click", async (event) => {
       await postJson("/api/rotation/resume", {});
     } else if (action === "recover") {
       await postJson("/api/rotation/recover", {});
+    } else if (poolMode) {
+      await postJson("/api/rotation/pool-mode", {
+        poolMode,
+      });
     } else if (poolAction) {
       const proxyAccountKey = button.getAttribute("data-proxy-account-key") ?? "";
       const fileName = button.getAttribute("data-file-name") ?? "";

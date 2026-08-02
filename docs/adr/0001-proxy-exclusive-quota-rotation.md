@@ -1,0 +1,3 @@
+# Quota-balanced rotation requires proxy-exclusive accounts
+
+Quota-Balanced Rotation is disabled globally by default and includes only Proxy Accounts that an operator explicitly opts in while attesting that each identity is dedicated to the same CLIProxy instance. Membership remains separate from runtime eligibility. Retained identity-bound response headers remain trustworthy between routed requests only under this boundary; external use could change weekly quota without dashboard observation, so shared accounts remain outside automatic rotation until an Account-Scoped Quota Refresh can prove current usage. This trades setup and shared-account flexibility for explicit operator authority and safe, deterministic routing automation.

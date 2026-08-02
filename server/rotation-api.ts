@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { RotationCoordinator } from "./rotation-coordinator.js";
-import type { RotationMode } from "./rotation-types.js";
+import type { RotationMode, RotationPoolMode } from "./rotation-types.js";
 
 function jsonResponse(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -49,6 +49,16 @@ export async function handleRotationApi(
       const mode = body.mode;
       if (mode !== "off" && mode !== "shadow" && mode !== "active") throw new Error("mode must be off, shadow, or active");
       await coordinator.setMode(mode as RotationMode);
+      jsonResponse(res, 200, { ok: true, rotation: coordinator.publicState() });
+      return true;
+    }
+    if (method === "POST" && pathname === "/api/rotation/pool-mode") {
+      const body = await readJsonBody(req);
+      const poolMode = body.poolMode;
+      if (poolMode !== "manual") {
+        throw new Error("all-enabled-codex pool mode is no longer supported. Re-add accounts explicitly with exclusivity attestation.");
+      }
+      await coordinator.setPoolMode("manual");
       jsonResponse(res, 200, { ok: true, rotation: coordinator.publicState() });
       return true;
     }
